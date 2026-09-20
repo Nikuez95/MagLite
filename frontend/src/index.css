@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Togli lo scroll bar per una vera NUI sui palmari */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0F172A; 
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1E293B; 
+    border-radius: 10px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #334155; 
+  }
+
+  /* Impedisci la selezione del testo per evitare tocchi involontari nei palmari */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  
+  /* Consenti la selezione del testo solo nei campi di input */
+  input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}

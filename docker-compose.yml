@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  database:
+    image: mysql:8.0
+    container_name: maglite_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: maglite_db
+      MYSQL_USER: maglite_user
+      MYSQL_PASSWORD: maglite_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      # Mount dello script init.sql affinché venga eseguito alla prima creazione del DB
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - maglite_net
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: maglite_backend
+    restart: always
+    environment:
+      - DB_HOST=database
+      - DB_USER=maglite_user
+      - DB_PASSWORD=maglite_pass
+      - DB_NAME=maglite_db
+      - JWT_SECRET=super_secret_jwt_key_maglite_2026
+      - PORT=3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - database
+    networks:
+      - maglite_net
+    profiles:
+      - full # Lo avviamo solo quando lanciamo il docker-compose completo
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: maglite_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - maglite_net
+    profiles:
+      - full
+
+volumes:
+  db_data:
+
+networks:
+  maglite_net:
+    driver: bridge

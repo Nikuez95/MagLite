@@ -1,0 +1,97 @@
+CREATE DATABASE IF NOT EXISTS maglite_db;
+USE maglite_db;
+
+CREATE TABLE IF NOT EXISTS USERS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('developer', 'backoffice', 'operator') NOT NULL DEFAULT 'operator',
+    requires_password_change BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS CUSTOMERS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    unique_id VARCHAR(100) NOT NULL UNIQUE,
+    business_name VARCHAR(255) NOT NULL,
+    vat_number VARCHAR(50),
+    address TEXT,
+    phone VARCHAR(50),
+    email VARCHAR(100)
+);
+
+CREATE TABLE IF NOT EXISTS PRODUCTS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sku VARCHAR(100) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    uom ENUM('Pezzi', 'Scatole', 'Bancali') NOT NULL DEFAULT 'Scatole',
+    units_per_box INT DEFAULT 1,
+    boxes_per_pallet INT DEFAULT 1,
+    customer_id INT NOT NULL,
+    notes TEXT,
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS LOCATIONS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    zone VARCHAR(10) NOT NULL,
+    col VARCHAR(10) NOT NULL,
+    pos VARCHAR(10) NOT NULL,
+    barcode VARCHAR(50) NOT NULL UNIQUE,
+    pin VARCHAR(5) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS PALLETS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    pallet_code VARCHAR(50) NOT NULL UNIQUE,
+    customer_id INT NOT NULL,
+    product_id INT NOT NULL,
+    quantity DECIMAL(10,2) NOT NULL,
+    units_per_box INT DEFAULT NULL,
+    batch VARCHAR(50),
+    warehouse VARCHAR(50),
+    status ENUM('PENDING', 'STOCKED', 'SHIPPED') DEFAULT 'PENDING',
+    location VARCHAR(50),
+    notes TEXT,
+    client_pallet_number VARCHAR(100),
+    client_article_number VARCHAR(100),
+    expiration_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT,
+    FOREIGN KEY (product_id) REFERENCES PRODUCTS(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_code VARCHAR(50) NOT NULL UNIQUE,
+  customer_id INT NOT NULL,
+  exit_date DATE NOT NULL,
+  status ENUM('PENDING', 'PICKING', 'READY', 'SHIPPED') DEFAULT 'PENDING',
+  created_by VARCHAR(50),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id)
+);
+
+CREATE TABLE IF NOT EXISTS OUTBOUND_ITEMS (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  pallet_code VARCHAR(50) NOT NULL,
+  product_id INT NOT NULL,
+  quantity_required INT NOT NULL,
+  quantity_picked INT DEFAULT 0,
+  requested_uom VARCHAR(50) DEFAULT NULL,
+  status ENUM('PENDING', 'PICKED') DEFAULT 'PENDING',
+  FOREIGN KEY (order_id) REFERENCES OUTBOUND_ORDERS(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AUDIT_LOGS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    action VARCHAR(50) NOT NULL,
+    details TEXT NOT NULL,
+    source VARCHAR(50) NOT NULL,
+    username VARCHAR(50) DEFAULT 'Sistema',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
