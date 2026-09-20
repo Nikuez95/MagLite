@@ -253,7 +253,7 @@ const Inbound = () => {
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">UDM Inserimento</label>
                   <select value={formData.entry_uom} onChange={e => setFormData({...formData, entry_uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue">
-                    <option value="Base">Pezzi ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'})</option>
+                    <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'})</option>
                     <option value="Scatole">Scatole</option>
                     <option value="Bancale">Paletta Intera</option>
                   </select>
