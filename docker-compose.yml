@@ -11,7 +11,7 @@ services:
       MYSQL_USER: maglite_user
       MYSQL_PASSWORD: maglite_pass
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306" # Espone il DB solo sulla macchina host, non sulla rete esterna
     volumes:
       - db_data:/var/lib/mysql
       # Mount dello script init.sql affinché venga eseguito alla prima creazione del DB
