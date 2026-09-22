@@ -36,8 +36,10 @@ const Stow = () => {
     fetchZones();
   }, []);
 
-  useBarcodeScanner(async (barcode) => {
-    // Il Laser si usa SOLO nello step iniziale per leggere la paletta
+  const handleScan = async (barcodeStr) => {
+    const barcode = barcodeStr.trim();
+    if (!barcode) return;
+    
     if (status === 'WAITING_PALLET' || status === 'SUCCESS' || status === 'ERROR') {
       if (!barcode.startsWith('PAL-')) {
         setStatus('ERROR');
@@ -59,17 +61,32 @@ const Stow = () => {
         }
 
         setPallet(res.data);
-        // Logica suggerimento. Se ha una posizione fissa "A-01-01", usa quella, altrimenti per MVP suggeriamo VST-01-01
-        setSuggestedLocation(res.data.location || 'VST-01-01');
-        setPinInput('');
-        setStatus('WAITING_PIN');
+        
+        // Se la paletta ha già una posizione assegnata (es. da pre-allocazione), vai al PIN
+        if (res.data.location) {
+          setSuggestedLocation(res.data.location);
+          setPinInput('');
+          setStatus('WAITING_PIN');
+        } else {
+          // Se non ha una posizione (di default nuova merce), chiedi dove stivarla
+          setOverrideData({ zone: '', col: '', pos: '' });
+          setStatus('OVERRIDE_LOCATION');
+        }
       } catch (err) {
         setStatus('ERROR');
         setMessage(err.response?.data?.error || 'Paletta non trovata');
         setTimeout(() => setStatus('WAITING_PALLET'), 3000);
       }
     }
-  });
+  };
+
+  // Focus automatico sull'input invisibile per Android Zebra
+  const inputRef = React.useRef(null);
+  useEffect(() => {
+    if (status === 'WAITING_PALLET' && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [status]);
 
   const confirmStow = async (targetLocation, targetPin) => {
     if (!targetPin) {
@@ -115,8 +132,26 @@ const Stow = () => {
       ${status === 'SUCCESS' ? 'bg-green-500/20' : status === 'ERROR' ? 'bg-rose-500/20' : 'bg-brand-black'}`}>
       
       {status === 'WAITING_PALLET' && (
-        <div className="animate-fade-in-up">
-          <div className="relative mb-8 flex justify-center">
+        <div className="animate-fade-in-up w-full flex flex-col items-center">
+          <input 
+            ref={inputRef}
+            className="opacity-0 absolute w-0 h-0" 
+            onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 100); }}
+            onChange={(e) => {
+               const val = e.target.value;
+               if(val.length > 5) {
+                  handleScan(val);
+                  e.target.value = '';
+               }
+            }} 
+            onKeyDown={(e) => {
+               if(e.key === 'Enter') {
+                  handleScan(e.target.value);
+                  e.target.value = '';
+               }
+            }}
+          />
+          <div className="relative mb-8 flex justify-center w-full">
             <Scan size={96} className="text-brand-blue opacity-80" />
             <div className="absolute inset-0 bg-brand-blue opacity-20 blur-2xl rounded-full animate-pulse"></div>
           </div>

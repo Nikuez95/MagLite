@@ -21,13 +21,14 @@ const OutboundZebra = () => {
   const [error, setError] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Focus trap ref per tastiera scanner (emula input in background se serve)
+  // Focus trap ref per tastiera scanner
   const inputRef = useRef(null);
 
-  // Hook per scanner barcode bluetooth/integrato (ascolta gli eventi keypress)
-  useBarcodeScanner((barcode) => {
-    handleScan(barcode);
-  });
+  useEffect(() => {
+    if ((step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [step]);
 
   const handleScan = (barcode) => {
     if (isProcessing || step === 'FINISHED' || step === 'INPUT_QTY') return;
@@ -146,11 +147,17 @@ const OutboundZebra = () => {
         
         {/* Fallback per input manuale */}
         <input 
+          ref={inputRef}
+          autoFocus
           type="text"
           placeholder="Oppure scrivi OUT-..."
           className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-center text-xl font-bold w-full uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
           value={scannedOrder}
-          onChange={e => setScannedOrder(e.target.value.toUpperCase())}
+          onChange={e => {
+            const val = e.target.value.toUpperCase();
+            setScannedOrder(val);
+            if(val.length >= 17) fetchOrder(val);
+          }}
           onKeyDown={e => e.key === 'Enter' && fetchOrder(scannedOrder)}
         />
         <button 
@@ -179,6 +186,29 @@ const OutboundZebra = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-89px)]">
+      {(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') && (
+        <input 
+          ref={inputRef}
+          className="opacity-0 absolute w-0 h-0" 
+          onBlur={(e) => { 
+            if(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') 
+              setTimeout(() => e.target.focus(), 100); 
+          }}
+          onChange={(e) => {
+             const val = e.target.value;
+             if(val.length > 3) {
+                handleScan(val);
+                e.target.value = '';
+             }
+          }} 
+          onKeyDown={(e) => {
+             if(e.key === 'Enter') {
+                handleScan(e.target.value);
+                e.target.value = '';
+             }
+          }}
+        />
+      )}
       {/* Intestazione Ordine in corso */}
       <div className="bg-slate-900 p-4 border-b border-slate-800 flex justify-between items-center shrink-0">
         <div>

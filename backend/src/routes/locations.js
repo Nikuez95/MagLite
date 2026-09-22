@@ -38,9 +38,20 @@ async function locationRoutes(fastify, options) {
       await connection.beginTransaction();
       let created = 0;
 
+      // Recuperiamo i PIN già in uso per questa zona per garantire l'univocità
+      const [existing] = await connection.query('SELECT pin FROM LOCATIONS WHERE zone = ?', [zone.toUpperCase()]);
+      const usedPins = new Set(existing.map(r => r.pin));
+
       for (const pos of levels) {
         const barcode = `${zone.toUpperCase()}-${rack.toUpperCase()}-${pos}`;
-        const pin = Math.floor(10 + Math.random() * 90).toString(); // PIN casuale 10-99
+        
+        let pin;
+        // Genera un PIN univoco (da 100 a 999 per avere più combinazioni disponibili)
+        do {
+          pin = Math.floor(100 + Math.random() * 900).toString();
+        } while (usedPins.has(pin));
+        
+        usedPins.add(pin);
         
         try {
           await connection.query(
