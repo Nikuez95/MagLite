@@ -152,6 +152,7 @@ const OutboundZebra = () => {
           type="text"
           placeholder="Oppure scrivi OUT-..."
           className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-center text-xl font-bold w-full uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
+          onBlur={(e) => { if(step === 'SCAN_ORDER') setTimeout(() => e.target.focus(), 500); }}
           value={scannedOrder}
           onChange={e => {
             const val = e.target.value.toUpperCase();
@@ -187,27 +188,35 @@ const OutboundZebra = () => {
   return (
     <div className="flex flex-col h-[calc(100vh-89px)]">
       {(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') && (
-        <input 
-          ref={inputRef}
-          className="opacity-0 absolute w-0 h-0" 
-          onBlur={(e) => { 
-            if(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') 
-              setTimeout(() => e.target.focus(), 100); 
-          }}
-          onChange={(e) => {
-             const val = e.target.value;
-             if(val.length > 3) {
-                handleScan(val);
-                e.target.value = '';
-             }
-          }} 
-          onKeyDown={(e) => {
-             if(e.key === 'Enter') {
-                handleScan(e.target.value);
-                e.target.value = '';
-             }
-          }}
-        />
+        <div className="p-4 bg-slate-950 shrink-0">
+          <input 
+            ref={inputRef}
+            autoFocus
+            type="text"
+            placeholder="Attendo Scansione Laser..."
+            className="w-full bg-slate-900 border-2 border-brand-blue p-4 rounded-xl text-center text-lg font-bold uppercase focus:ring-0 text-brand-white"
+            onBlur={(e) => { 
+              if(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') 
+                setTimeout(() => e.target.focus(), 500); 
+            }}
+            onChange={(e) => {
+               const val = e.target.value.toUpperCase();
+               if(val.length > 3) {
+                  // Mettiamo un piccolo debounce per assicurarci che abbia finito di digitare
+                  setTimeout(() => {
+                    handleScan(val);
+                    if (inputRef.current) inputRef.current.value = '';
+                  }, 200);
+               }
+            }} 
+            onKeyDown={(e) => {
+               if(e.key === 'Enter') {
+                  handleScan(e.target.value);
+                  e.target.value = '';
+               }
+            }}
+          />
+        </div>
       )}
       {/* Intestazione Ordine in corso */}
       <div className="bg-slate-900 p-4 border-b border-slate-800 flex justify-between items-center shrink-0">

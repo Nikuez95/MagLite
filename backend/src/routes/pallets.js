@@ -4,14 +4,16 @@ const bwipjs = require('bwip-js');
 const fs = require('fs');
 const path = require('path');
 
-const logoPath = path.join(__dirname, '../../../loso_xs.png');
+const logoPath = path.join(__dirname, '../../../logo_xs.png');
 
 async function drawLabel(doc, lbl, x, y, w, h) {
   doc.rect(x, y, w, h).stroke();
   
   if (fs.existsSync(logoPath)) {
-    doc.image(logoPath, x + 10, y + 10, { height: 25 });
-    doc.fontSize(10).font('Helvetica').text(`Logistic Porcelli - ${lbl.warehouse}`, x + 50, y + 18, { width: w - 60, align: 'right' });
+    // Usiamo fit per vincolare sia l'altezza che la larghezza massima senza deformare, 
+    // così se il logo è molto largo non si sovrappone al testo
+    doc.image(logoPath, x + 10, y + 10, { fit: [100, 30] });
+    doc.fontSize(10).font('Helvetica').text(`Logistic Porcelli - ${lbl.warehouse}`, x + 115, y + 18, { width: w - 125, align: 'right' });
   } else {
     doc.fontSize(10).font('Helvetica').text(`Logistic Porcelli - ${lbl.warehouse}`, x + 10, y + 15, { width: w - 20, align: 'center' });
   }

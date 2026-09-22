@@ -133,13 +133,25 @@ const Stow = () => {
       
       {status === 'WAITING_PALLET' && (
         <div className="animate-fade-in-up w-full flex flex-col items-center">
+          <div className="relative mb-8 flex justify-center w-full">
+            <Scan size={96} className="text-brand-blue opacity-80" />
+            <div className="absolute inset-0 bg-brand-blue opacity-20 blur-2xl rounded-full animate-pulse"></div>
+          </div>
+          <h2 className="text-4xl font-extrabold text-brand-white mb-4 uppercase">Stivaggio</h2>
+          <p className="text-slate-400 mb-6 max-w-[280px] text-lg leading-relaxed mx-auto">
+            Spara il codice a barre della <b>Paletta</b> che stai trasportando.
+          </p>
+          
           <input 
             ref={inputRef}
-            className="opacity-0 absolute w-0 h-0" 
-            onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 100); }}
+            type="text"
+            placeholder="Codice Paletta..."
+            className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-center text-xl font-bold w-full max-w-xs uppercase focus:border-brand-blue focus:ring-0 text-brand-white mb-4"
+            onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 500); }}
             onChange={(e) => {
-               const val = e.target.value;
-               if(val.length > 5) {
+               const val = e.target.value.toUpperCase();
+               // Se è lungo abbastanza per essere una paletta valida, proviamo a inviare
+               if(val.length >= 10 && val.startsWith('PAL-')) {
                   handleScan(val);
                   e.target.value = '';
                }
@@ -151,14 +163,6 @@ const Stow = () => {
                }
             }}
           />
-          <div className="relative mb-8 flex justify-center w-full">
-            <Scan size={96} className="text-brand-blue opacity-80" />
-            <div className="absolute inset-0 bg-brand-blue opacity-20 blur-2xl rounded-full animate-pulse"></div>
-          </div>
-          <h2 className="text-4xl font-extrabold text-brand-white mb-4 uppercase">Stivaggio</h2>
-          <p className="text-slate-400 mb-10 max-w-[280px] text-lg leading-relaxed mx-auto">
-            Spara il codice a barre della <b>Paletta</b> che stai trasportando.
-          </p>
         </div>
       )}
 
