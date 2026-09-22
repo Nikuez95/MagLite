@@ -38,7 +38,8 @@ async function authRoutes(fastify, options) {
           id: user.id,
           username: user.username,
           role: user.role,
-          requires_password_change: !!user.requires_password_change
+          requires_password_change: !!user.requires_password_change,
+          preferences: user.preferences ? (typeof user.preferences === 'string' ? JSON.parse(user.preferences) : user.preferences) : null
         }
       };
 
@@ -100,6 +101,16 @@ async function authRoutes(fastify, options) {
     }
   });
 
+  fastify.put('/preferences', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+    try {
+      const preferences = JSON.stringify(request.body.preferences);
+      await db.query('UPDATE USERS SET preferences = ? WHERE id = ?', [preferences, request.user.id]);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante il salvataggio delle preferenze' });
+    }
+  });
 }
 
 module.exports = authRoutes;

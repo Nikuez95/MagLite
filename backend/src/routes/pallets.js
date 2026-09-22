@@ -74,6 +74,24 @@ async function palletRoutes(fastify, options) {
     }
   });
 
+  fastify.get('/inventory', async (request, reply) => {
+    try {
+      const [rows] = await db.query(`
+        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name,
+               l.zone, l.col, l.pos
+        FROM PALLETS p
+        JOIN PRODUCTS pr ON p.product_id = pr.id
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        LEFT JOIN LOCATIONS l ON p.location = l.barcode
+        WHERE p.status != 'SHIPPED'
+      `);
+      return rows;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante il recupero inventario' });
+    }
+  });
+
   fastify.post('/generate', async (request, reply) => {
     const { cart, printOptions } = request.body;
     

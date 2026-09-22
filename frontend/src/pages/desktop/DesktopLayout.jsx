@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus } from 'lucide-react';
+import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch } from 'lucide-react';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
@@ -10,6 +10,7 @@ const DesktopLayout = () => {
     { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard },
     { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus },
     { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus },
+    { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch },
     { name: 'Clienti', path: '/desktop/customers', icon: Users },
     { name: 'Prodotti', path: '/desktop/products', icon: Box },
     { name: 'Magazzino', path: '/desktop/locations', icon: Map },
@@ -25,8 +26,8 @@ const DesktopLayout = () => {
         
         {/* Header Sidebar */}
         <div className="p-6 flex items-center gap-4 border-b border-slate-800 cursor-pointer" onClick={() => navigate('/')}>
-          <div className="w-12 h-12 bg-brand-blue rounded-xl flex items-center justify-center text-brand-black font-bold text-2xl shadow-[0_0_15px_rgba(14,165,233,0.5)]">
-            M
+          <div className="w-12 h-12 flex items-center justify-center">
+            <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
           </div>
           <div>
             <h1 className="font-bold text-xl leading-tight tracking-tight">MagLite</h1>

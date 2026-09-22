@@ -25,8 +25,8 @@ const TopBar = () => {
         className={`flex items-center gap-4 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
         onClick={() => !isHome && navigate('/zebra')}
       >
-        <div className="w-12 h-12 bg-brand-blue rounded-xl flex items-center justify-center text-brand-black font-bold text-2xl shadow-[0_0_15px_rgba(14,165,233,0.5)]">
-          M
+        <div className="w-12 h-12 flex items-center justify-center">
+          <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
         </div>
         <div>
           <h1 className="text-brand-white font-bold text-xl leading-tight tracking-tight">MagLite</h1>

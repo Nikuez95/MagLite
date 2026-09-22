@@ -37,8 +37,8 @@ const Login = ({ setToken }) => {
     <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center p-6 text-brand-white">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-10 shadow-2xl">
         <div className="flex justify-center mb-8">
-          <div className="w-20 h-20 bg-brand-blue rounded-2xl flex items-center justify-center text-brand-black font-bold text-4xl shadow-[0_0_30px_rgba(14,165,233,0.4)]">
-            M
+          <div className="w-32 h-20 flex items-center justify-center">
+            <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_20px_rgba(169,218,255,0.4)]" />
           </div>
         </div>
         
