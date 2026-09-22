@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Building2, Trash2, Eye, MapPin, Mail, Phone, Hash } from 'lucide-react';
+import { Plus, Building2, Trash2, Eye, MapPin, Mail, Phone, Hash, Edit2, Copy } from 'lucide-react';
 
 const CustomersManagement = () => {
   const [customers, setCustomers] = useState([]);
@@ -9,12 +9,14 @@ const CustomersManagement = () => {
   const [newCustomer, setNewCustomer] = useState({ unique_id: '', business_name: '', vat_number: '', address: '', phone: '', email: '' });
   
   const [viewModal, setViewModal] = useState({ show: false, customer: null });
+  const [editModal, setEditModal] = useState({ show: false, customer: null });
   const [deleteModal, setDeleteModal] = useState({ show: false, customer: null, confirmText: '' });
   const [isProcessing, setIsProcessing] = useState(false);
 
   const getToken = () => localStorage.getItem('maglite_token');
   const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
   const isDeveloper = user.role === 'developer';
+  const isDeveloperOrBackoffice = user.role === 'developer' || user.role === 'backoffice';
 
   const fetchCustomers = async () => {
     try {
@@ -41,6 +43,37 @@ const CustomersManagement = () => {
       });
       setShowAddModal(false);
       setNewCustomer({ unique_id: '', business_name: '', vat_number: '', address: '', phone: '', email: '' });
+      fetchCustomers();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Errore');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleCopyData = (customer) => {
+    const data = `Ragione Sociale: ${customer.business_name}
+Codice Univoco: ${customer.unique_id}
+P.IVA/C.F.: ${customer.vat_number || 'Non specificata'}
+Indirizzo: ${customer.address || 'Non specificato'}
+Telefono: ${customer.phone || 'Non specificato'}
+Email: ${customer.email || 'Non specificata'}`;
+    navigator.clipboard.writeText(data).then(() => {
+      alert('Dati copiati negli appunti!');
+    }).catch(err => {
+      console.error('Errore durante la copia:', err);
+    });
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      await axios.put(`http://${window.location.hostname}:3000/api/customers/${editModal.customer.id}`, editModal.customer, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setEditModal({ show: false, customer: null });
       fetchCustomers();
     } catch (err) {
       alert(err.response?.data?.error || 'Errore');
@@ -117,7 +150,12 @@ const CustomersManagement = () => {
                         <button onClick={() => setViewModal({ show: true, customer: c })} className="p-2.5 bg-slate-800 hover:bg-brand-blue hover:text-brand-black rounded-lg transition-colors text-slate-300 shadow-sm" title="Dettagli Completi">
                           <Eye size={18} />
                         </button>
-                        {isDeveloper && (
+                        {isDeveloperOrBackoffice && (
+                          <button onClick={() => setEditModal({ show: true, customer: c })} className="p-2.5 bg-slate-800 hover:bg-brand-blue hover:text-brand-black rounded-lg transition-colors text-slate-300 shadow-sm" title="Modifica Cliente">
+                            <Edit2 size={18} />
+                          </button>
+                        )}
+                        {isDeveloperOrBackoffice && (
                           <button onClick={() => setDeleteModal({ show: true, customer: c, confirmText: '' })} className="p-2.5 bg-slate-800 hover:bg-rose-500 hover:text-brand-white rounded-lg transition-colors text-slate-300 shadow-sm" title="Elimina Cliente">
                             <Trash2 size={18} />
                           </button>
@@ -178,12 +216,63 @@ const CustomersManagement = () => {
         </div>
       )}
 
+      {/* Modal Modifica */}
+      {editModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 max-w-2xl w-full shadow-2xl relative my-8 animate-fade-in-up">
+            <h2 className="text-2xl font-bold text-brand-white mb-8 flex items-center gap-3">
+              <span className="w-10 h-10 bg-brand-blue/20 flex items-center justify-center rounded-xl text-brand-blue">
+                <Edit2 size={24} />
+              </span>
+              Modifica Cliente
+            </h2>
+            <form onSubmit={handleUpdate} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="md:col-span-2">
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Ragione Sociale *</label>
+                  <input required value={editModal.customer?.business_name} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, business_name: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Univoco / SDI *</label>
+                  <input required value={editModal.customer?.unique_id} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, unique_id: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all font-mono" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Partita IVA / C.F.</label>
+                  <input value={editModal.customer?.vat_number || ''} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, vat_number: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all font-mono" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Indirizzo e Città</label>
+                  <input value={editModal.customer?.address || ''} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, address: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Telefono</label>
+                  <input value={editModal.customer?.phone || ''} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, phone: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Email Aziendale</label>
+                  <input type="email" value={editModal.customer?.email || ''} onChange={e => setEditModal({...editModal, customer: {...editModal.customer, email: e.target.value}})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue focus:border-brand-blue transition-all" />
+                </div>
+              </div>
+              <div className="flex gap-4 mt-8 pt-8 border-t border-slate-800/80">
+                <button type="button" onClick={() => setEditModal({ show: false, customer: null })} className="flex-1 px-4 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 px-4 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">{isProcessing ? 'Salvataggio in corso...' : 'Salva Modifiche'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal View Details */}
       {viewModal.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 max-w-md w-full shadow-2xl relative animate-fade-in-up">
-            <div className="w-20 h-20 bg-slate-950 border border-brand-blue/30 rounded-2xl flex items-center justify-center text-brand-blue mb-8 shadow-inner">
-              <Building2 size={40} />
+            <div className="flex justify-between items-start mb-8">
+              <div className="w-20 h-20 bg-slate-950 border border-brand-blue/30 rounded-2xl flex items-center justify-center text-brand-blue shadow-inner">
+                <Building2 size={40} />
+              </div>
+              <button onClick={() => handleCopyData(viewModal.customer)} className="p-3 bg-slate-800 hover:bg-brand-blue hover:text-brand-black rounded-xl transition-colors text-slate-300 shadow-sm flex items-center gap-2 font-bold text-sm">
+                <Copy size={16} /> Copia Dati
+              </button>
             </div>
             <h2 className="text-3xl font-bold text-brand-white mb-2 leading-tight">{viewModal.customer?.business_name}</h2>
             <div className="inline-block px-4 py-1.5 bg-brand-blue/10 text-brand-blue rounded-full font-mono text-sm mb-10 font-bold tracking-wider">

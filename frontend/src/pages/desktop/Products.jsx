@@ -207,6 +207,9 @@ const ProductsManagement = () => {
     }
   };
 
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
+
   const filteredPallets = pallets.filter(p => {
     const searchLower = searchTerm.toLowerCase();
     const matchSearch = p.product_name.toLowerCase().includes(searchLower) || 
@@ -221,7 +224,23 @@ const ProductsManagement = () => {
                         (p.expiration_date && new Date(p.expiration_date).toLocaleDateString('it-IT').includes(searchLower));
     const matchWarehouse = filterWarehouse === 'ALL' || p.warehouse === filterWarehouse;
     const matchStatus = filterStatus === 'ALL' || p.status === filterStatus;
-    return matchSearch && matchWarehouse && matchStatus;
+    
+    let matchDate = true;
+    if (filterStartDate || filterEndDate) {
+      const pDate = new Date(p.created_at);
+      if (filterStartDate) {
+        const start = new Date(filterStartDate);
+        start.setHours(0, 0, 0, 0);
+        if (pDate < start) matchDate = false;
+      }
+      if (filterEndDate) {
+        const end = new Date(filterEndDate);
+        end.setHours(23, 59, 59, 999);
+        if (pDate > end) matchDate = false;
+      }
+    }
+
+    return matchSearch && matchWarehouse && matchStatus && matchDate;
   });
 
   const filteredProducts = products.filter(p => {
@@ -284,6 +303,16 @@ const ProductsManagement = () => {
                     <button onClick={() => setFilterStatus('STOCKED')} className={`px-3 py-1.5 rounded-md transition-colors ${filterStatus === 'STOCKED' ? 'bg-green-500/20 text-green-400 font-bold' : 'text-slate-500 hover:text-green-400'}`}>Stivati</button>
                   </div>
                 </div>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <span className="text-slate-400">Dal:</span>
+                    <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className="w-[120px] bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue [color-scheme:dark]" />
+                  </div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <span className="text-slate-400">Al:</span>
+                    <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className="w-[120px] bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue [color-scheme:dark]" />
+                  </div>
+                </div>
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <Clock size={16} className="text-amber-500" />
                   <span className="text-slate-400">Avviso (gg):</span>
@@ -302,7 +331,8 @@ const ProductsManagement = () => {
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Paletta</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Lotto</th>
+                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Arrivo</th>
+                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Lotto/Scad</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Note</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Posizione</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
@@ -343,6 +373,9 @@ const ProductsManagement = () => {
                           ) : (
                             <span className="font-bold text-brand-blue">{p.quantity}</span>
                           )}
+                        </td>
+                        <td className="p-4 text-slate-300 text-sm font-medium">
+                          {new Date(p.created_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                         </td>
                         <td className="p-4 text-slate-400 text-sm">
                           <div>{p.batch || '-'}</div>

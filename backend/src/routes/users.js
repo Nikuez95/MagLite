@@ -39,6 +39,10 @@ async function userRoutes(fastify, options) {
     try {
       const hash = await bcrypt.hash(password, 10);
       await db.query('INSERT INTO USERS (username, password_hash, role, requires_password_change) VALUES (?, ?, ?, TRUE)', [username, hash, role]);
+      await db.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        ['CREATE_USER', `Creato utente ${username} (Ruolo: ${role})`, 'Gestionale', request.user.username]
+      );
       
       return reply.code(201).send({ success: true, message: 'Utente creato con successo' });
     } catch (err) {
@@ -60,7 +64,7 @@ async function userRoutes(fastify, options) {
     }
 
     try {
-      const [userCheck] = await db.query('SELECT role FROM USERS WHERE id = ?', [id]);
+      const [userCheck] = await db.query('SELECT username, role FROM USERS WHERE id = ?', [id]);
       if (userCheck[0]?.role === 'developer') {
         return reply.code(403).send({ error: 'L\'account sviluppatore non può essere eliminato' });
       }
@@ -68,6 +72,12 @@ async function userRoutes(fastify, options) {
       const [result] = await db.query('DELETE FROM USERS WHERE id = ?', [id]);
       if (result.affectedRows === 0) {
         return reply.code(404).send({ error: 'Utente non trovato' });
+      }
+      if (userCheck[0]) {
+        await db.query(
+          'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+          ['DELETE_USER', `Eliminato utente ${userCheck[0].username}`, 'Gestionale', request.user.username]
+        );
       }
       return { success: true, message: 'Utente eliminato' };
     } catch (err) {
@@ -86,7 +96,7 @@ async function userRoutes(fastify, options) {
     }
 
     try {
-      const [userCheck] = await db.query('SELECT role FROM USERS WHERE id = ?', [id]);
+      const [userCheck] = await db.query('SELECT username, role FROM USERS WHERE id = ?', [id]);
       if (userCheck[0]?.role === 'developer') {
         return reply.code(403).send({ error: 'L\'account sviluppatore non può essere modificato da altri' });
       }
@@ -97,6 +107,13 @@ async function userRoutes(fastify, options) {
       
       if (result.affectedRows === 0) {
         return reply.code(404).send({ error: 'Utente non trovato' });
+      }
+      
+      if (userCheck[0]) {
+        await db.query(
+          'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+          ['RESET_PASSWORD', `Forzato reset password per utente ${userCheck[0].username}`, 'Gestionale', request.user.username]
+        );
       }
       return { success: true, message: 'Password resettata. Al prossimo login l\'utente dovrà cambiarla.' };
     } catch (err) {

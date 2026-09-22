@@ -47,6 +47,10 @@ async function locationRoutes(fastify, options) {
             'INSERT INTO LOCATIONS (zone, col, pos, barcode, pin) VALUES (?, ?, ?, ?, ?)',
             [zone.toUpperCase(), rack.toUpperCase(), pos, barcode, pin]
           );
+          await connection.query(
+            'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+            ['CREATE_LOC', `Creata posizione ${barcode}`, 'Gestionale', request.user.username]
+          );
           created++;
         } catch (e) {
           // Se esiste già (Duplicate entry), ignora
@@ -89,6 +93,10 @@ async function locationRoutes(fastify, options) {
       }
 
       await db.query('DELETE FROM LOCATIONS WHERE id = ?', [id]);
+      await db.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        ['DELETE_LOC', `Eliminata posizione ${loc.barcode}`, 'Gestionale', request.user.username]
+      );
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -119,6 +127,10 @@ async function locationRoutes(fastify, options) {
       }
 
       await db.query('DELETE FROM LOCATIONS WHERE zone = ?', [zoneName]);
+      await db.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        ['DELETE_ZONE', `Eliminata intera zona ${zoneName}`, 'Gestionale', request.user.username]
+      );
       return { success: true };
     } catch (err) {
       fastify.log.error(err);

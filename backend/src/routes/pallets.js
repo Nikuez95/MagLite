@@ -88,7 +88,7 @@ async function palletRoutes(fastify, options) {
       const generatedLabelsData = []; 
       
       for (const item of cart) {
-        const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date } = item;
+        const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
         
         const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
         const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
@@ -99,8 +99,8 @@ async function palletRoutes(fastify, options) {
           const code = `PAL-${dateStr}-${randomStr}`;
           
           await connection.query(
-            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [code, customer_id, product_id, quantity, item.units_per_box || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null]
+            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
+            [code, customer_id, product_id, quantity, item.units_per_box || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
           );
           
           await connection.query(

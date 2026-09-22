@@ -32,7 +32,8 @@ const Inbound = () => {
     warehouse: 'Settala',
     num_pallets: 1,
     notes: '',
-    expiration_date: ''
+    expiration_date: '',
+    arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
   });
 
   const getToken = () => localStorage.getItem('maglite_token');
@@ -121,13 +122,25 @@ const Inbound = () => {
       notes: formData.notes,
       client_pallet_number: formData.client_pallet_number,
       client_article_number: formData.client_article_number,
-      expiration_date: formData.expiration_date
+      expiration_date: formData.expiration_date,
+      arrival_date: formData.arrival_date
     };
 
     setCart(prev => [...prev, newItem]);
     
     // Reset partial form for quick entry
-    setFormData(prev => ({ ...prev, quantity: '', entry_uom: 'Base', batch: '', num_pallets: 1, notes: '', client_pallet_number: '', client_article_number: '', expiration_date: '' }));
+    setFormData(prev => ({ 
+      ...prev, 
+      quantity: '', 
+      entry_uom: 'Base', 
+      batch: '', 
+      num_pallets: 1, 
+      notes: '', 
+      client_pallet_number: '', 
+      client_article_number: '', 
+      expiration_date: '',
+      arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+    }));
   };
 
   const removeFromCart = (id) => {
@@ -275,9 +288,15 @@ const Inbound = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Scadenza (Opzionale)</label>
-                <input type="date" value={formData.expiration_date} onChange={e => setFormData({...formData, expiration_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue [color-scheme:dark]" />
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Scadenza (Opzionale)</label>
+                  <input type="date" value={formData.expiration_date} onChange={e => setFormData({...formData, expiration_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue [color-scheme:dark]" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Data di Arrivo *</label>
+                  <input type="datetime-local" required value={formData.arrival_date} onChange={e => setFormData({...formData, arrival_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue [color-scheme:dark]" />
+                </div>
               </div>
 
               <div>
