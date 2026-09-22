@@ -91,8 +91,8 @@ const OutboundZebra = () => {
 
   const handleConfirmQty = async () => {
     const q = parseFloat(qtyInput);
-    if (isNaN(q) || q <= 0 || q > currentItem.quantity_required) {
-      setError('Quantità non valida');
+    if (isNaN(q) || q !== parseFloat(currentItem.quantity_required)) {
+      setError(`Attenzione: devi prelevare esattamente ${currentItem.quantity_required} pezzi!`);
       return;
     }
     
@@ -128,6 +128,8 @@ const OutboundZebra = () => {
     }
   };
 
+  const [manualScanInput, setManualScanInput] = useState('');
+
   // UI Components
   if (step === 'SCAN_ORDER') {
     return (
@@ -137,7 +139,7 @@ const OutboundZebra = () => {
         </button>
         <ScanBarcode size={80} className="text-brand-blue mb-8 animate-pulse" />
         <h2 className="text-3xl font-black text-brand-white text-center mb-4">Inizia Prelievo</h2>
-        <p className="text-slate-400 text-center text-lg mb-8">Scansiona il codice a barre master del DDT per iniziare.</p>
+        <p className="text-slate-400 text-center text-lg mb-8">Scansiona o digita il codice del DDT per iniziare.</p>
         
         {error && (
           <div className="bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl text-rose-400 text-center font-bold mb-6 w-full">
@@ -150,14 +152,14 @@ const OutboundZebra = () => {
           ref={inputRef}
           autoFocus
           type="text"
-          placeholder="Oppure scrivi OUT-..."
+          placeholder="Scrivi OUT-..."
           className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-center text-xl font-bold w-full uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
           onBlur={(e) => { if(step === 'SCAN_ORDER') setTimeout(() => e.target.focus(), 500); }}
           value={scannedOrder}
           onChange={e => {
             const val = e.target.value.toUpperCase();
             setScannedOrder(val);
-            if(val.length >= 17) fetchOrder(val);
+            if(val.length >= 17 && val.startsWith('OUT-')) fetchOrder(val);
           }}
           onKeyDown={e => e.key === 'Enter' && fetchOrder(scannedOrder)}
         />
@@ -187,35 +189,43 @@ const OutboundZebra = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-89px)]">
-      {(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') && (
-        <div className="p-4 bg-slate-950 shrink-0">
-          <input 
-            ref={inputRef}
-            autoFocus
-            type="text"
-            placeholder="Attendo Scansione Laser..."
-            className="w-full bg-slate-900 border-2 border-brand-blue p-4 rounded-xl text-center text-lg font-bold uppercase focus:ring-0 text-brand-white"
-            onBlur={(e) => { 
-              if(step === 'SCAN_ORDER' || step === 'SCAN_PIN' || step === 'SCAN_PALLET') 
-                setTimeout(() => e.target.focus(), 500); 
-            }}
-            onChange={(e) => {
-               const val = e.target.value.toUpperCase();
-               if(val.length > 3) {
-                  // Mettiamo un piccolo debounce per assicurarci che abbia finito di digitare
-                  setTimeout(() => {
-                    handleScan(val);
-                    if (inputRef.current) inputRef.current.value = '';
-                  }, 200);
-               }
-            }} 
-            onKeyDown={(e) => {
-               if(e.key === 'Enter') {
-                  handleScan(e.target.value);
-                  e.target.value = '';
-               }
-            }}
-          />
+      {(step === 'SCAN_PIN' || step === 'SCAN_PALLET') && (
+        <div className="p-4 bg-slate-950 shrink-0 border-b border-slate-800">
+          <label className="block text-brand-blue font-bold text-xs uppercase tracking-wider mb-2">
+            Scansiona o digita il codice:
+          </label>
+          <div className="flex gap-2">
+            <input 
+              ref={inputRef}
+              autoFocus
+              type="text"
+              placeholder="Attendo Scansione..."
+              className="w-full bg-slate-900 border-2 border-brand-blue/50 p-4 rounded-xl text-lg font-bold uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
+              value={manualScanInput}
+              onBlur={(e) => { 
+                if(step === 'SCAN_PIN' || step === 'SCAN_PALLET') 
+                  setTimeout(() => e.target.focus(), 500); 
+              }}
+              onChange={(e) => setManualScanInput(e.target.value.toUpperCase())} 
+              onKeyDown={(e) => {
+                 if(e.key === 'Enter' && manualScanInput.trim() !== '') {
+                    handleScan(manualScanInput);
+                    setManualScanInput('');
+                 }
+              }}
+            />
+            <button 
+              onClick={() => {
+                if(manualScanInput.trim() !== '') {
+                  handleScan(manualScanInput);
+                  setManualScanInput('');
+                }
+              }}
+              className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold px-6 rounded-xl transition-colors shrink-0"
+            >
+              <ArrowRight size={24} />
+            </button>
+          </div>
         </div>
       )}
       {/* Intestazione Ordine in corso */}
@@ -257,6 +267,19 @@ const OutboundZebra = () => {
             <div className="flex-1 bg-slate-900 p-3 rounded-2xl">
               <p className="text-xs text-slate-500 uppercase font-bold mb-1">Da Prelevare</p>
               <p className="text-emerald-400 font-black text-2xl">{currentItem?.quantity_required} <span className="text-sm font-bold">{currentItem?.uom}</span></p>
+              {(() => {
+                const qty = parseFloat(currentItem?.quantity_required);
+                const upb = currentItem?.units_per_box;
+                const uom = currentItem?.uom;
+                if (!qty || !upb || upb <= 1 || (uom !== 'Pezzi' && uom !== 'Sfuso')) return null;
+                const boxes = Math.floor(qty / upb);
+                const pieces = qty % upb;
+                let text = '';
+                if (boxes > 0 && pieces > 0) text = `${boxes} SCAT. + ${pieces} sfusi`;
+                else if (boxes > 0) text = `${boxes} SCAT.`;
+                else text = `${pieces} sfusi`;
+                return <p className="text-emerald-500 text-sm font-bold mt-1">({text})</p>;
+              })()}
             </div>
           </div>
 
@@ -294,6 +317,21 @@ const OutboundZebra = () => {
           {step === 'INPUT_QTY' && (
             <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 flex flex-col gap-4">
               <p className="text-brand-white font-bold text-xl text-center">3. Conferma Quantità</p>
+              
+              {(() => {
+                const qty = parseFloat(currentItem?.quantity_required);
+                const upb = currentItem?.units_per_box;
+                const uom = currentItem?.uom;
+                if (!qty || !upb || upb <= 1 || (uom !== 'Pezzi' && uom !== 'Sfuso')) return null;
+                const boxes = Math.floor(qty / upb);
+                const pieces = qty % upb;
+                let text = '';
+                if (boxes > 0 && pieces > 0) text = `${boxes} SCAT. + ${pieces} sfusi`;
+                else if (boxes > 0) text = `${boxes} SCAT.`;
+                else text = `${pieces} sfusi`;
+                return <p className="text-emerald-400 font-bold text-center -mt-2 mb-2">Equivale a: {text}</p>;
+              })()}
+
               <div className="flex gap-2 items-center justify-center">
                 <input 
                   type="number" 

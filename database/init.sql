@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS PRODUCTS (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sku VARCHAR(100) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
-    uom ENUM('Pezzi', 'Scatole', 'Bancali') NOT NULL DEFAULT 'Scatole',
+    uom VARCHAR(50) NOT NULL DEFAULT 'Pezzi',
     units_per_box INT DEFAULT 1,
     boxes_per_pallet INT DEFAULT 1,
     customer_id INT NOT NULL,
@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   customer_id INT NOT NULL,
   exit_date DATE NOT NULL,
   status ENUM('PENDING', 'PICKING', 'READY', 'SHIPPED') DEFAULT 'PENDING',
+  client_ddt VARCHAR(100),
+  picking_operator VARCHAR(50),
+  start_picking_at DATETIME,
+  end_picking_at DATETIME,
+  shipped_at DATETIME,
   created_by VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id)
@@ -81,6 +86,7 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ITEMS (
   quantity_picked INT DEFAULT 0,
   requested_uom VARCHAR(50) DEFAULT NULL,
   status ENUM('PENDING', 'PICKED') DEFAULT 'PENDING',
+  picked_at DATETIME,
   FOREIGN KEY (order_id) REFERENCES OUTBOUND_ORDERS(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)
 );

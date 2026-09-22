@@ -23,7 +23,7 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound - Create new order
   fastify.post('/', async (request, reply) => {
-    const { customer_id, exit_date, items } = request.body; // items = [{ pallet_code, product_id, quantity_required }]
+    const { customer_id, exit_date, items, client_ddt } = request.body; // items = [{ pallet_code, product_id, quantity_required }]
     const connection = await db.getConnection();
     
     try {
@@ -34,15 +34,15 @@ async function outboundRoutes(fastify, options) {
       const username = request.user?.username || 'SYSTEM';
       
       const [orderRes] = await connection.query(
-        'INSERT INTO OUTBOUND_ORDERS (order_code, customer_id, exit_date, created_by) VALUES (?, ?, ?, ?)',
-        [orderCode, customer_id, exit_date, username]
+        'INSERT INTO OUTBOUND_ORDERS (order_code, customer_id, exit_date, created_by, client_ddt) VALUES (?, ?, ?, ?, ?)',
+        [orderCode, customer_id ?? null, exit_date ?? null, username, client_ddt ?? null]
       );
       const orderId = orderRes.insertId;
 
       for (const item of items) {
         await connection.query(
           'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
-          [orderId, item.pallet_code, item.product_id, item.quantity_required, item.requested_uom || null]
+          [orderId, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
         );
       }
       
@@ -76,7 +76,7 @@ async function outboundRoutes(fastify, options) {
   // PUT /api/outbound/:id - Edit an outbound order
   fastify.put('/:id', async (request, reply) => {
     const { id } = request.params;
-    const { customer_id, exit_date, items } = request.body;
+    const { customer_id, exit_date, items, client_ddt } = request.body;
     
     const userRole = request.user?.role;
     if (userRole !== 'developer' && userRole !== 'backoffice' && userRole !== 'admin') {
@@ -92,8 +92,8 @@ async function outboundRoutes(fastify, options) {
       if (orders[0].status === 'SHIPPED') throw new Error('Impossibile modificare un ordine già spedito.');
 
       await connection.query(
-        'UPDATE OUTBOUND_ORDERS SET customer_id = ?, exit_date = ?, status = "PENDING" WHERE id = ?',
-        [customer_id, exit_date, id]
+        'UPDATE OUTBOUND_ORDERS SET customer_id = ?, exit_date = ?, client_ddt = ?, status = "PENDING" WHERE id = ?',
+        [customer_id ?? null, exit_date ?? null, client_ddt ?? null, id]
       );
 
       await connection.query('DELETE FROM OUTBOUND_ITEMS WHERE order_id = ?', [id]);
@@ -101,7 +101,7 @@ async function outboundRoutes(fastify, options) {
       for (const item of items) {
         await connection.query(
           'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
-          [id, item.pallet_code, item.product_id, item.quantity_required, item.requested_uom || null]
+          [id, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
         );
       }
       
@@ -143,11 +143,10 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, pal.batch, loc.zone, loc.col, loc.pos 
+        SELECT i.*, p.name as product_name, p.uom as base_uom, pal.batch, pal.location
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
-        LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [id]);
       
@@ -218,7 +217,7 @@ async function outboundRoutes(fastify, options) {
       const order = orders[0];
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin
+        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, p.units_per_box, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
@@ -260,8 +259,12 @@ async function outboundRoutes(fastify, options) {
       doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9).text('DATA PREVISTA USCITA:', 315, infoTop + 10);
       doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(14).text(new Date(order.exit_date).toLocaleDateString('it-IT'), 315, infoTop + 25);
 
-      doc.y = infoTop + 80;
-      doc.moveDown();
+      doc.y = infoTop + 75;
+      
+      if (order.client_ddt) {
+        doc.fillColor('#0ea5e9').font('Helvetica-Bold').fontSize(11).text(`RIF. DDT CLIENTE: ${order.client_ddt}`, { align: 'center' });
+        doc.moveDown(0.5);
+      }
 
       // --- BARCODE SECTION ---
       doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(12).text('CODICE ORDINE: ' + order.order_code, { align: 'center' });
@@ -311,7 +314,18 @@ async function outboundRoutes(fastify, options) {
         doc.font('Helvetica').text(item.product_name, 150, y, { width: 155, lineBreak: false });
         doc.text(item.batch || '-', 315, y);
         doc.font('Helvetica-Bold').text(item.pallet_code, 390, y);
-        doc.fillColor('#0ea5e9').text(`${item.quantity_required} ${item.uom}`, 495, y, { lineBreak: false });
+        
+        let qtyText = `${item.quantity_required} ${item.uom}`;
+        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancale' && item.uom !== 'Bancali') {
+           const scatole = Math.floor(item.quantity_required / item.units_per_box);
+           const sfusi = item.quantity_required % item.units_per_box;
+           let breakDown = [];
+           if (scatole > 0) breakDown.push(`${scatole} SCAT.`);
+           if (sfusi > 0) breakDown.push(`${sfusi} SFUSI`);
+           qtyText = breakDown.join(' + ');
+        }
+
+        doc.fillColor('#0ea5e9').text(qtyText, 495, y, { lineBreak: false });
         doc.fillColor('#0f172a');
         
         doc.moveTo(40, y + 15).lineTo(550, y + 15).lineWidth(0.5).strokeColor('#e2e8f0').stroke();
@@ -339,7 +353,7 @@ async function outboundRoutes(fastify, options) {
       }
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin
+        SELECT i.*, p.name as product_name, p.units_per_box, COALESCE(i.requested_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
@@ -369,10 +383,11 @@ async function outboundRoutes(fastify, options) {
     try {
       // Verifica item
       const [items] = await db.query(`
-        SELECT i.*, pal.location, loc.pin as loc_pin
+        SELECT i.*, pal.location, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
+        JOIN PRODUCTS pr ON i.product_id = pr.id
         WHERE i.id = ? AND i.order_id = ?
       `, [item_id, order_id]);
 
@@ -390,14 +405,32 @@ async function outboundRoutes(fastify, options) {
       }
 
       // Aggiorna Riga Ordine
-      await db.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED" WHERE id = ?', [qty_picked, item_id]);
+      await db.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED", picked_at = CURRENT_TIMESTAMP WHERE id = ?', [qty_picked, item_id]);
+
+      // Log Audit Zebra
+      const operator = request.user?.username || 'ZEBRA';
+      await db.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'OUTBOUND_PICK',
+          `Prelevati ${qty_picked} di ${item.product_name} dalla paletta ${item.pallet_code}`,
+          'ZEBRA',
+          operator
+        ]
+      );
+
+      // Verifica se è il primo pezzo prelevato (per impostare l'inizio della bolla)
+      const [order] = await db.query('SELECT start_picking_at FROM OUTBOUND_ORDERS WHERE id = ?', [order_id]);
+      if (order.length > 0 && !order[0].start_picking_at) {
+        await db.query('UPDATE OUTBOUND_ORDERS SET start_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [operator, order_id]);
+      }
 
       // Controllo se l'intero ordine è pronto
       const [all_items] = await db.query('SELECT status FROM OUTBOUND_ITEMS WHERE order_id = ?', [order_id]);
       const allPicked = all_items.every(i => i.status === 'PICKED');
       
       if (allPicked) {
-        await db.query('UPDATE OUTBOUND_ORDERS SET status = "READY" WHERE id = ?', [order_id]);
+        await db.query('UPDATE OUTBOUND_ORDERS SET status = "READY", end_picking_at = CURRENT_TIMESTAMP WHERE id = ?', [order_id]);
       }
 
       return { success: true, all_picked: allPicked };
@@ -419,23 +452,26 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) throw new Error('Ordine non trovato');
       const order = orders[0];
 
-      if (order.status !== 'READY') {
-        throw new Error('L\'ordine non è nello stato READY. Attendere il completamento del prelievo Zebra.');
+      if (order.status === 'SHIPPED') {
+        throw new Error('L\'ordine è già stato confermato e spedito.');
       }
 
       const [items] = await connection.query('SELECT * FROM OUTBOUND_ITEMS WHERE order_id = ?', [order.id]);
 
       for (const item of items) {
+        // Usa quantity_picked se > 0 (Zebra usato), altrimenti assumi che dal PC si forzi quantity_required
+        const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
+
         // Scarica la giacenza
         const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ?', [item.pallet_code]);
         if (pallets.length > 0) {
           const pallet = pallets[0];
           let newQty;
 
-          if (item.requested_uom === 'Bancale' && parseFloat(item.quantity_picked) >= 1) {
+          if (item.requested_uom === 'Bancale' && actualPicked >= 1) {
             newQty = 0;
           } else {
-            let deduction = parseFloat(item.quantity_picked);
+            let deduction = actualPicked;
             if (item.requested_uom === 'Scatole' || item.requested_uom === 'Cartoni') {
               deduction *= (pallet.units_per_box || 1);
             }
@@ -455,7 +491,7 @@ async function outboundRoutes(fastify, options) {
             'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
             [
               'OUTBOUND_PICK', 
-              `Prelevato ${item.quantity_picked} da paletta ${pallet.pallet_code} (rimanenza: ${newQty})`,
+              `Prelevato ${actualPicked} da paletta ${pallet.pallet_code} (rimanenza: ${newQty})`,
               'BACKOFFICE',
               request.user?.username || 'SYSTEM'
             ]
@@ -463,7 +499,12 @@ async function outboundRoutes(fastify, options) {
         }
       }
 
-      await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED" WHERE id = ?', [order.id]);
+      if (!order.start_picking_at) {
+        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP, start_picking_at = CURRENT_TIMESTAMP, end_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [request.user?.username || 'SYSTEM', order.id]);
+        await connection.query('UPDATE OUTBOUND_ITEMS SET picked_at = CURRENT_TIMESTAMP WHERE order_id = ? AND picked_at IS NULL', [order.id]);
+      } else {
+        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+      }
 
       await connection.commit();
       connection.release();
@@ -480,13 +521,15 @@ async function outboundRoutes(fastify, options) {
 
   // GET /api/outbound/search-pallets - Aiuto per PC per cercare palette disponibili
   fastify.get('/search-pallets', async (request, reply) => {
-    const { customer_id, exclude_order_id } = request.query;
+    const { customer_id, exclude_order_id, include_pending } = request.query;
     try {
       let excludeCondition = '';
       if (exclude_order_id && exclude_order_id !== 'undefined') {
         excludeCondition = `AND oo.id != ${db.escape(exclude_order_id)}`;
       }
       
+      const statusCondition = include_pending === 'true' ? "IN ('STOCKED', 'PENDING')" : "= 'STOCKED'";
+
       const [pallets] = await db.query(`
         SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.uom, p.units_per_box, p.boxes_per_pallet,
                (pal.quantity - COALESCE((
@@ -506,7 +549,7 @@ async function outboundRoutes(fastify, options) {
         FROM PALLETS pal
         JOIN PRODUCTS p ON pal.product_id = p.id
         LEFT JOIN LOCATIONS l ON pal.location = l.barcode
-        WHERE pal.customer_id = ? AND pal.status = 'STOCKED'
+        WHERE pal.customer_id = ? AND pal.status ${statusCondition}
         HAVING available_quantity > 0
         ORDER BY pal.expiration_date ASC, pal.created_at ASC
       `, [customer_id]);

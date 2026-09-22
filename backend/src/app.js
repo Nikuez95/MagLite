@@ -62,6 +62,10 @@ const start = async () => {
       fastify.log.info(`Socket Client Connected: ${socket.id}`);
     });
 
+    // Run Migrations
+    const runMigrations = require('./scripts/migrate');
+    await runMigrations();
+
     await fastify.ready();
     await fastify.listen({ port, host });
     fastify.log.info(`🚀 MagLite Backend in ascolto su ${host}:${port}`);

@@ -1,0 +1,1 @@
+const mysql = require('mysql2/promise'); async function run() { const c = await mysql.createConnection({host:'127.0.0.1', user:'maglite_user', password:'maglite_pass', database:'maglite_db'}); await c.query('ALTER TABLE PRODUCTS MODIFY uom VARCHAR(50) NOT NULL DEFAULT \'Pezzi\';'); await c.end(); console.log('OK'); } run().catch(console.error);  

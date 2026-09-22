@@ -56,6 +56,22 @@ const Inbound = () => {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    // Auto-calcolo quantità
+    const upb = parseFloat(formData.units_per_box) || 0;
+    const bpp = parseFloat(formData.boxes_per_pallet) || 0;
+
+    if (bpp > 0) {
+      if (formData.entry_uom === 'Base' && upb > 0) {
+        setFormData(prev => ({ ...prev, quantity: (upb * bpp).toString() }));
+      } else if (formData.entry_uom === 'Scatole') {
+        setFormData(prev => ({ ...prev, quantity: bpp.toString() }));
+      } else if (formData.entry_uom === 'Bancale') {
+        setFormData(prev => ({ ...prev, quantity: '1' }));
+      }
+    }
+  }, [formData.units_per_box, formData.boxes_per_pallet, formData.entry_uom]);
+
   const handleCreateProduct = async (inputValue) => {
     if (!formData.customer_id) {
       alert('Seleziona prima il Cliente Proprietario!');
@@ -67,7 +83,7 @@ const Inbound = () => {
       const payload = { 
         sku, 
         name: inputValue, 
-        uom: 'Scatole', 
+        uom: 'Pezzi', 
         customer_id: formData.customer_id 
       };
       
@@ -116,6 +132,7 @@ const Inbound = () => {
       product_name: product,
       quantity: actualQty,
       units_per_box: upb,
+      boxes_per_pallet: bpp,
       batch: formData.batch,
       warehouse: formData.warehouse,
       num_pallets: formData.num_pallets,
@@ -190,6 +207,38 @@ const Inbound = () => {
     input: base => ({ ...base, color: '#f8fafc' })
   };
 
+  const renderQuantityHint = () => {
+    if (!formData.quantity) return null;
+    let actualQtyForHint = parseFloat(formData.quantity) || 0;
+    const upb = parseFloat(formData.units_per_box) || 1;
+    const bpp = parseFloat(formData.boxes_per_pallet) || 1;
+
+    if (formData.entry_uom === 'Scatole') actualQtyForHint *= upb;
+    else if (formData.entry_uom === 'Bancale') actualQtyForHint *= (upb * bpp);
+
+    const productObj = products.find(p => p.value === formData.product_id);
+    const prodUom = productObj?.raw?.uom || 'Pezzi';
+
+    if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali') {
+      const scatole = Math.floor(actualQtyForHint / upb);
+      const sfusi = actualQtyForHint % upb;
+      return (
+        <div className="mt-2 text-xs font-bold text-slate-400">
+          Totale base: <span className="text-brand-blue">{actualQtyForHint} {prodUom}</span> 
+          <span className="ml-2 font-normal text-[10px] uppercase tracking-wider text-slate-500">
+            [{scatole} Scat.{sfusi > 0 ? ` + ${sfusi} Sfusi` : ''}]
+          </span>
+        </div>
+      );
+    } else {
+      return (
+        <div className="mt-2 text-xs font-bold text-slate-400">
+          Totale base: <span className="text-brand-blue">{actualQtyForHint} {prodUom}</span>
+        </div>
+      );
+    }
+  };
+
   const totalPalletsToGenerate = cart.reduce((acc, curr) => acc + curr.num_pallets, 0);
 
   return (
@@ -240,21 +289,21 @@ const Inbound = () => {
                     setFormData({
                       ...formData, 
                       product_id: val.value,
-                      units_per_box: prod?.raw?.units_per_box || 1,
-                      boxes_per_pallet: prod?.raw?.boxes_per_pallet || 1
+                      units_per_box: prod?.raw?.units_per_box || '',
+                      boxes_per_pallet: prod?.raw?.boxes_per_pallet || ''
                     });
                   }}
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-6">
+              <div className="grid grid-cols-2 gap-6 items-end">
                 <div>
-                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola (su questa paletta)</label>
-                  <input type="number" min="1" value={formData.units_per_box} onChange={e => setFormData({...formData, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
+                  <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Unità/Pezzi per Scatola (su questa paletta)</label>
+                  <input type="number" min="0" value={formData.units_per_box} onChange={e => setFormData({...formData, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Scatole per Paletta</label>
-                  <input type="number" min="1" value={formData.boxes_per_pallet} onChange={e => setFormData({...formData, boxes_per_pallet: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
+                  <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Scatole per Paletta</label>
+                  <input type="number" min="0" value={formData.boxes_per_pallet} onChange={e => setFormData({...formData, boxes_per_pallet: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
               </div>
 
@@ -262,6 +311,7 @@ const Inbound = () => {
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Quantità *</label>
                   <input required type="number" step="0.01" value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 50" />
+                  {renderQuantityHint()}
                 </div>
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">UDM Inserimento</label>

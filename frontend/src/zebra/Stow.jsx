@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import Select from 'react-select';
 import { Scan, Box, MapPin, CheckCircle2, AlertCircle, Edit3, ArrowLeft } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 
@@ -15,26 +16,48 @@ const Stow = () => {
   const [pinInput, setPinInput] = useState('');
   
   // Stato per Override Location (Assegna nuova posizione)
-  const [overrideData, setOverrideData] = useState({ zone: '', col: '', pos: '' });
-  const [availableZones, setAvailableZones] = useState([]);
+  const [freeLocations, setFreeLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(null);
 
   const getToken = () => localStorage.getItem('maglite_token');
 
-  // Carica le zone esistenti per la tendina
+  // Carica le posizioni vuote
   useEffect(() => {
-    const fetchZones = async () => {
+    const fetchLocations = async () => {
       try {
         const res = await axios.get(`http://${window.location.hostname}:3000/api/locations`, {
           headers: { Authorization: `Bearer ${getToken()}` }
         });
-        const zones = [...new Set(res.data.map(l => l.zone))];
-        setAvailableZones(zones);
+        const free = res.data.filter(l => !l.pallet_code);
+        setFreeLocations(free);
       } catch (err) {
-        console.error("Errore fetch zone");
+        console.error("Errore fetch locations");
       }
     };
-    fetchZones();
+    fetchLocations();
   }, []);
+
+  const selectStyles = {
+    control: (base, state) => ({
+      ...base,
+      backgroundColor: '#0f172a',
+      borderColor: state.isFocused ? '#38bdf8' : '#334155',
+      borderRadius: '0.75rem',
+      padding: '0.5rem',
+      boxShadow: 'none',
+      '&:hover': { borderColor: '#38bdf8' }
+    }),
+    menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #334155' }),
+    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc', cursor: 'pointer' }),
+    singleValue: base => ({ ...base, color: '#f8fafc', fontWeight: 'bold' }),
+    input: base => ({ ...base, color: '#f8fafc' }),
+    placeholder: base => ({ ...base, color: '#94a3b8' })
+  };
+
+  const locationOptions = freeLocations.map(l => ({
+    value: l.barcode,
+    label: `${l.zone} | C: ${l.col} | P: ${l.pos}`
+  }));
 
   const handleScan = async (barcodeStr) => {
     const barcode = barcodeStr.trim();
@@ -69,7 +92,7 @@ const Stow = () => {
           setStatus('WAITING_PIN');
         } else {
           // Se non ha una posizione (di default nuova merce), chiedi dove stivarla
-          setOverrideData({ zone: '', col: '', pos: '' });
+          setSelectedLocation(null);
           setStatus('OVERRIDE_LOCATION');
         }
       } catch (err) {
@@ -118,7 +141,7 @@ const Stow = () => {
   };
 
   const handleNumpad = (num) => {
-    if (pinInput.length < 5) {
+    if (pinInput.length < 2) {
       setPinInput(prev => prev + num);
     }
   };
@@ -126,6 +149,8 @@ const Stow = () => {
   const deleteNumpad = () => {
     setPinInput(prev => prev.slice(0, -1));
   };
+
+  const [manualScanInput, setManualScanInput] = useState('');
 
   return (
     <div className={`flex-1 p-6 flex flex-col items-center justify-center text-center transition-colors duration-300 
@@ -142,27 +167,34 @@ const Stow = () => {
             Spara il codice a barre della <b>Paletta</b> che stai trasportando.
           </p>
           
-          <input 
-            ref={inputRef}
-            type="text"
-            placeholder="Codice Paletta..."
-            className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-center text-xl font-bold w-full max-w-xs uppercase focus:border-brand-blue focus:ring-0 text-brand-white mb-4"
-            onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 500); }}
-            onChange={(e) => {
-               const val = e.target.value.toUpperCase();
-               // Se è lungo abbastanza per essere una paletta valida, proviamo a inviare
-               if(val.length >= 10 && val.startsWith('PAL-')) {
-                  handleScan(val);
-                  e.target.value = '';
-               }
-            }} 
-            onKeyDown={(e) => {
-               if(e.key === 'Enter') {
-                  handleScan(e.target.value);
-                  e.target.value = '';
-               }
-            }}
-          />
+          <div className="flex gap-2 w-full max-w-xs">
+            <input 
+              ref={inputRef}
+              type="text"
+              placeholder="Scrivi o Scansiona..."
+              className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-lg font-bold uppercase focus:border-brand-blue focus:ring-0 text-brand-white w-full"
+              value={manualScanInput}
+              onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 500); }}
+              onChange={(e) => setManualScanInput(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                 if(e.key === 'Enter' && manualScanInput.trim() !== '') {
+                    handleScan(manualScanInput);
+                    setManualScanInput('');
+                 }
+              }}
+            />
+            <button 
+              onClick={() => {
+                if(manualScanInput.trim() !== '') {
+                  handleScan(manualScanInput);
+                  setManualScanInput('');
+                }
+              }}
+              className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold px-4 rounded-xl transition-colors shrink-0"
+            >
+              Vai
+            </button>
+          </div>
         </div>
       )}
 
@@ -183,7 +215,7 @@ const Stow = () => {
             <p className="text-slate-400 text-sm mb-4">Leggi e digita il PIN scritto sullo scaffale:</p>
             
             <div className="w-full flex gap-2 justify-center mb-6">
-              {[0, 1, 2, 3, 4].map((i) => (
+              {[0, 1].map((i) => (
                 <div key={i} className={`w-12 h-14 rounded-xl flex items-center justify-center text-2xl font-bold border-2 ${i < pinInput.length ? 'border-brand-blue text-brand-white bg-slate-800' : 'border-slate-800 text-slate-600 bg-slate-950'}`}>
                   {pinInput[i] || ''}
                 </div>
@@ -202,7 +234,7 @@ const Stow = () => {
 
             <button 
               onClick={() => confirmStow(suggestedLocation, pinInput)}
-              disabled={pinInput.length === 0}
+              disabled={pinInput.length !== 2}
               className="w-full py-4 bg-brand-blue text-brand-black text-xl font-black rounded-2xl active:bg-sky-400 disabled:opacity-50"
             >
               Conferma PIN
@@ -217,46 +249,30 @@ const Stow = () => {
             <ArrowLeft size={20} /> Indietro
           </button>
           
-          <h3 className="text-2xl font-black text-brand-white mb-2">Nuova Posizione</h3>
-          <p className="text-slate-400 text-sm mb-6">Dove hai deciso di stivare la merce?</p>
+          <h3 className="text-2xl font-black text-brand-white mb-2">Scegli Posizione Libera</h3>
+          <p className="text-slate-400 text-sm mb-6">Seleziona una postazione vuota dal menu.</p>
 
           <div className="space-y-4 mb-8">
-            <div>
-              <label className="block text-brand-blue font-bold text-xs uppercase mb-2">Zona (es. CELLA2)</label>
-              <input list="zones-list" value={overrideData.zone} onChange={e => setOverrideData({...overrideData, zone: e.target.value.toUpperCase()})} className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-4 text-brand-white text-xl uppercase" placeholder="Es. CELLA2" maxLength={10} />
-              <datalist id="zones-list">
-                {availableZones.map(z => <option key={z} value={z} />)}
-              </datalist>
-            </div>
-            
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <label className="block text-brand-blue font-bold text-xs uppercase mb-2">Colonna</label>
-                <input type="number" value={overrideData.col} onChange={e => setOverrideData({...overrideData, col: e.target.value.padStart(2, '0')})} className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-4 text-brand-white text-xl text-center" placeholder="01" />
-              </div>
-              <div className="flex-1">
-                <label className="block text-brand-blue font-bold text-xs uppercase mb-2">Piano</label>
-                <input type="number" value={overrideData.pos} onChange={e => setOverrideData({...overrideData, pos: e.target.value.padStart(2, '0')})} className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-4 text-brand-white text-xl text-center" placeholder="11" />
-              </div>
-            </div>
-            
-            <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 text-center mt-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Codice Generato</p>
-              <p className="text-3xl font-mono text-brand-white">
-                {overrideData.zone || '?'}-{overrideData.col || '?'}-{overrideData.pos || '?'}
-              </p>
-            </div>
+            <Select 
+              styles={selectStyles}
+              options={locationOptions}
+              placeholder="Cerca scaffale libero..."
+              value={locationOptions.find(o => o.value === selectedLocation)}
+              onChange={val => setSelectedLocation(val ? val.value : null)}
+              isClearable
+              isSearchable
+            />
           </div>
 
           <button 
             onClick={() => {
-              if(!overrideData.zone || !overrideData.col || !overrideData.pos) { alert("Completa i campi!"); return; }
-              const manualLoc = `${overrideData.zone}-${overrideData.col}-${overrideData.pos}`;
-              setSuggestedLocation(manualLoc);
+              if(!selectedLocation) { alert("Seleziona una posizione!"); return; }
+              setSuggestedLocation(selectedLocation);
               setPinInput('');
               setStatus('WAITING_PIN'); // Torna alla validazione PIN per questa nuova posizione
             }}
-            className="w-full py-4 bg-brand-blue text-brand-black text-xl font-black rounded-2xl active:bg-sky-400"
+            disabled={!selectedLocation}
+            className="w-full py-4 bg-brand-blue text-brand-black text-xl font-black rounded-2xl active:bg-sky-400 disabled:opacity-50"
           >
             Conferma e Inserisci PIN
           </button>

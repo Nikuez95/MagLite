@@ -362,16 +362,16 @@ const ProductsManagement = () => {
                           )}
                         </td>
                         <td className="p-4 text-center">
-                          {p.units_per_box > 1 ? (
+                          {p.units_per_box > 1 && p.uom !== 'Scatole' && p.uom !== 'Bancali' && p.uom !== 'Bancale' ? (
                             <div className="flex flex-col items-center">
-                              <span className="font-bold text-brand-blue">{p.quantity}</span>
+                              <span className="font-bold text-brand-blue">{p.quantity} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></span>
                               <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">
                                 {Math.floor(p.quantity / p.units_per_box)} Scat.
                                 {(p.quantity % p.units_per_box) > 0 && ` + ${(p.quantity % p.units_per_box)} Sfusi`}
                               </span>
                             </div>
                           ) : (
-                            <span className="font-bold text-brand-blue">{p.quantity}</span>
+                            <span className="font-bold text-brand-blue">{p.quantity} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></span>
                           )}
                         </td>
                         <td className="p-4 text-slate-300 text-sm font-medium">
@@ -427,19 +427,23 @@ const ProductsManagement = () => {
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">SKU</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Nome Prodotto</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Cliente</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">UDM</th>
+                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Giacenza Totale</th>
+                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">UDM Base</th>
                       <th className="p-4 font-semibold uppercase tracking-wider text-xs">Note</th>
                       {isDeveloper && <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
                     {filteredProducts.length === 0 ? (
-                      <tr><td colSpan="6" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
-                    ) : filteredProducts.map(p => (
+                      <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
+                    ) : filteredProducts.map(p => {
+                      const totalStock = stock.filter(pal => pal.product_id === p.id && pal.status !== 'SHIPPED').reduce((acc, curr) => acc + curr.quantity, 0);
+                      return (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                         <td className="p-4 font-mono text-brand-blue text-xs font-bold">{p.sku}</td>
                         <td className="p-4 font-bold">{p.name}</td>
                         <td className="p-4 text-slate-400">{p.customer_name}</td>
+                        <td className="p-4 font-bold text-brand-blue">{totalStock} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></td>
                         <td className="p-4 text-slate-300 text-sm">{p.uom}</td>
                         <td className="p-4 text-slate-400 text-xs">{p.notes || '-'}</td>
                         {isDeveloper && (
@@ -450,7 +454,8 @@ const ProductsManagement = () => {
                           </td>
                         )}
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </>
               )}
@@ -482,6 +487,8 @@ const ProductsManagement = () => {
                     <option value="Pezzi">Pezzi</option>
                     <option value="Scatole">Scatole</option>
                     <option value="Bancali">Bancali (Pallet)</option>
+                    <option value="KG">KG</option>
+                    <option value="Metro Cubo">Metro Cubo (m³)</option>
                   </select>
                 </div>
                 <div>
@@ -496,10 +503,6 @@ const ProductsManagement = () => {
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola</label>
                   <input type="number" min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
-                </div>
-                <div>
-                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Scatole per Paletta</label>
-                  <input type="number" min="1" value={newProduct.boxes_per_pallet} onChange={e => setNewProduct({...newProduct, boxes_per_pallet: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
                 </div>
               </div>
               <div>

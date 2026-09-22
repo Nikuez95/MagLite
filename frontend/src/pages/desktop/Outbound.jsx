@@ -1,8 +1,73 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
-import { Truck, Plus, Printer, CheckCircle, PackageSearch, X, Loader2, Trash2 } from 'lucide-react';
+import { Truck, Search, Plus, Trash2, Printer, CheckCircle, Clock, Eye, XCircle, PackageSearch, X, Loader2 } from 'lucide-react';
 import { jwtDecode } from 'jwt-decode';
+
+function TimelineModal({ order, onClose, token }) {
+  const [details, setDetails] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    axios.get(`http://${window.location.hostname}:3000/api/outbound/${order.id}/details`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(res => {
+      setDetails(res.data);
+      setLoading(false);
+    }).catch(err => {
+      console.error(err);
+      setLoading(false);
+    });
+  }, [order.id, token]);
+
+  if (loading) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-2xl w-full shadow-2xl relative animate-fade-in-up">
+        <button onClick={onClose} className="absolute top-6 right-6 text-slate-500 hover:text-brand-white transition-colors"><XCircle size={24} /></button>
+        <h2 className="text-2xl font-bold text-brand-white mb-2 flex items-center gap-3">
+          <Clock className="text-brand-blue" /> Tempistiche Spedizione
+        </h2>
+        <p className="text-slate-400 font-mono mb-6 text-sm">{order.order_code} {order.client_ddt && `• DDT Cliente: ${order.client_ddt}`}</p>
+        
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 rounded-xl border border-slate-800">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Inizio Lavorazione (Presa in carico)</p>
+              <p className="text-brand-white font-mono">{order.start_picking_at ? new Date(order.start_picking_at).toLocaleString('it-IT') : '-'}</p>
+              <p className="text-xs text-brand-blue mt-1">Operatore: {order.picking_operator || '-'}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Fine Lavorazione (Pronto)</p>
+              <p className="text-brand-white font-mono">{order.end_picking_at ? new Date(order.end_picking_at).toLocaleString('it-IT') : '-'}</p>
+            </div>
+            <div className="col-span-2 pt-4 border-t border-slate-800 mt-2">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Spedito ed Evaso (Conferma Definitiva)</p>
+              <p className="text-brand-white font-mono">{order.shipped_at ? new Date(order.shipped_at).toLocaleString('it-IT') : '-'}</p>
+            </div>
+          </div>
+          
+          <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider mb-2">Dettaglio Tempi di Prelievo Articoli</h3>
+          <div className="max-h-64 overflow-y-auto pr-2 space-y-2">
+            {details?.items.map(item => (
+              <div key={item.id} className="flex justify-between items-center p-3 bg-slate-950 rounded-lg border border-slate-800">
+                <div>
+                  <p className="text-xs font-bold text-brand-white">{item.product_name}</p>
+                  <p className="text-[10px] text-slate-400 font-mono">Paletta: {item.pallet_code}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-mono text-brand-blue">{item.picked_at ? new Date(item.picked_at).toLocaleTimeString('it-IT') : 'In attesa'}</p>
+                  <p className="text-[10px] text-slate-500">{item.status}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const Outbound = () => {
   const [orders, setOrders] = useState([]);
@@ -25,8 +90,16 @@ const Outbound = () => {
   const [pickQty, setPickQty] = useState('');
   const [pickUom, setPickUom] = useState('Bancale');
 
-  // Custom Delete Modal
-  const [deleteConfirm, setDeleteConfirm] = useState({show: false, id: null, code: '', expected: '', input: ''});
+  const [deleteConfirm, setDeleteConfirm] = useState({ show: false, id: null, code: '', expected: '', input: '' });
+  
+  // Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [timelineModal, setTimelineModal] = useState(null);
+  
+  const [includePending, setIncludePending] = useState(false);
 
   const token = localStorage.getItem('maglite_token');
   const userRole = token ? jwtDecode(token).role : '';
@@ -35,6 +108,13 @@ const Outbound = () => {
     fetchOrders();
     fetchBaseData();
   }, []);
+
+  const toggleIncludePending = (checked) => {
+    setIncludePending(checked);
+    if (newOrder.customer_id) {
+      searchPalletsByCustomer(newOrder.customer_id, newOrder.id, checked);
+    }
+  };
 
   const fetchOrders = async () => {
     try {
@@ -63,18 +143,17 @@ const Outbound = () => {
     try {
       const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/${orderId}/details`, { headers: { Authorization: `Bearer ${token}` }});
       const { order, items } = res.data;
-      setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0] });
+      setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0], client_ddt: order.client_ddt || '' });
       setCart(items.map(i => ({
         pallet_code: i.pallet_code,
         product_id: i.product_id,
         quantity_required: i.quantity_required,
+        requested_uom: i.requested_uom || 'Pezzi',
         product_name: i.product_name,
-        locStr: i.zone ? `${i.zone} C:${i.col} L:${i.pos}` : 'NO POS.',
-        batch: i.batch,
-        requested_uom: i.requested_uom
+        locStr: i.location || 'NO POS.',
+        batch: i.batch
       })));
-      setPalletSearchTerm('');
-      searchPalletsByCustomer(order.customer_id, order.id);
+      searchPalletsByCustomer(order.customer_id, order.id, includePending);
       setShowModal(true);
     } catch (err) {
       alert('Errore caricamento spedizione');
@@ -90,13 +169,17 @@ const Outbound = () => {
     }
   };
 
-  const searchPalletsByCustomer = async (customerId, excludeOrderId = null) => {
+  const searchPalletsByCustomer = async (customerId, excludeOrderId = null, pendingOpt) => {
     if (!customerId) {
       setAvailablePallets([]);
       return;
     }
     try {
-      const url = `http://${window.location.hostname}:3000/api/outbound/search-pallets?customer_id=${customerId}${excludeOrderId ? '&exclude_order_id=' + excludeOrderId : ''}`;
+      const pendingFlag = pendingOpt !== undefined ? pendingOpt : includePending;
+      let url = `http://${window.location.hostname}:3000/api/outbound/search-pallets?customer_id=${customerId}`;
+      if (excludeOrderId) url += `&exclude_order_id=${excludeOrderId}`;
+      if (pendingFlag) url += `&include_pending=true`;
+      
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` }});
       setAvailablePallets(res.data);
     } catch (err) {
@@ -107,7 +190,7 @@ const Outbound = () => {
   const handleCustomerChange = (val) => {
     setNewOrder({...newOrder, customer_id: val.value}); 
     setPalletSearchTerm('');
-    searchPalletsByCustomer(val.value);
+    searchPalletsByCustomer(val.value, newOrder.id, includePending);
   };
 
   const addPalletToCart = (pallet, qty, requestedUom) => {
@@ -155,6 +238,7 @@ const Outbound = () => {
       const payload = {
         customer_id: newOrder.customer_id,
         exit_date: newOrder.exit_date,
+        client_ddt: newOrder.client_ddt || null,
         items: cart.map(c => ({
           pallet_code: c.pallet_code,
           product_id: c.product_id,
@@ -212,6 +296,21 @@ const Outbound = () => {
     placeholder: base => ({ ...base, color: '#475569' })
   };
 
+  const filteredOrders = orders.filter(o => {
+    let match = true;
+    if (statusFilter && o.status !== statusFilter) match = false;
+    if (dateFrom && o.exit_date.split('T')[0] < dateFrom) match = false;
+    if (dateTo && o.exit_date.split('T')[0] > dateTo) match = false;
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      const codeMatch = o.order_code.toLowerCase().includes(term);
+      const customerMatch = (o.customer_name || '').toLowerCase().includes(term);
+      const ddtMatch = (o.client_ddt || '').toLowerCase().includes(term);
+      if (!codeMatch && !customerMatch && !ddtMatch) match = false;
+    }
+    return match;
+  });
+
   return (
     <div className="p-8 max-w-7xl mx-auto animate-fade-in">
       <div className="flex justify-between items-center mb-8">
@@ -227,13 +326,41 @@ const Outbound = () => {
         </button>
       </div>
 
+      {/* Filters */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 mb-6 flex flex-wrap gap-4 shadow-xl">
+        <div className="flex-1 min-w-[200px] relative">
+          <input 
+            type="text" 
+            placeholder="Cerca ordine, cliente o DDT..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl py-3 pl-10 pr-4 focus:ring-brand-blue"
+          />
+          <Search size={18} className="absolute left-4 top-3.5 text-slate-500" />
+        </div>
+        <div className="w-[180px]">
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue">
+            <option value="">Tutti gli stati</option>
+            <option value="PENDING">In Attesa</option>
+            <option value="PICKING">In Lavorazione (Zebra)</option>
+            <option value="READY">Pronto</option>
+            <option value="SHIPPED">Spedito</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="bg-slate-950 border border-slate-800 text-slate-400 rounded-xl p-3 [color-scheme:dark]" title="Da data" />
+          <span className="text-slate-500">-</span>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="bg-slate-950 border border-slate-800 text-slate-400 rounded-xl p-3 [color-scheme:dark]" title="A data" />
+        </div>
+      </div>
+
       {/* Orders Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-950/50">
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Codice Ordine</th>
+                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">DDT / Ordine</th>
                 <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Data Uscita</th>
                 <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Cliente</th>
                 <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Stato</th>
@@ -241,23 +368,35 @@ const Outbound = () => {
               </tr>
             </thead>
             <tbody>
-              {orders.length === 0 ? (
+              {filteredOrders.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="p-8 text-center text-slate-500">Nessuna spedizione registrata</td>
+                  <td colSpan="5" className="p-8 text-center text-slate-500">Nessuna spedizione corrisponde ai filtri</td>
                 </tr>
-              ) : orders.map(o => (
+              ) : filteredOrders.map(o => (
                 <tr key={o.id} className="hover:bg-slate-800/50 transition-colors group">
-                  <td className="p-4 font-mono font-bold text-brand-white">{o.order_code}</td>
+                  <td className="p-4 font-mono font-bold text-brand-white">
+                    <div className="flex flex-col">
+                      <span>{o.order_code}</span>
+                      {o.client_ddt && <span className="text-xs text-brand-blue uppercase">DDT Cliente: {o.client_ddt}</span>}
+                    </div>
+                  </td>
                   <td className="p-4 text-slate-300">{new Date(o.exit_date).toLocaleDateString('it-IT')}</td>
                   <td className="p-4 font-bold text-brand-blue">{o.customer_name}</td>
                   <td className="p-4">
                     {o.status === 'PENDING' && <span className="bg-slate-500/20 text-slate-400 px-3 py-1 rounded-full text-xs font-bold border border-slate-500/30">ATTESA</span>}
-                    {o.status === 'PICKING' && <span className="bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full text-xs font-bold border border-amber-500/30">IN PRELIEVO (ZEBRA)</span>}
-                    {o.status === 'READY' && <span className="bg-emerald-500/20 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/30">PRONTO AL CARICO</span>}
+                    {o.status === 'PICKING' && <span className="bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full text-xs font-bold border border-amber-500/30">IN PRELIEVO</span>}
+                    {o.status === 'READY' && <span className="bg-emerald-500/20 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/30">PRONTO</span>}
                     {o.status === 'SHIPPED' && <span className="bg-sky-500/20 text-sky-400 px-3 py-1 rounded-full text-xs font-bold border border-sky-500/30">SPEDITO</span>}
                   </td>
                   <td className="p-4 text-right flex justify-end gap-2">
                     <div className="flex gap-2">
+                      <button 
+                        onClick={() => setTimelineModal(o)}
+                        className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-blue rounded-lg transition-colors"
+                        title="Vedi Dettagli e Tempistiche (Timeline)"
+                      >
+                        <Eye size={18} />
+                      </button>
                       <button 
                         onClick={() => window.open(`http://${window.location.hostname}:3000/api/outbound/${o.order_code}/pdf?token=${token}`, '_blank')}
                         className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-lg transition-colors"
@@ -284,11 +423,11 @@ const Outbound = () => {
                         </>
                       )}
                     </div>
-                    {o.status === 'READY' && (
+                    {o.status !== 'SHIPPED' && (
                       <button 
                         onClick={() => confirmOrder(o.order_code)}
                         className="p-2 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 rounded-lg transition-colors font-bold"
-                        title="Conferma spedizione ed evasione magazzino"
+                        title="Conferma spedizione ed evasione magazzino (Forza senza Zebra)"
                       >
                         <CheckCircle size={18} />
                       </button>
@@ -300,6 +439,15 @@ const Outbound = () => {
           </table>
         </div>
       </div>
+
+      {/* Timeline Modal */}
+      {timelineModal && (
+        <TimelineModal 
+          order={timelineModal} 
+          onClose={() => setTimelineModal(null)} 
+          token={token}
+        />
+      )}
 
       {/* New Order Modal */}
       {showModal && (
@@ -313,23 +461,51 @@ const Outbound = () => {
             </div>
             
             <div className="flex gap-4 mb-6">
-              <div className="flex-1">
-                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Cliente (Proprietario Merce)</label>
-                <Select 
-                  styles={selectStyles}
-                  options={customers}
-                  onChange={handleCustomerChange}
-                  placeholder="Seleziona Cliente..."
-                />
+              <div className="flex-1 grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Cliente Proprietario *</label>
+                  <Select 
+                    styles={selectStyles}
+                    options={customers}
+                    placeholder="Seleziona cliente..."
+                    value={customers.find(c => c.value === newOrder.customer_id)}
+                    onChange={val => {
+                      handleCustomerChange(val);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">DDT Cliente (Riferimento)</label>
+                  <input 
+                    type="text" 
+                    value={newOrder.client_ddt || ''} 
+                    onChange={e => setNewOrder({...newOrder, client_ddt: e.target.value})} 
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-2.5 focus:ring-brand-blue" 
+                    placeholder="Es. 3025"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Data di Uscita</label>
-                <input 
-                  type="date" 
-                  value={newOrder.exit_date} 
-                  onChange={e => setNewOrder({...newOrder, exit_date: e.target.value})}
-                  className="bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue"
-                />
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Data di Uscita</label>
+                  <input 
+                    type="date" 
+                    value={newOrder.exit_date} 
+                    onChange={e => setNewOrder({...newOrder, exit_date: e.target.value})} 
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-2.5 [color-scheme:dark] focus:ring-brand-blue" 
+                  />
+                </div>
+                <div className="flex-1 flex items-end">
+                  <label className="flex items-center gap-2 cursor-pointer p-2.5 bg-slate-950 border border-slate-800 rounded-xl w-full h-[42px] hover:border-brand-blue transition-colors">
+                    <input 
+                      type="checkbox" 
+                      checked={includePending} 
+                      onChange={e => toggleIncludePending(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-700 text-brand-blue focus:ring-brand-blue bg-slate-900"
+                    />
+                    <span className="text-xs font-bold text-slate-300">Permetti prelievo merce "In Attesa"</span>
+                  </label>
+                </div>
               </div>
             </div>
 

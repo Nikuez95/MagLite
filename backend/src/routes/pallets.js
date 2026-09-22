@@ -60,7 +60,7 @@ async function palletRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box
+        SELECT p.*, pr.name as product_name, pr.uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -122,6 +122,14 @@ async function palletRoutes(fastify, options) {
             expiration_date
           });
         }
+
+        // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI INSERITI IN INBOUND
+        if (item.units_per_box || item.boxes_per_pallet) {
+          await connection.query(
+            'UPDATE PRODUCTS SET units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet) WHERE id = ?',
+            [item.units_per_box || null, item.boxes_per_pallet || null, product_id]
+          );
+        }
       }
       
       await connection.commit();
@@ -179,6 +187,27 @@ async function palletRoutes(fastify, options) {
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante la generazione' });
+    }
+  });
+
+  fastify.get('/:code', async (request, reply) => {
+    const { code } = request.params;
+    try {
+      const [rows] = await db.query(`
+        SELECT p.*, pr.name as product_name, pr.uom, c.business_name as customer_name
+        FROM PALLETS p
+        JOIN PRODUCTS pr ON p.product_id = pr.id
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        WHERE p.pallet_code = ?
+      `, [code]);
+      
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: 'Paletta non trovata' });
+      }
+      return rows[0];
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore lettura paletta' });
     }
   });
 
