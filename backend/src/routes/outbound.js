@@ -353,7 +353,7 @@ async function outboundRoutes(fastify, options) {
       }
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, p.units_per_box, COALESCE(i.requested_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
+        SELECT i.*, p.name as product_name, p.units_per_box, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
@@ -531,7 +531,7 @@ async function outboundRoutes(fastify, options) {
       const statusCondition = include_pending === 'true' ? "IN ('STOCKED', 'PENDING')" : "= 'STOCKED'";
 
       const [pallets] = await db.query(`
-        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.uom, p.units_per_box, p.boxes_per_pallet,
+        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, COALESCE(pal.pallet_uom, p.uom) as uom, p.units_per_box, p.boxes_per_pallet,
                (pal.quantity - COALESCE((
                  SELECT SUM(
                    CASE 

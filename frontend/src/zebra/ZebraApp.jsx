@@ -113,6 +113,7 @@ const ZebraOperationPage = ({ title }) => {
 };
 
 import OutboundZebra from './OutboundZebra';
+import Handling from './Handling';
 
 const ZebraApp = () => {
   return (
@@ -122,7 +123,7 @@ const ZebraApp = () => {
         <Route path="/" element={<Dashboard />} />
         <Route path="/stow" element={<Stow />} />
         <Route path="/outbound" element={<OutboundZebra />} />
-        <Route path="/handling" element={<ZebraOperationPage title="Handling" />} />
+        <Route path="/handling" element={<Handling />} />
         <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
       </Routes>
     </div>

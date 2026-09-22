@@ -118,10 +118,14 @@ const Inbound = () => {
     const upb = parseFloat(formData.units_per_box) || 1;
     const bpp = parseFloat(formData.boxes_per_pallet) || 1;
 
+    let pallet_uom = null;
+
     if (formData.entry_uom === 'Scatole') {
       actualQty *= upb;
     } else if (formData.entry_uom === 'Bancale') {
       actualQty *= (upb * bpp);
+    } else if (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') {
+      pallet_uom = formData.entry_uom === 'KG' ? 'KG' : 'Metro Cubo';
     }
 
     const newItem = {
@@ -133,6 +137,7 @@ const Inbound = () => {
       quantity: actualQty,
       units_per_box: upb,
       boxes_per_pallet: bpp,
+      pallet_uom: pallet_uom,
       batch: formData.batch,
       warehouse: formData.warehouse,
       num_pallets: formData.num_pallets,
@@ -217,9 +222,10 @@ const Inbound = () => {
     else if (formData.entry_uom === 'Bancale') actualQtyForHint *= (upb * bpp);
 
     const productObj = products.find(p => p.value === formData.product_id);
-    const prodUom = productObj?.raw?.uom || 'Pezzi';
+    const baseProdUom = productObj?.raw?.uom || 'Pezzi';
+    const prodUom = (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') ? formData.entry_uom : baseProdUom;
 
-    if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali') {
+    if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali' && prodUom !== 'KG' && prodUom !== 'Metro Cubo') {
       const scatole = Math.floor(actualQtyForHint / upb);
       const sfusi = actualQtyForHint % upb;
       return (
@@ -313,12 +319,14 @@ const Inbound = () => {
                   <input required type="number" step="0.01" value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 50" />
                   {renderQuantityHint()}
                 </div>
-                <div>
-                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">UDM Inserimento</label>
+                <div className="md:col-span-1">
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità</label>
                   <select value={formData.entry_uom} onChange={e => setFormData({...formData, entry_uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue">
                     <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'})</option>
                     <option value="Scatole">Scatole</option>
-                    <option value="Bancale">Paletta Intera</option>
+                    <option value="Bancale">Intero Bancale</option>
+                    <option value="KG">KG</option>
+                    <option value="Metro Cubo">Metro Cubo (m³)</option>
                   </select>
                 </div>
                 <div>
