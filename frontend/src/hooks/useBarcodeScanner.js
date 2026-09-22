@@ -11,7 +11,7 @@ import { useEffect, useCallback, useRef } from 'react';
  * @param {number} [options.timeout=50] - Tempo massimo in ms tra la digitazione di due tasti per essere considerato uno scanner (e non digitazione umana).
  */
 const useBarcodeScanner = (onScan, options = {}) => {
-  const timeout = options.timeout || 50;
+  const timeout = options.timeout || 250;
   
   // Utilizziamo useRef per il buffer e il timer per evitare re-render non necessari
   const buffer = useRef('');
@@ -26,7 +26,7 @@ const useBarcodeScanner = (onScan, options = {}) => {
       }
 
       // Se riceve il carattere terminatore (Enter), invia il buffer alla callback
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.keyCode === 13) {
         if (buffer.current.length > 0) {
           onScan(buffer.current);
           buffer.current = '';
@@ -35,7 +35,6 @@ const useBarcodeScanner = (onScan, options = {}) => {
       }
 
       // Ignora tasti speciali che non fanno parte del barcode (es. Shift, Control, ecc.)
-      // Un carattere stampabile ha generalmente length === 1
       if (e.key.length !== 1) {
         return;
       }
@@ -43,13 +42,16 @@ const useBarcodeScanner = (onScan, options = {}) => {
       // Aggiunge il carattere al buffer
       buffer.current += e.key;
 
-      // Resetta il timer: se passa troppo tempo dal carattere precedente, assumiamo 
-      // che sia digitazione umana accidentale (o che lo scan sia fallito/incompleto) e puliamo il buffer
+      // Resetta il timer
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
       
       timeoutRef.current = setTimeout(() => {
+        // Se non è arrivato l'Enter ma abbiamo accumulato un codice, lo inviamo (fix per Zebra senza suffisso)
+        if (buffer.current.length >= 3) {
+          onScan(buffer.current);
+        }
         buffer.current = '';
       }, timeout);
     },
