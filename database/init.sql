@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS LOCATIONS (
 
 CREATE TABLE IF NOT EXISTS PALLETS (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    pallet_code VARCHAR(50) NOT NULL UNIQUE,
+    pallet_code VARCHAR(50) NOT NULL,
     customer_id INT NOT NULL,
     product_id INT NOT NULL,
     quantity DECIMAL(10,2) NOT NULL,
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS PALLETS (
     client_article_number VARCHAR(100),
     expiration_date DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pallet_code (pallet_code),
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT,
     FOREIGN KEY (product_id) REFERENCES PRODUCTS(id) ON DELETE RESTRICT
 );

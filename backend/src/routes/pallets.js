@@ -60,7 +60,8 @@ async function palletRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box
+        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
+        (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -78,7 +79,8 @@ async function palletRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name,
-               l.zone, l.col, l.pos
+               l.zone, l.col, l.pos,
+               (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -99,7 +101,7 @@ async function palletRoutes(fastify, options) {
       return reply.code(400).send({ error: 'Carrello vuoto o formato non valido' });
     }
 
-    const { paper_format = 'A4', print_mode = 'GRID' } = printOptions || {};
+    const { paper_format = 'A4', print_mode = 'GRID', isMixed = false } = printOptions || {};
 
     const connection = await db.getConnection();
     try {
@@ -107,49 +109,92 @@ async function palletRoutes(fastify, options) {
       
       const generatedLabelsData = []; 
       
-      for (const item of cart) {
-        const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
+      if (isMixed) {
+        // Generate ONLY ONE pallet code for the whole cart
+        const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
+        const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const code = `PAL-${dateStr}-${randomStr}`;
         
-        const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
-        const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
-        
-        for (let i = 0; i < num_pallets; i++) {
-          const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
-          const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
-          const code = `PAL-${dateStr}-${randomStr}`;
+        for (const item of cart) {
+          const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
           
           await connection.query(
             'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
             [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
           );
           
-          await connection.query(
-            "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-            ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)`, 'Gestionale', request.user.username]
-          );
-          
-          generatedLabelsData.push({
-            code,
-            customer_name: customer.business_name,
-            product_name: product.name,
-            quantity,
-            batch,
-            warehouse,
-            client_pallet_number,
-            client_article_number,
-            expiration_date
-          });
+          if (item.units_per_box || item.boxes_per_pallet) {
+            await connection.query(
+              'UPDATE PRODUCTS SET units_per_box = ?, boxes_per_pallet = ? WHERE id = ?',
+              [item.units_per_box || 1, item.boxes_per_pallet || 1, product_id]
+            );
+          }
         }
+        
+        await connection.query(
+          "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+          ['INBOUND', `Creata paletta frammentata ${code} (${cart.length} articoli)`, 'Gestionale', request.user.username]
+        );
+        
+        // Per la stampa usiamo il primo cliente come riferimento, e scriviamo "PALETTA MISTA"
+        const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [cart[0].customer_id]);
+        
+        generatedLabelsData.push({
+          code,
+          customer_name: customer.business_name,
+          product_name: `PALETTA MISTA (${cart.length} Articoli)`,
+          quantity: '-',
+          batch: '-',
+          warehouse: cart[0].warehouse,
+          client_pallet_number: cart[0].client_pallet_number,
+          client_article_number: '-',
+          expiration_date: cart[0].expiration_date
+        });
+      } else {
+        for (const item of cart) {
+          const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
+          
+          const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
+          const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
+          
+          for (let i = 0; i < num_pallets; i++) {
+            const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
+            const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+            const code = `PAL-${dateStr}-${randomStr}`;
+            
+            await connection.query(
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
+              [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
+            );
+            
+            await connection.query(
+              "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+              ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)`, 'Gestionale', request.user.username]
+            );
+            
+            generatedLabelsData.push({
+              code,
+              customer_name: customer.business_name,
+              product_name: product.name,
+              quantity,
+              batch,
+              warehouse,
+              client_pallet_number,
+              client_article_number,
+              expiration_date
+            });
+          }
 
-        // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI INSERITI IN INBOUND
-        if (item.units_per_box || item.boxes_per_pallet) {
-          await connection.query(
-            'UPDATE PRODUCTS SET units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet) WHERE id = ?',
-            [item.units_per_box || null, item.boxes_per_pallet || null, product_id]
-          );
+          // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI INSERITI IN INBOUND
+          if (item.units_per_box || item.boxes_per_pallet) {
+            await connection.query(
+              'UPDATE PRODUCTS SET units_per_box = ?, boxes_per_pallet = ? WHERE id = ?',
+              [item.units_per_box || 1, item.boxes_per_pallet || 1, product_id]
+            );
+          }
         }
       }
-      
+
       await connection.commit();
       connection.release();
 
@@ -222,6 +267,18 @@ async function palletRoutes(fastify, options) {
       if (rows.length === 0) {
         return reply.code(404).send({ error: 'Paletta non trovata' });
       }
+
+      if (rows.length > 1) {
+        // Paletta mista
+        const mixedPallet = {
+          ...rows[0],
+          product_name: `PALETTA MISTA (${rows.length} Articoli)`,
+          isMixed: true,
+          items: rows
+        };
+        return mixedPallet;
+      }
+      
       return rows[0];
     } catch (err) {
       fastify.log.error(err);
@@ -357,23 +414,30 @@ async function palletRoutes(fastify, options) {
   });
 
   fastify.post('/stow', async (request, reply) => {
-    const { pallet_code, location, pin, source = 'Zebra' } = request.body;
+    const { pallet_code, location, pin, source = 'Zebra', force = false } = request.body;
     
+    fastify.log.info(`[STOW] Received stow request: pallet=${pallet_code}, location=${location}, force=${force}`);
+
     if (!pallet_code || !location) {
       return reply.code(400).send({ error: 'Pallet Code e Location richiesti' });
     }
 
     try {
-      const [occupied] = await db.query(
-        "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND pallet_code != ?", 
-        [location, pallet_code]
-      );
-      
-      if (occupied.length > 0) {
-        return reply.code(409).send({ 
-          error: `La posizione ${location} è già occupata dalla paletta ${occupied[0].pallet_code}!`,
-          occupying_pallet: occupied[0].pallet_code 
-        });
+      if (!force) {
+        const [occupied] = await db.query(
+          "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND pallet_code != ?", 
+          [location, pallet_code]
+        );
+        
+        if (occupied.length > 0) {
+          fastify.log.info(`[STOW] Location occupied! Returning 409`);
+          return reply.code(409).send({ 
+            error: `La posizione ${location} è già occupata dalla paletta ${occupied[0].pallet_code}!`,
+            occupying_pallet: occupied[0].pallet_code 
+          });
+        }
+      } else {
+        fastify.log.info(`[STOW] Force is true! Bypassing occupied check.`);
       }
 
       const [[loc]] = await db.query('SELECT * FROM LOCATIONS WHERE barcode = ?', [location]);

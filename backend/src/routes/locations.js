@@ -9,13 +9,12 @@ async function locationRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT l.*, 
-               p.pallet_code, p.quantity, p.batch, p.expiration_date, p.notes,
-               p.client_pallet_number, p.client_article_number,
-               pr.name as product_name, pr.notes as product_notes, c.business_name as customer_name
+               GROUP_CONCAT(DISTINCT p.pallet_code SEPARATOR ', ') as pallet_code,
+               GROUP_CONCAT(DISTINCT pr.name SEPARATOR ', ') as product_name
         FROM LOCATIONS l
         LEFT JOIN PALLETS p ON l.barcode = p.location AND p.status = 'STOCKED'
         LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
-        LEFT JOIN CUSTOMERS c ON p.customer_id = c.id
+        GROUP BY l.id
         ORDER BY l.zone ASC, l.col ASC, l.pos ASC
       `);
       return rows;

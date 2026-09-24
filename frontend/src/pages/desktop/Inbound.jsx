@@ -443,6 +443,16 @@ const Inbound = () => {
             {/* Pannello Stampa */}
             {cart.length > 0 && (
               <div className="mt-6 pt-6 border-t border-slate-800 animate-fade-in-up">
+                <div className="mb-6 bg-amber-500/10 border-2 border-amber-500/20 rounded-2xl p-4">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={printOptions.isMixed} onChange={e => setPrintOptions({...printOptions, isMixed: e.target.checked})} className="w-6 h-6 rounded bg-slate-900 border-amber-500 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900" />
+                    <div>
+                      <div className="font-bold text-amber-500 text-sm">Frammenta Paletta (Unica Etichetta)</div>
+                      <div className="text-xs text-slate-400">Raggruppa tutto il carrello in una singola paletta mista con 1 solo codice a barre. (Ignora i moltiplicatori)</div>
+                    </div>
+                  </label>
+                </div>
+
                 <h3 className="text-sm font-bold text-slate-400 mb-4 uppercase tracking-wider flex items-center gap-2">
                   <Printer size={16} /> Impostazioni Stampa PDF
                 </h3>

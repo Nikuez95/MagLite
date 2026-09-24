@@ -463,7 +463,7 @@ async function outboundRoutes(fastify, options) {
         const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
 
         // Scarica la giacenza
-        const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ?', [item.pallet_code]);
+        const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ? AND pal.product_id = ?', [item.pallet_code, item.product_id]);
         if (pallets.length > 0) {
           const pallet = pallets[0];
           let newQty;

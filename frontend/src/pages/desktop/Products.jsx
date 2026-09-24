@@ -344,9 +344,14 @@ const ProductsManagement = () => {
                     ) : filteredPallets.map(p => (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                         <td className="p-4">
-                          <button onClick={() => setPrintModal({ show: true, code: p.pallet_code, copies: 1, format: 'THERMAL' })} className="font-mono text-brand-blue font-bold text-xs flex items-center gap-1 hover:underline" title="Ristampa Etichetta">
-                            <Printer size={12} /> {p.pallet_code}
-                          </button>
+                          <div className="flex flex-col gap-1 items-start">
+                            <button onClick={() => setPrintModal({ show: true, code: p.pallet_code, copies: 1, format: 'THERMAL' })} className="font-mono text-brand-blue font-bold text-xs flex items-center gap-1 hover:underline" title="Ristampa Etichetta">
+                              <Printer size={12} /> {p.pallet_code}
+                            </button>
+                            {p.is_mixed === 1 && (
+                              <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title="Paletta Frammentata">Mista</span>
+                            )}
+                          </div>
                           <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${p.warehouse === 'Settala' ? 'bg-brand-blue/10 text-brand-blue border border-brand-blue/30' : 'bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/30'}`}>
                             {p.warehouse}
                           </div>
