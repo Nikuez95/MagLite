@@ -4,6 +4,7 @@ import { Search, SlidersHorizontal, Filter, Download, Printer, GripVertical } fr
 import Select from 'react-select';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { io } from 'socket.io-client';
 
 const defaultColumns = [
   { key: 'code', label: 'Cod. Paletta', visible: true },
@@ -39,10 +40,6 @@ const Inventory = () => {
 
   const getToken = () => localStorage.getItem('maglite_token');
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -58,6 +55,14 @@ const Inventory = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('stow_updated', () => fetchData());
+    socket.on('dashboard_update', () => fetchData());
+    return () => socket.disconnect();
+  }, []);
 
   const savePreferences = async (newColumns) => {
     try {

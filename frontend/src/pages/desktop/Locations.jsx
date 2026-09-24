@@ -6,7 +6,9 @@ import { jwtDecode } from 'jwt-decode';
 
 const Locations = () => {
   const [locations, setLocations] = useState([]);
+  const [freeLocations, setFreeLocations] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeTab, setActiveTab] = useState('mapped'); // 'mapped' or 'free'
   const [bulkMode, setBulkMode] = useState('STANDARD'); // STANDARD, TERRA, CUSTOM
   const [bulkForm, setBulkForm] = useState({
     zone: 'CELLA2',
@@ -31,10 +33,12 @@ const Locations = () => {
 
   const fetchLocations = async () => {
     try {
-      const res = await axios.get(`http://${window.location.hostname}:3000/api/locations`, {
-        headers: { Authorization: `Bearer ${getToken()}` }
-      });
-      setLocations(res.data);
+      const [resLoc, resFree] = await Promise.all([
+        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${getToken()}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      ]);
+      setLocations(resLoc.data);
+      setFreeLocations(resFree.data);
     } catch (err) {
       console.error(err);
     }
@@ -119,6 +123,31 @@ const Locations = () => {
     }
   };
 
+  const handleAddFreeLocation = async () => {
+    const name = window.prompt("Nome della posizione libera (es. CELLA 2, SCAFFALE ESTERNO):");
+    if (!name) return;
+    try {
+      await axios.post(`http://${window.location.hostname}:3000/api/locations/free`, { name }, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      fetchLocations();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Errore creazione posizione libera');
+    }
+  };
+
+  const handleDeleteFreeLocation = async (id) => {
+    if (!window.confirm("Eliminare questa posizione libera?")) return;
+    try {
+      await axios.delete(`http://${window.location.hostname}:3000/api/locations/free/${id}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      fetchLocations();
+    } catch (err) {
+      alert('Errore eliminazione');
+    }
+  };
+
   const [expandedZones, setExpandedZones] = useState({});
 
   const filteredLocations = locations.filter(l => 
@@ -143,14 +172,31 @@ const Locations = () => {
     <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
       <div className="max-w-6xl mx-auto animate-fade-in-up">
         
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-brand-white mb-2 flex items-center gap-3">
-            <Map className="text-brand-blue" size={32} />
-            Mappa Magazzino (Anagrafica Scaffali)
-          </h1>
-          <p className="text-slate-400">Genera e gestisci le postazioni con i loro Codici PIN di Sicurezza.</p>
+        <div className="mb-8 flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold text-brand-white mb-2 flex items-center gap-3">
+              <Map className="text-brand-blue" size={32} />
+              Mappa Magazzino (Anagrafica Scaffali)
+            </h1>
+            <p className="text-slate-400">Genera e gestisci le postazioni con i loro Codici PIN di Sicurezza.</p>
+          </div>
+          <div className="flex gap-2 p-1 bg-slate-900 border border-slate-800 rounded-xl">
+            <button
+              onClick={() => setActiveTab('mapped')}
+              className={`px-4 py-2 rounded-lg font-bold transition-colors ${activeTab === 'mapped' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'}`}
+            >
+              Postazioni Mappate
+            </button>
+            <button
+              onClick={() => setActiveTab('free')}
+              className={`px-4 py-2 rounded-lg font-bold transition-colors ${activeTab === 'free' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'}`}
+            >
+              Posizioni Libere
+            </button>
+          </div>
         </div>
 
+        {activeTab === 'mapped' ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
           {/* Colonna Sinistra: Generatore Massivo */}
@@ -327,6 +373,38 @@ const Locations = () => {
           </div>
 
         </div>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold text-brand-white flex items-center gap-2">
+                <Layers className="text-brand-blue" size={24} />
+                Elenco Posizioni Libere
+              </h2>
+              <button 
+                onClick={handleAddFreeLocation}
+                className="px-4 py-2 bg-brand-blue text-brand-black font-bold rounded-lg hover:bg-sky-400 transition-colors"
+              >
+                + Aggiungi
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              {freeLocations.map(fl => (
+                <div key={fl.id} className="bg-slate-800 border border-slate-700 p-4 rounded-xl flex justify-between items-center">
+                  <span className="text-brand-white font-bold">{fl.name}</span>
+                  <button onClick={() => handleDeleteFreeLocation(fl.id)} className="p-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-lg transition-colors">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+              {freeLocations.length === 0 && (
+                <div className="col-span-full p-8 text-center text-slate-500 font-bold border-2 border-dashed border-slate-800 rounded-2xl">
+                  Nessuna posizione libera definita.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Modal Dettaglio Merce */}

@@ -97,9 +97,13 @@ const OutboundZebra = () => {
   };
 
   const checkAndSkipPin = (item) => {
-    // Come da richiesta: non chiediamo più il PIN dello scaffale per il picking,
-    // passiamo direttamente alla scansione della paletta.
-    setStep('SCAN_PALLET');
+    if (item.pallet_code.startsWith('NOBAR-')) {
+      setScannedPallet(item.pallet_code);
+      setStep('INPUT_QTY');
+      setQtyInput(item.quantity_required.toString());
+    } else {
+      setStep('SCAN_PALLET');
+    }
   };
 
   const currentItem = items[currentItemIndex];
@@ -305,7 +309,7 @@ const OutboundZebra = () => {
             <div>
               <p className="text-xs text-slate-500 uppercase font-bold mb-1">Recati qui:</p>
               <p className="text-brand-white font-bold text-xl">
-                {currentItem?.zone ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : 'Cerca in magazzino'}
+                {currentItem?.zone ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : (currentItem?.location || 'Cerca in magazzino')}
               </p>
             </div>
           </div>
@@ -378,7 +382,7 @@ const OutboundZebra = () => {
 
               <div className="flex gap-2 items-center justify-center">
                 <input 
-                  type="number" 
+                  type="number" onWheel={(e) => e.target.blur()} 
                   autoFocus
                   className="bg-slate-900 border-2 border-brand-blue text-brand-white text-center text-4xl font-black w-32 h-20 rounded-2xl"
                   value={qtyInput}

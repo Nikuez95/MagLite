@@ -16,7 +16,10 @@ const Inbound = () => {
   // Opzioni di Stampa
   const [printOptions, setPrintOptions] = useState({
     paper_format: 'A4', // 'A4' o 'THERMAL'
-    print_mode: 'GRID'  // 'GRID' (solo per A4) o 'SINGLE_PAGE'
+    print_mode: 'GRID',  // 'GRID' (solo per A4) o 'SINGLE_PAGE'
+    isMixed: false,
+    noBarcode: false,
+    freeLocation: ''
   });
 
   const [formData, setFormData] = useState({
@@ -38,15 +41,19 @@ const Inbound = () => {
 
   const getToken = () => localStorage.getItem('maglite_token');
 
+  const [freeLocations, setFreeLocations] = useState([]);
+
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [custRes, prodRes] = await Promise.all([
+      const [custRes, prodRes, freeRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/products`, { headers })
+        axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers })
       ]);
       setCustomers(custRes.data.map(c => ({ value: c.id, label: c.business_name })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
+      setFreeLocations(freeRes.data.map(fl => ({ value: fl.name, label: fl.name })));
     } catch (err) {
       console.error(err);
     }
@@ -171,6 +178,10 @@ const Inbound = () => {
 
   const handleGenerate = async () => {
     if (cart.length === 0) return;
+    if (printOptions.noBarcode && !printOptions.freeLocation.trim()) {
+      alert("Inserisci l'ubicazione / stoccaggio libero!");
+      return;
+    }
     setIsGenerating(true);
     try {
       const payload = {
@@ -180,12 +191,16 @@ const Inbound = () => {
 
       const res = await axios.post(`http://${window.location.hostname}:3000/api/pallets/generate`, payload, {
         headers: { Authorization: `Bearer ${getToken()}` },
-        responseType: 'blob' 
+        responseType: printOptions.noBarcode ? 'json' : 'blob' 
       });
       
-      const pdfBlob = new Blob([res.data], { type: 'application/pdf' });
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      window.open(pdfUrl, '_blank');
+      if (!printOptions.noBarcode) {
+        const pdfBlob = new Blob([res.data], { type: 'application/pdf' });
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        window.open(pdfUrl, '_blank');
+      } else {
+        alert(res.data.message || 'Inserimento completato con successo (senza etichetta).');
+      }
 
       // Clear cart
       setCart([]);
@@ -305,18 +320,18 @@ const Inbound = () => {
               <div className="grid grid-cols-2 gap-6 items-end">
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Unità/Pezzi per Scatola (su questa paletta)</label>
-                  <input type="number" min="0" value={formData.units_per_box} onChange={e => setFormData({...formData, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="0" value={formData.units_per_box} onChange={e => setFormData({...formData, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-[10px] uppercase tracking-wider">Scatole per Paletta</label>
-                  <input type="number" min="0" value={formData.boxes_per_pallet} onChange={e => setFormData({...formData, boxes_per_pallet: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="0" value={formData.boxes_per_pallet} onChange={e => setFormData({...formData, boxes_per_pallet: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
               </div>
 
               <div className="grid grid-cols-3 gap-6">
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Quantità *</label>
-                  <input required type="number" step="0.01" value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 50" />
+                  <input required type="number" onWheel={(e) => e.target.blur()} step="0.01" value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 50" />
                   {renderQuantityHint()}
                 </div>
                 <div className="md:col-span-1">
@@ -382,7 +397,7 @@ const Inbound = () => {
                     <label className="block text-brand-blue font-black mb-1 text-xs uppercase tracking-wider">Moltiplicatore Etichette</label>
                     <span className="text-slate-400 text-sm">Quante palette uguali?</span>
                   </div>
-                  <input type="number" min="1" max="50" required value={formData.num_pallets} onChange={e => setFormData({...formData, num_pallets: parseInt(e.target.value)})} className="w-20 bg-slate-900 border-2 border-brand-blue text-brand-white rounded-xl p-2 text-center text-xl font-bold focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="1" max="50" required value={formData.num_pallets} onChange={e => setFormData({...formData, num_pallets: parseInt(e.target.value)})} className="w-20 bg-slate-900 border-2 border-brand-blue text-brand-white rounded-xl p-2 text-center text-xl font-bold focus:ring-brand-blue" />
                 </div>
               </div>
 
@@ -451,6 +466,34 @@ const Inbound = () => {
                       <div className="text-xs text-slate-400">Raggruppa tutto il carrello in una singola paletta mista con 1 solo codice a barre. (Ignora i moltiplicatori)</div>
                     </div>
                   </label>
+                </div>
+                
+                <div className="mb-6 bg-emerald-500/10 border-2 border-emerald-500/20 rounded-2xl p-4">
+                  <label className="flex items-center gap-3 cursor-pointer mb-2">
+                    <input type="checkbox" checked={printOptions.noBarcode} onChange={e => setPrintOptions({...printOptions, noBarcode: e.target.checked})} className="w-6 h-6 rounded bg-slate-900 border-emerald-500 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900" />
+                    <div>
+                      <div className="font-bold text-emerald-500 text-sm">Senza Etichetta / Stoccaggio Libero</div>
+                      <div className="text-xs text-slate-400">Inserisci i prodotti senza generare etichette. Utile per merce in scaffali liberi, FCR o altro. </div>
+                    </div>
+                  </label>
+                  {printOptions.noBarcode && (
+                    <div className="mt-4 pl-9 animate-fade-in-up">
+                      <Select 
+                        options={freeLocations}
+                        placeholder="Seleziona la posizione libera (da Magazzino)..."
+                        noOptionsMessage={() => "Nessuna posizione libera definita in Magazzino"}
+                        value={freeLocations.find(fl => fl.value === printOptions.freeLocation) || null}
+                        onChange={selected => setPrintOptions({...printOptions, freeLocation: selected ? selected.value : ''})}
+                        styles={{
+                          control: (base) => ({ ...base, backgroundColor: '#020617', borderColor: '#334155', color: '#F8FAFC', padding: '2px', borderRadius: '0.75rem' }),
+                          singleValue: (base) => ({ ...base, color: '#F8FAFC' }),
+                          input: (base) => ({ ...base, color: '#F8FAFC' }),
+                          menu: (base) => ({ ...base, backgroundColor: '#020617', zIndex: 50, border: '1px solid #334155' }),
+                          option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#0f172a' : 'transparent', color: '#F8FAFC', cursor: 'pointer' })
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <h3 className="text-sm font-bold text-slate-400 mb-4 uppercase tracking-wider flex items-center gap-2">

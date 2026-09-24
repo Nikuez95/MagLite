@@ -101,26 +101,28 @@ async function palletRoutes(fastify, options) {
       return reply.code(400).send({ error: 'Carrello vuoto o formato non valido' });
     }
 
-    const { paper_format = 'A4', print_mode = 'GRID', isMixed = false } = printOptions || {};
+    const { paper_format = 'A4', print_mode = 'GRID', isMixed = false, noBarcode = false, freeLocation = '' } = printOptions || {};
 
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
       
       const generatedLabelsData = []; 
+      const finalStatus = noBarcode ? 'STOCKED' : 'PENDING';
+      const finalLocation = noBarcode ? freeLocation : null;
       
-      if (isMixed) {
+      if (isMixed || noBarcode) {
         // Generate ONLY ONE pallet code for the whole cart
         const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
         const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
-        const code = `PAL-${dateStr}-${randomStr}`;
+        const code = noBarcode ? `NOBAR-${dateStr}-${randomStr}` : `PAL-${dateStr}-${randomStr}`;
         
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
           
           await connection.query(
-            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
-            [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
+            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
+            [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
           );
           
           if (item.units_per_box || item.boxes_per_pallet) {
@@ -133,23 +135,23 @@ async function palletRoutes(fastify, options) {
         
         await connection.query(
           "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-          ['INBOUND', `Creata paletta frammentata ${code} (${cart.length} articoli)`, 'Gestionale', request.user.username]
+          ['INBOUND', noBarcode ? `Carico libero in ${freeLocation} (${cart.length} art.)` : `Creata paletta frammentata ${code} (${cart.length} articoli)`, 'Gestionale', request.user.username]
         );
         
-        // Per la stampa usiamo il primo cliente come riferimento, e scriviamo "PALETTA MISTA"
-        const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [cart[0].customer_id]);
-        
-        generatedLabelsData.push({
-          code,
-          customer_name: customer.business_name,
-          product_name: `PALETTA MISTA (${cart.length} Articoli)`,
-          quantity: '-',
-          batch: '-',
-          warehouse: cart[0].warehouse,
-          client_pallet_number: cart[0].client_pallet_number,
-          client_article_number: '-',
-          expiration_date: cart[0].expiration_date
-        });
+        if (!noBarcode) {
+          const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [cart[0].customer_id]);
+          generatedLabelsData.push({
+            code,
+            customer_name: customer.business_name,
+            product_name: `PALETTA MISTA (${cart.length} Articoli)`,
+            quantity: '-',
+            batch: '-',
+            warehouse: cart[0].warehouse,
+            client_pallet_number: cart[0].client_pallet_number,
+            client_article_number: '-',
+            expiration_date: cart[0].expiration_date
+          });
+        }
       } else {
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
@@ -163,8 +165,8 @@ async function palletRoutes(fastify, options) {
             const code = `PAL-${dateStr}-${randomStr}`;
             
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
-              [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
+              [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null]
             );
             
             await connection.query(
@@ -194,9 +196,13 @@ async function palletRoutes(fastify, options) {
           }
         }
       }
-
       await connection.commit();
       connection.release();
+
+      if (noBarcode) {
+        if (fastify.io) fastify.io.emit('dashboard_update');
+        return reply.send({ success: true, message: 'Stock libero salvato senza barcode' });
+      }
 
       const docOptions = { margin: 20 };
       if (paper_format === 'THERMAL') {
@@ -240,6 +246,8 @@ async function palletRoutes(fastify, options) {
           await drawLabel(doc, lbl, x, y, labelWidth, labelHeight);
         }
       }
+
+      if (fastify.io) fastify.io.emit('dashboard_update');
 
       doc.end();
       return reply;
@@ -367,6 +375,41 @@ async function palletRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Errore stampa' });
     }
   });
+
+  fastify.put('/:code/quantity', async (request, reply) => {
+    const { code } = request.params;
+    const { quantity, pallet_id } = request.body;
+
+    if (quantity === undefined || quantity < 0) {
+      return reply.code(400).send({ error: 'Quantità non valida' });
+    }
+
+    try {
+      let oldPallet;
+      if (pallet_id) {
+        [[oldPallet]] = await db.query('SELECT quantity FROM PALLETS WHERE id = ?', [pallet_id]);
+        if (!oldPallet) return reply.code(404).send({ error: 'Paletta non trovata' });
+        await db.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [quantity, pallet_id]);
+      } else {
+        [[oldPallet]] = await db.query('SELECT quantity FROM PALLETS WHERE pallet_code = ?', [code]);
+        if (!oldPallet) return reply.code(404).send({ error: 'Paletta non trovata' });
+        await db.query('UPDATE PALLETS SET quantity = ? WHERE pallet_code = ?', [quantity, code]);
+      }
+
+      await db.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        ['ADJUST_QTY', `Modificata q.tà paletta ${code}: da ${oldPallet.quantity} a ${quantity}`, 'Gestionale', request.user.username]
+      );
+
+      if (fastify.io) fastify.io.emit('dashboard_update');
+
+      return { success: true, new_quantity: quantity };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante la modifica della quantità' });
+    }
+  });
+
 
   fastify.put('/:code', async (request, reply) => {
     const { code } = request.params;

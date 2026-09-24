@@ -210,6 +210,39 @@ async function locationRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Errore durante la generazione del PDF' });
     }
   });
+
+  fastify.get('/free', async (request, reply) => {
+    try {
+      const [rows] = await db.query('SELECT * FROM FREE_LOCATIONS ORDER BY name ASC');
+      return rows;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore fetch free locations' });
+    }
+  });
+
+  fastify.post('/free', async (request, reply) => {
+    const { name } = request.body;
+    if (!name || name.trim() === '') return reply.code(400).send({ error: 'Nome obbligatorio' });
+    try {
+      await db.query('INSERT INTO FREE_LOCATIONS (name) VALUES (?)', [name.trim().toUpperCase()]);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore creazione free location (forse nome duplicato?)' });
+    }
+  });
+
+  fastify.delete('/free/:id', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      await db.query('DELETE FROM FREE_LOCATIONS WHERE id = ?', [id]);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore eliminazione free location' });
+    }
+  });
 }
 
 module.exports = locationRoutes;

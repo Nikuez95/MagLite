@@ -433,6 +433,8 @@ async function outboundRoutes(fastify, options) {
         await db.query('UPDATE OUTBOUND_ORDERS SET status = "READY", end_picking_at = CURRENT_TIMESTAMP WHERE id = ?', [order_id]);
       }
 
+      if (fastify.io) fastify.io.emit('dashboard_update');
+
       return { success: true, all_picked: allPicked };
     } catch (err) {
       fastify.log.error(err);
@@ -508,6 +510,9 @@ async function outboundRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
+      
+      if (fastify.io) fastify.io.emit('dashboard_update');
+      
       return { success: true };
     } catch (err) {
       if (connection) {

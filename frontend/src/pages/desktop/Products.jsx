@@ -62,6 +62,14 @@ const ProductsManagement = () => {
     error: null 
   });
   
+  // Modifica Quantità Paletta
+  const [adjustQtyModal, setAdjustQtyModal] = useState({
+    show: false,
+    pallet: null,
+    newQuantity: '',
+    error: null
+  });
+  
   const [historyModal, setHistoryModal] = useState(null);
   const [historyData, setHistoryData] = useState(null);
 
@@ -169,6 +177,32 @@ const ProductsManagement = () => {
 
   const handleDeletePallet = (code) => {
     setDeleteConfirmModal({ show: true, type: 'pallet', id: code, title: `Eliminare definitivamente la paletta ${code}?` });
+  };
+
+  const handleAdjustQty = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setAdjustQtyModal(prev => ({ ...prev, error: null }));
+    const qty = parseFloat(adjustQtyModal.newQuantity);
+    if (isNaN(qty) || qty < 0) {
+      setAdjustQtyModal(prev => ({ ...prev, error: 'Inserisci una quantità numerica valida (>= 0)' }));
+      setIsProcessing(false);
+      return;
+    }
+    try {
+      await axios.put(`http://${window.location.hostname}:3000/api/pallets/${adjustQtyModal.pallet.pallet_code}/quantity`, {
+        pallet_id: adjustQtyModal.pallet.id,
+        quantity: qty
+      }, { headers: { Authorization: `Bearer ${getToken()}` } });
+      
+      setAdjustQtyModal({ show: false, pallet: null, newQuantity: '', error: null });
+      fetchData();
+    } catch (err) {
+      setAdjustQtyModal(prev => ({ ...prev, error: err.response?.data?.error || 'Errore modifica quantità' }));
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleUpdatePallet = async (e) => {
@@ -316,7 +350,7 @@ const ProductsManagement = () => {
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <Clock size={16} className="text-amber-500" />
                   <span className="text-slate-400">Avviso (gg):</span>
-                  <input type="number" value={expirationWarningDays} onChange={e => setExpirationWarningDays(parseInt(e.target.value) || 0)} className="w-16 bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} value={expirationWarningDays} onChange={e => setExpirationWarningDays(parseInt(e.target.value) || 0)} className="w-16 bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue" />
                 </div>
               </>
             )}
@@ -411,6 +445,9 @@ const ProductsManagement = () => {
                         </td>
                         <td className="p-4 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            <button onClick={() => setAdjustQtyModal({ show: true, pallet: p, newQuantity: p.quantity, error: null })} className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 rounded-xl transition-colors" title="Modifica Quantità">
+                              <Package size={18} />
+                            </button>
                             <button onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica">
                               <Edit3 size={18} />
                             </button>
@@ -507,7 +544,7 @@ const ProductsManagement = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola</label>
-                  <input type="number" min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
                 </div>
               </div>
               <div>
@@ -517,6 +554,45 @@ const ProductsManagement = () => {
               <div className="flex gap-4 mt-8 pt-8 border-t border-slate-800/80">
                 <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
                 <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">Crea Prodotto</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {adjustQtyModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl relative animate-fade-in-up">
+            <h2 className="text-2xl font-bold text-brand-white mb-6 flex items-center gap-3">
+              <Package className="text-amber-500" />
+              Modifica Quantità
+            </h2>
+            <form onSubmit={handleAdjustQty}>
+              <div className="mb-6">
+                <label className="block text-slate-400 mb-2 font-semibold">Nuova Quantità (Pezzi)</label>
+                <input
+                  type="number" onWheel={(e) => e.target.blur()}
+                  min="0"
+                  step="0.01"
+                  className="w-full bg-slate-950 border border-slate-800 p-4 rounded-xl text-brand-white focus:border-brand-blue"
+                  value={adjustQtyModal.newQuantity}
+                  onChange={e => setAdjustQtyModal(prev => ({ ...prev, newQuantity: e.target.value }))}
+                  required
+                />
+              </div>
+              {adjustQtyModal.error && (
+                <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center gap-3 text-rose-500">
+                  <XCircle size={20} />
+                  <span className="font-semibold">{adjustQtyModal.error}</span>
+                </div>
+              )}
+              <div className="flex gap-4">
+                <button type="button" onClick={() => setAdjustQtyModal({ show: false, pallet: null, newQuantity: '', error: null })} className="flex-1 py-4 bg-slate-800 text-brand-white rounded-xl font-bold hover:bg-slate-700 transition-colors">
+                  Annulla
+                </button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-amber-600 text-brand-white rounded-xl font-bold hover:bg-amber-500 transition-colors disabled:opacity-50">
+                  {isProcessing ? 'Salvataggio...' : 'Salva'}
+                </button>
               </div>
             </form>
           </div>
@@ -647,7 +723,7 @@ const ProductsManagement = () => {
 
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Moltiplicatore (Copie)</label>
-                <input type="number" min="1" max="100" value={printModal.copies} onChange={e => setPrintModal({...printModal, copies: parseInt(e.target.value) || 1})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue text-center font-bold text-lg" />
+                <input type="number" onWheel={(e) => e.target.blur()} min="1" max="100" value={printModal.copies} onChange={e => setPrintModal({...printModal, copies: parseInt(e.target.value) || 1})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue text-center font-bold text-lg" />
               </div>
 
               <div className="flex gap-4 border-t border-slate-800/80 pt-6">
