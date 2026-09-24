@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, Building2, Trash2, Eye, MapPin, Mail, Phone, Hash, Edit2, Copy } from 'lucide-react';
@@ -45,7 +46,7 @@ const CustomersManagement = () => {
       setNewCustomer({ unique_id: '', business_name: '', vat_number: '', address: '', phone: '', email: '' });
       fetchCustomers();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore');
+      appAlert(err.response?.data?.error || 'Errore');
     } finally {
       setIsProcessing(false);
     }
@@ -59,7 +60,7 @@ Indirizzo: ${customer.address || 'Non specificato'}
 Telefono: ${customer.phone || 'Non specificato'}
 Email: ${customer.email || 'Non specificata'}`;
     navigator.clipboard.writeText(data).then(() => {
-      alert('Dati copiati negli appunti!');
+      appAlert('Dati copiati negli appunti!');
     }).catch(err => {
       console.error('Errore durante la copia:', err);
     });
@@ -76,7 +77,7 @@ Email: ${customer.email || 'Non specificata'}`;
       setEditModal({ show: false, customer: null });
       fetchCustomers();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore');
+      appAlert(err.response?.data?.error || 'Errore');
     } finally {
       setIsProcessing(false);
     }
@@ -92,7 +93,7 @@ Email: ${customer.email || 'Non specificata'}`;
       fetchCustomers();
     } catch (err) {
       if (err.response?.status !== 404) {
-        alert(err.response?.data?.error || 'Errore durante l\'eliminazione');
+        appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione');
       }
     } finally {
       setIsProcessing(false);
@@ -123,7 +124,7 @@ Email: ${customer.email || 'Non specificata'}`;
         {/* Tabella Clienti */}
         <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
                   <th className="p-5 font-semibold uppercase tracking-wider text-xs">Ragione Sociale</th>
@@ -357,3 +358,9 @@ Email: ${customer.email || 'Non specificata'}`;
 };
 
 export default CustomersManagement;
+
+
+
+
+
+

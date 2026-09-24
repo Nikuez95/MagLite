@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -81,7 +82,7 @@ const Inbound = () => {
 
   const handleCreateProduct = async (inputValue) => {
     if (!formData.customer_id) {
-      alert('Seleziona prima il Cliente Proprietario!');
+      appAlert('Seleziona prima il Cliente Proprietario!');
       return;
     }
     setIsProcessing(true);
@@ -102,7 +103,7 @@ const Inbound = () => {
       setProducts(prev => [...prev, newOption]);
       setFormData(prev => ({ ...prev, product_id: newOption.value }));
     } catch (err) {
-      alert('Errore creazione prodotto al volo');
+      appAlert('Errore creazione prodotto al volo');
     } finally {
       setIsProcessing(false);
     }
@@ -113,7 +114,7 @@ const Inbound = () => {
   const handleAddToCart = (e) => {
     e.preventDefault();
     if (!formData.customer_id || !formData.product_id || !formData.quantity || formData.num_pallets < 1) {
-      alert('Compila tutti i campi obbligatori');
+      appAlert('Compila tutti i campi obbligatori');
       return;
     }
 
@@ -179,7 +180,7 @@ const Inbound = () => {
   const handleGenerate = async () => {
     if (cart.length === 0) return;
     if (printOptions.noBarcode && !printOptions.freeLocation.trim()) {
-      alert("Inserisci l'ubicazione / stoccaggio libero!");
+      appAlert("Inserisci l'ubicazione / stoccaggio libero!");
       return;
     }
     setIsGenerating(true);
@@ -199,13 +200,13 @@ const Inbound = () => {
         const pdfUrl = URL.createObjectURL(pdfBlob);
         window.open(pdfUrl, '_blank');
       } else {
-        alert(res.data.message || 'Inserimento completato con successo (senza etichetta).');
+        appAlert(res.data.message || 'Inserimento completato con successo (senza etichetta).');
       }
 
       // Clear cart
       setCart([]);
     } catch (err) {
-      alert('Errore durante la generazione del PDF.');
+      appAlert('Errore durante la generazione del PDF.');
     } finally {
       setIsGenerating(false);
     }
@@ -553,3 +554,8 @@ const Inbound = () => {
 };
 
 export default Inbound;
+
+
+
+
+

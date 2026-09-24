@@ -19,6 +19,36 @@ const defaultColumns = [
   { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: false }
 ];
 
+
+const formatUOM = (uom) => {
+  const u = (uom || '').toLowerCase();
+  if (u.includes('bancal')) return 'Bancale';
+  if (u === 'kg') return 'KG';
+  if (u.includes('metr')) return 'Metri Cubi';
+  if (u === 'scatole') return 'Scatole';
+  if (u === 'pezzi') return 'Pezzi';
+  return uom;
+};
+
+const formatQuantity = (qty, uom) => {
+  const q = parseFloat(qty || 0);
+  const u = (uom || '').toLowerCase();
+  if (u.includes('pezzi') || u.includes('scatole') || u.includes('bancal')) {
+    return q.toFixed(0);
+  }
+  return q.toFixed(2);
+};
+
+const formatPalletCode = (code) => {
+  if (!code) return '';
+  if (code === 'MULTIPLI' || code.includes('Palette')) return code;
+  const parts = code.split('-');
+  if (parts.length >= 3) {
+    return parts.slice(2).join('-');
+  }
+  return code;
+};
+
 const Inventory = () => {
   const [pallets, setPallets] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -179,7 +209,7 @@ const Inventory = () => {
       case 'code': return row.pallet_code;
       case 'customer': return row.customer_name;
       case 'product': return row.product_name;
-      case 'quantity': return `${row.quantity} ${row.uom}`;
+      case 'quantity': return `${formatQuantity(row.quantity, row.uom)} ${formatUOM(row.uom)}`;
       case 'location': return groupByBatch ? '-' : (row.location ? `${row.zone} ${row.col} ${row.pos}` : 'IN ATTESA');
       case 'arrival': return new Date(row.created_at).toLocaleDateString('it-IT');
       case 'batch': return row.batch || '-';
@@ -194,7 +224,7 @@ const Inventory = () => {
     switch (key) {
       case 'code': return (
         <div className="flex flex-col gap-1 items-start">
-          <span className="font-mono text-sm text-brand-blue font-bold whitespace-nowrap">{row.pallet_code}</span>
+          <span className="font-mono text-sm text-brand-blue font-bold whitespace-nowrap">{formatPalletCode(row.pallet_code)}</span>
           {row.is_mixed === 1 && !groupByBatch && (
             <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title="Paletta Frammentata">Mista</span>
           )}
@@ -205,9 +235,9 @@ const Inventory = () => {
       case 'quantity': {
         const qty = parseFloat(row.quantity) || 0;
         const upb = parseInt(row.units_per_box) || 1;
-        const uom = row.uom;
+        const uom = row.uom || "";
         
-        if (upb > 1 && uom !== 'Scatole' && uom !== 'Bancali' && uom !== 'Bancale' && uom !== 'KG' && uom !== 'Metro Cubo') {
+        if (upb > 1 && !uom.toLowerCase().includes('scatol') && !uom.toLowerCase().includes('bancal') && uom !== 'KG' && uom !== 'Metro Cubo') {
           const scatole = Math.floor(qty / upb);
           const sfusi = qty % upb;
           return (
@@ -464,3 +494,4 @@ const Inventory = () => {
 };
 
 export default Inventory;
+

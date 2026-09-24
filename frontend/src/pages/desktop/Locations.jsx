@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer } from 'lucide-react';
@@ -90,41 +91,41 @@ const Locations = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
 
-      alert(res.data.message);
+      appAlert(res.data.message);
       fetchLocations();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore durante la generazione');
+      appAlert(err.response?.data?.error || 'Errore durante la generazione');
     } finally {
       setIsProcessing(false);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Sicuro di voler eliminare questa postazione?")) return;
+    if (!await appConfirm("Sicuro di voler eliminare questa postazione?")) return;
     try {
       await axios.delete(`http://${window.location.hostname}:3000/api/locations/${id}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       fetchLocations();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore eliminazione');
+      appAlert(err.response?.data?.error || 'Errore eliminazione');
     }
   };
 
   const handleDeleteZone = async (zoneName) => {
-    if (!window.confirm(`Sicuro di voler eliminare interamente la zona "${zoneName}"? L'operazione non è reversibile.`)) return;
+    if (!await appConfirm(`Sicuro di voler eliminare interamente la zona "${zoneName}"? L'operazione non è reversibile.`)) return;
     try {
       await axios.delete(`http://${window.location.hostname}:3000/api/locations/zone/${zoneName}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       fetchLocations();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore eliminazione zona');
+      appAlert(err.response?.data?.error || 'Errore eliminazione zona');
     }
   };
 
   const handleAddFreeLocation = async () => {
-    const name = window.prompt("Nome della posizione libera (es. CELLA 2, SCAFFALE ESTERNO):");
+    const name = await appPrompt("Nome della posizione libera (es. CELLA 2, SCAFFALE ESTERNO):");
     if (!name) return;
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/locations/free`, { name }, {
@@ -132,19 +133,19 @@ const Locations = () => {
       });
       fetchLocations();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore creazione posizione libera');
+      appAlert(err.response?.data?.error || 'Errore creazione posizione libera');
     }
   };
 
   const handleDeleteFreeLocation = async (id) => {
-    if (!window.confirm("Eliminare questa posizione libera?")) return;
+    if (!await appConfirm("Eliminare questa posizione libera?")) return;
     try {
       await axios.delete(`http://${window.location.hostname}:3000/api/locations/free/${id}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       fetchLocations();
     } catch (err) {
-      alert('Errore eliminazione');
+      appAlert('Errore eliminazione');
     }
   };
 
@@ -271,13 +272,13 @@ const Locations = () => {
                 </div>
               </div>
               <div className="max-h-[600px] overflow-y-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/80 sticky top-0 backdrop-blur-sm z-10">
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Barcode Scaffale</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">Zona/Col/Liv</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">PIN</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Barcode Scaffale</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">Zona/Col/Liv</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">PIN</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
@@ -335,7 +336,7 @@ const Locations = () => {
                               const isOccupied = loc.pallet_code ? true : false;
                               return (
                                 <tr key={loc.id} className={`border-b border-slate-800/30 transition-colors ${isOccupied ? 'bg-sky-500/5 hover:bg-sky-500/10' : 'bg-green-500/5 hover:bg-green-500/10'}`}>
-                                  <td className="p-4 pl-12 font-mono font-bold text-lg">
+                                  <td className="px-3 py-3 pl-12 font-mono font-bold text-lg">
                                     {loc.barcode}
                                     {isOccupied && <span className="ml-2 text-[10px] uppercase tracking-wider bg-sky-500 text-brand-black px-2 py-0.5 rounded-full font-black">Occupato</span>}
                                   </td>
@@ -347,7 +348,7 @@ const Locations = () => {
                                       {loc.pin}
                                     </span>
                                   </td>
-                                  <td className="p-4 text-right flex items-center justify-end gap-2">
+                                  <td className="px-3 py-3 text-right flex items-center justify-end gap-2">
                                     {isOccupied && (
                                       <button onClick={() => setViewPallet(loc)} className="p-2 bg-sky-500/20 text-sky-400 hover:bg-sky-500 hover:text-brand-black rounded-lg transition-colors" title="Vedi merce stivata">
                                         <Eye size={18} />
@@ -375,7 +376,7 @@ const Locations = () => {
         </div>
         ) : (
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
               <h2 className="text-xl font-bold text-brand-white flex items-center gap-2">
                 <Layers className="text-brand-blue" size={24} />
                 Elenco Posizioni Libere
@@ -489,3 +490,9 @@ const Locations = () => {
 };
 
 export default Locations;
+
+
+
+
+
+

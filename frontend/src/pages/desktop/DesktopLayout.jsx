@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch } from 'lucide-react';
+import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X } from 'lucide-react';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const menu = [
     { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard },
@@ -20,12 +21,23 @@ const DesktopLayout = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-brand-black flex text-brand-white font-sans selection:bg-brand-blue selection:text-brand-black">
+    <div className="min-h-screen bg-brand-black flex flex-col md:flex-row text-brand-white font-sans selection:bg-brand-blue selection:text-brand-black">
+      {/* Mobile Header */}
+      <div className="md:hidden flex items-center justify-between p-4 bg-slate-900 border-b border-slate-800">
+        <div className="flex items-center gap-3" onClick={() => navigate('/')}>
+          <img src="/logo.png" alt="Logo" className="w-8 h-8 object-contain" />
+          <h1 className="font-bold text-lg leading-tight tracking-tight">MagLite</h1>
+        </div>
+        <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 bg-slate-800 rounded-lg text-brand-white">
+          {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
+      </div>
+
       {/* Sidebar Navigation */}
-      <aside className="w-72 bg-slate-900/50 border-r border-slate-800 flex flex-col backdrop-blur-md">
+      <aside className={`${mobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col w-full md:w-72 bg-slate-900/95 md:bg-slate-900/50 border-r border-slate-800 backdrop-blur-md z-40 fixed md:sticky top-0 h-screen md:h-screen overflow-y-auto`}>
         
-        {/* Header Sidebar */}
-        <div className="p-6 flex items-center gap-4 border-b border-slate-800 cursor-pointer" onClick={() => navigate('/')}>
+        {/* Header Sidebar (Desktop only) */}
+        <div className="hidden md:flex p-6 items-center gap-4 border-b border-slate-800 cursor-pointer" onClick={() => navigate('/')}>
           <div className="w-12 h-12 flex items-center justify-center">
             <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
           </div>
@@ -43,7 +55,7 @@ const DesktopLayout = () => {
             </div>
             <input 
               type="text" 
-              placeholder="Ricerca globale (clienti, lotti...)" 
+              placeholder="Ricerca globale..." 
               className="w-full bg-slate-950 border border-slate-800 text-brand-white text-sm rounded-xl focus:ring-brand-blue focus:border-brand-blue block pl-10 p-3 transition-colors placeholder-slate-500"
             />
           </div>
@@ -58,7 +70,10 @@ const DesktopLayout = () => {
             return (
               <button
                 key={item.name}
-                onClick={() => navigate(item.path)}
+                onClick={() => {
+                  navigate(item.path);
+                  setMobileMenuOpen(false);
+                }}
                 className={`flex items-center gap-4 px-4 py-3.5 rounded-xl transition-all ${
                   isActive 
                     ? 'bg-brand-blue text-brand-black font-bold shadow-md' 
@@ -93,7 +108,7 @@ const DesktopLayout = () => {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto bg-brand-black p-8">
+      <main className="flex-1 w-full max-w-full overflow-y-auto overflow-x-hidden bg-brand-black p-4 md:p-8">
         <Outlet />
       </main>
     </div>

@@ -7,39 +7,60 @@ const path = require('path');
 const logoPath = path.join(__dirname, '../../../logo_xs.png');
 
 async function drawLabel(doc, lbl, x, y, w, h) {
-  doc.rect(x, y, w, h).stroke();
-  
+  // Bordo arrotondato moderno
+  doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
+  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
+
+  // HEADER (Logo & Warehouse)
   if (fs.existsSync(logoPath)) {
-    // Usiamo fit per vincolare sia l'altezza che la larghezza massima senza deformare, 
-    // così se il logo è molto largo non si sovrappone al testo
-    doc.image(logoPath, x + 10, y + 10, { fit: [100, 30] });
-    doc.fontSize(10).font('Helvetica').text(`Logistic Porcelli - ${lbl.warehouse}`, x + 115, y + 18, { width: w - 125, align: 'right' });
+    doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
+    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right' });
   } else {
-    doc.fontSize(10).font('Helvetica').text(`Logistic Porcelli - ${lbl.warehouse}`, x + 10, y + 15, { width: w - 20, align: 'center' });
-  }
-  
-  doc.fontSize(14).font('Helvetica-Bold').text(lbl.customer_name, x + 10, y + 45, { width: w - 20, align: 'center' });
-  doc.fontSize(16).font('Helvetica-Bold').text(lbl.product_name, x + 10, y + 65, { width: w - 20, align: 'center' });
-  
-  let metaY = y + 90;
-  let batchStr = `Lotto: ${lbl.batch || '-'}`;
-  if (lbl.expiration_date) {
-    // format as DD/MM/YYYY or keep as string depending on what we pass. If it's a date object, format it. If string, just use it.
-    let exp = lbl.expiration_date instanceof Date ? lbl.expiration_date.toLocaleDateString('it-IT') : new Date(lbl.expiration_date).toLocaleDateString('it-IT');
-    if (exp === 'Invalid Date') exp = lbl.expiration_date;
-    batchStr += ` | Scad: ${exp}`;
-  }
-  doc.fontSize(11).font('Helvetica').text(`Q.ta: ${lbl.quantity} | ${batchStr}`, x + 10, metaY, { width: w - 20, align: 'center' });
-  
-  if (lbl.client_pallet_number || lbl.client_article_number) {
-    metaY += 15;
-    let extras = [];
-    if (lbl.client_pallet_number) extras.push(`Paletta Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number) extras.push(`Articolo: ${lbl.client_article_number}`);
-    doc.fontSize(9).text(extras.join(' | '), x + 10, metaY, { width: w - 20, align: 'center' });
+    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right' });
   }
 
-  const barcodeY = metaY + 20;
+  // Divider
+  doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
+  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
+
+  // CLIENTE
+  doc.fontSize(11).font('Helvetica-Bold').fillColor('#334155').text((lbl.customer_name || '').toUpperCase(), x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
+
+  // PRODOTTO (Auto-shrink text per evitare a capo)
+  let pName = (lbl.product_name || '').toUpperCase();
+  let maxFontSize = 18;
+  doc.fontSize(maxFontSize).font('Helvetica-Bold');
+  while(doc.widthOfString(pName) > (w - 24) && maxFontSize > 8) {
+    maxFontSize -= 0.5;
+    doc.fontSize(maxFontSize);
+  }
+  doc.fillColor('black').text(pName, x + 12, y + 68, { width: w - 24, align: 'left', lineBreak: false });
+
+  // LOTTO & SCADENZA (Niente Q.tà stampata!)
+  let metaY = y + 70 + maxFontSize + 8; // posiziona sotto al prodotto
+  let batchStr = `Lotto: ${lbl.batch || '-'}`;
+  if (lbl.expiration_date) {
+    let exp = lbl.expiration_date instanceof Date ? lbl.expiration_date.toLocaleDateString('it-IT') : new Date(lbl.expiration_date).toLocaleDateString('it-IT');
+    if (exp === 'Invalid Date') exp = lbl.expiration_date;
+    batchStr += `   |   Scad: ${exp}`;
+  }
+  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left' });
+  
+  // DATI AGGIUNTIVI OPZIONALI
+  if (lbl.client_pallet_number || lbl.client_article_number) {
+    metaY += 14;
+    let extras = [];
+    if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
+    if (lbl.client_article_number) extras.push(`Art: ${lbl.client_article_number}`);
+    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left' });
+  }
+
+  doc.fillColor('black'); // reset colore testo per sicurezza
+
+  // BARCODE (Ridimensiona per stare nel blocco rimanente senza sovrapporsi)
+  const barcodeY = metaY + 18;
+  const remainingHeight = h - (barcodeY - y) - 10; 
+  const finalBarcodeHeight = Math.max(25, remainingHeight);
   
   const pngBuffer = await bwipjs.toBuffer({
     bcid: 'code128',
@@ -51,7 +72,7 @@ async function drawLabel(doc, lbl, x, y, w, h) {
   });
   
   const barcodeW = w - 40;
-  doc.image(pngBuffer, x + 20, barcodeY, { width: barcodeW });
+  doc.image(pngBuffer, x + 20, barcodeY, { fit: [barcodeW, finalBarcodeHeight], align: 'center', valign: 'top' });
 }
 
 async function palletRoutes(fastify, options) {
@@ -376,6 +397,102 @@ async function palletRoutes(fastify, options) {
     }
   });
 
+  fastify.post('/print-bulk', async (request, reply) => {
+    const { ids, paper_format = 'A4', print_mode = 'GRID', copies = 1 } = request.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return reply.code(400).send({ error: 'Nessun ID fornito' });
+    }
+
+    try {
+      const [codeRows] = await db.query(`SELECT DISTINCT pallet_code FROM PALLETS WHERE id IN (?)`, [ids]);
+      const codes = codeRows.map(r => r.pallet_code);
+
+      const generatedLabelsData = [];
+      
+      for (const code of codes) {
+        const [rows] = await db.query(`
+          SELECT p.*, pr.name as product_name, c.business_name as customer_name
+          FROM PALLETS p
+          JOIN PRODUCTS pr ON p.product_id = pr.id
+          JOIN CUSTOMERS c ON p.customer_id = c.id
+          WHERE p.pallet_code = ?
+        `, [code]);
+        
+        if (rows.length === 0) continue;
+        
+        const pallet = rows[0];
+        
+        generatedLabelsData.push({
+          code: pallet.pallet_code,
+          customer_name: pallet.customer_name,
+          product_name: rows.length > 1 ? `PALETTA MISTA (${rows.length} Articoli)` : pallet.product_name,
+          quantity: rows.length > 1 ? '-' : pallet.quantity,
+          batch: rows.length > 1 ? '-' : pallet.batch,
+          warehouse: pallet.warehouse,
+          client_pallet_number: pallet.client_pallet_number,
+          client_article_number: rows.length > 1 ? '-' : pallet.client_article_number,
+          expiration_date: pallet.expiration_date
+        });
+      }
+
+      const finalLabels = [];
+      for (const lbl of generatedLabelsData) {
+        for (let i = 0; i < copies; i++) {
+          finalLabels.push(lbl);
+        }
+      }
+
+      const docOptions = { margin: 20 };
+      if (paper_format === 'THERMAL') {
+        docOptions.size = [283, 425];
+      } else {
+        docOptions.size = 'A4';
+      }
+
+      const doc = new PDFDocument(docOptions);
+      reply.header('Content-Type', 'application/pdf');
+      reply.header('Content-Disposition', 'inline; filename="etichette_bulk.pdf"');
+      reply.send(doc);
+
+      if (paper_format === 'THERMAL' || print_mode === 'SINGLE_PAGE') {
+        for (let i = 0; i < finalLabels.length; i++) {
+          if (i > 0) doc.addPage();
+          const currentLbl = finalLabels[i];
+          const w = doc.page.width - 40;
+          const h = doc.page.height - 40;
+          await drawLabel(doc, currentLbl, 20, 20, w, h);
+        }
+      } else {
+        const labelsPerRow = 2;
+        const labelWidth = 265;
+        const labelHeight = 180;
+        const startX = 25;
+        let startY = 25;
+
+        for (let i = 0; i < finalLabels.length; i++) {
+          const currentLbl = finalLabels[i];
+          const col = i % labelsPerRow;
+          const row = Math.floor((i % 8) / labelsPerRow);
+          
+          if (i > 0 && i % 8 === 0) {
+            doc.addPage();
+            startY = 25;
+          }
+
+          const x = startX + (col * (labelWidth + 15));
+          const y = startY + (row * (labelHeight + 15));
+          await drawLabel(doc, currentLbl, x, y, labelWidth, labelHeight);
+        }
+      }
+
+      doc.end();
+      return reply;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore stampa bulk' });
+    }
+  });
+
   fastify.put('/:code/quantity', async (request, reply) => {
     const { code } = request.params;
     const { quantity, pallet_id } = request.body;
@@ -560,3 +677,4 @@ async function palletRoutes(fastify, options) {
 }
 
 module.exports = palletRoutes;
+

@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -127,7 +128,7 @@ const Outbound = () => {
 
   const confirmDeleteOrder = async () => {
     if (deleteConfirm.input !== deleteConfirm.expected) {
-      alert('Codice errato. Impossibile eliminare.');
+      appAlert('Codice errato. Impossibile eliminare.');
       return;
     }
     try {
@@ -135,7 +136,7 @@ const Outbound = () => {
       setDeleteConfirm({show: false, id: null, code: '', expected: '', input: ''});
       fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore durante l\'eliminazione');
+      appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione');
     }
   };
 
@@ -156,7 +157,7 @@ const Outbound = () => {
       searchPalletsByCustomer(order.customer_id, order.id, includePending);
       setShowModal(true);
     } catch (err) {
-      alert('Errore caricamento spedizione');
+      appAlert('Errore caricamento spedizione');
     }
   };
 
@@ -201,13 +202,13 @@ const Outbound = () => {
     }
     
     if (!qty || qty <= 0 || (requestedUom !== 'Bancale' && actualRequested > maxQty)) {
-      alert('Quantità non valida o superiore alla disponibilità.');
+      appAlert('Quantità non valida o superiore alla disponibilità.');
       return;
     }
     
     // Check if already in cart
     if (cart.find(c => c.pallet_code === pallet.pallet_code)) {
-      alert('Paletta già inserita nella lista');
+      appAlert('Paletta già inserita nella lista');
       return;
     }
 
@@ -230,7 +231,7 @@ const Outbound = () => {
 
   const handleCreateOrder = async () => {
     if (!newOrder.customer_id || cart.length === 0) {
-      alert('Seleziona cliente e inserisci almeno un articolo.');
+      appAlert('Seleziona cliente e inserisci almeno un articolo.');
       return;
     }
     setIsProcessing(true);
@@ -260,22 +261,22 @@ const Outbound = () => {
       setPalletSearchTerm('');
       fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore durante il salvataggio');
+      appAlert(err.response?.data?.error || 'Errore durante il salvataggio');
     } finally {
       setIsProcessing(false);
     }
   };
 
   const confirmOrder = async (code) => {
-    if (!window.confirm('Vuoi confermare la spedizione? Questo scaricherà la merce dal magazzino definitivamente.')) return;
+    if (!await appConfirm('Vuoi confermare la spedizione? Questo scaricherà la merce dal magazzino definitivamente.')) return;
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/outbound/${code}/confirm`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       fetchOrders();
-      alert('Spedizione confermata e merce scaricata!');
+      appAlert('Spedizione confermata e merce scaricata!');
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore');
+      appAlert(err.response?.data?.error || 'Errore');
     }
   };
 
@@ -357,14 +358,14 @@ const Outbound = () => {
       {/* Orders Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
             <thead>
               <tr className="bg-slate-950/50">
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">DDT / Ordine</th>
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Data Uscita</th>
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Cliente</th>
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Stato</th>
-                <th className="p-4 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800 text-right">Azioni</th>
+                <th className="px-3 py-3 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">DDT / Ordine</th>
+                <th className="px-3 py-3 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Data Uscita</th>
+                <th className="px-3 py-3 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Cliente</th>
+                <th className="px-3 py-3 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800">Stato</th>
+                <th className="px-3 py-3 text-slate-400 font-bold uppercase tracking-wider text-sm border-b border-slate-800 text-right">Azioni</th>
               </tr>
             </thead>
             <tbody>
@@ -374,21 +375,21 @@ const Outbound = () => {
                 </tr>
               ) : filteredOrders.map(o => (
                 <tr key={o.id} className="hover:bg-slate-800/50 transition-colors group">
-                  <td className="p-4 font-mono font-bold text-brand-white">
+                  <td className="px-3 py-3 font-mono font-bold text-brand-white">
                     <div className="flex flex-col">
                       <span>{o.order_code}</span>
                       {o.client_ddt && <span className="text-xs text-brand-blue uppercase">DDT Cliente: {o.client_ddt}</span>}
                     </div>
                   </td>
-                  <td className="p-4 text-slate-300">{new Date(o.exit_date).toLocaleDateString('it-IT')}</td>
-                  <td className="p-4 font-bold text-brand-blue">{o.customer_name}</td>
-                  <td className="p-4">
+                  <td className="px-3 py-3 text-slate-300">{new Date(o.exit_date).toLocaleDateString('it-IT')}</td>
+                  <td className="px-3 py-3 font-bold text-brand-blue">{o.customer_name}</td>
+                  <td className="px-3 py-3">
                     {o.status === 'PENDING' && <span className="bg-slate-500/20 text-slate-400 px-3 py-1 rounded-full text-xs font-bold border border-slate-500/30">ATTESA</span>}
                     {o.status === 'PICKING' && <span className="bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full text-xs font-bold border border-amber-500/30">IN PRELIEVO</span>}
                     {o.status === 'READY' && <span className="bg-emerald-500/20 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/30">PRONTO</span>}
                     {o.status === 'SHIPPED' && <span className="bg-sky-500/20 text-sky-400 px-3 py-1 rounded-full text-xs font-bold border border-sky-500/30">SPEDITO</span>}
                   </td>
-                  <td className="p-4 text-right flex justify-end gap-2">
+                  <td className="px-3 py-3 text-right flex justify-end gap-2">
                     <div className="flex gap-2">
                       <button 
                         onClick={() => setTimelineModal(o)}
@@ -524,7 +525,7 @@ const Outbound = () => {
                 </div>
 
                 <div className="overflow-y-auto flex-1 border border-slate-800 rounded-xl mb-4 bg-slate-900/50">
-                  {availablePallets.length === 0 && <p className="p-4 text-slate-500 text-center">Nessuna paletta disponibile per questo cliente.</p>}
+                  {availablePallets.length === 0 && <p className="px-3 py-3 text-slate-500 text-center">Nessuna paletta disponibile per questo cliente.</p>}
                   {availablePallets.length > 0 && (
                     <table className="w-full text-left">
                       <thead className="bg-slate-900 sticky top-0 shadow-md z-10">
@@ -654,7 +655,7 @@ const Outbound = () => {
               <button onClick={() => {
                  const maxQty = pickingPallet.available_quantity ?? pickingPallet.quantity;
                  if (!pickQty || parseFloat(pickQty) <= 0 || (pickUom !== 'Bancale' && parseFloat(pickQty) > maxQty)) {
-                   alert('Quantità non valida o superiore alla disponibilità.');
+                   appAlert('Quantità non valida o superiore alla disponibilità.');
                    return;
                  }
                  addPalletToCart(pickingPallet, parseFloat(pickQty), pickUom);
@@ -698,3 +699,8 @@ const Outbound = () => {
 };
 
 export default Outbound;
+
+
+
+
+
