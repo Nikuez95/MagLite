@@ -131,7 +131,7 @@ const Inbound = () => {
       try {
         const sku = "PROD-" + Math.random().toString(36).substring(2,6).toUpperCase();
         let uomToSave = formData.entry_uom;
-        if (uomToSave === 'Base') uomToSave = 'Scatole';
+        if (uomToSave === 'Base') uomToSave = 'Pezzi';
         
         const payload = { 
           sku, 
@@ -278,7 +278,7 @@ const Inbound = () => {
     else if (formData.entry_uom === 'Bancali') actualQtyForHint *= (upb * bpp);
 
     const productObj = products.find(p => p.value === formData.product_id);
-    const baseProdUom = productObj?.raw?.uom || 'Scatole';
+    const baseProdUom = productObj?.raw?.uom || 'Pezzi';
     const prodUom = (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') ? formData.entry_uom : baseProdUom;
 
     if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali' && prodUom !== 'KG' && prodUom !== 'Metro Cubo') {
@@ -394,7 +394,7 @@ const Inbound = () => {
                 <div className="md:col-span-1">
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità</label>
                   <select value={formData.entry_uom} onChange={e => setFormData({...formData, entry_uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue">
-                    <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Scatole'})</option>
+                    <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'})</option>
                     <option value="Scatole">Scatole</option>
                     <option value="Bancali">Intero Bancali</option>
                     <option value="KG">KG</option>
@@ -610,6 +610,7 @@ const Inbound = () => {
 };
 
 export default Inbound;
+
 
 
 
