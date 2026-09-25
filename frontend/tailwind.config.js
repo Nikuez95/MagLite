@@ -4,13 +4,17 @@ export default {
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
+  safelist: [
+    { pattern: /^(bg|text|border)-(brand|slate|rose|amber|emerald|sky|green|purple|fuchsia)-[0-9]{2,3}(\/[0-9]{1,2})?$/, variants: ['hover'] },
+    'md:flex', 'md:hidden', 'md:grid', 'md:grid-cols-2', 'md:w-72', 'md:whitespace-normal', 'md:sticky', 'md:h-screen', 'md:bg-slate-900/50', 'md:p-8', 'md:flex-row'
+  ],
   theme: {
     extend: {
       colors: {
         'brand-white': '#F8FAFC',
-        'brand-black': '#121e27', // Leggermente più scuro per il background assoluto
-        'brand-blue': '#a9daff', // Nuovo colore accento
-        'brand-blue-dark': '#8ac3ed', // Hover per il nuovo accento
+        'brand-black': '#121e27', 
+        'brand-blue': '#a9daff', 
+        'brand-blue-dark': '#8ac3ed',
         slate: {
           50: '#f3f9fe',
           100: '#e2f1fc',
@@ -21,7 +25,7 @@ export default {
           600: '#42637b',
           700: '#304a5e',
           800: '#233746',
-          900: '#192935', // Il colore richiesto come base per card e pannelli
+          900: '#192935', 
           950: '#101c25',
         }
       },

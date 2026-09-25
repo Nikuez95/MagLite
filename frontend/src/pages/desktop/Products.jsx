@@ -7,7 +7,7 @@ import CreatableSelect from 'react-select/creatable';
 
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
-  if (u.includes('bancal')) return 'Bancale';
+  if (u.includes('bancal')) return 'Bancali';
   if (u === 'kg') return 'KG';
   if (u.includes('metr')) return 'Metri Cubi';
   if (u === 'scatole') return 'Scatole';
@@ -46,6 +46,30 @@ const getExpirationStatus = (expDate, warningDays) => {
   if (diffDays < 0) return { color: 'text-rose-500', label: 'SCADUTO', bg: 'bg-rose-500/10 border-rose-500/30' };
   if (diffDays <= warningDays) return { color: 'text-amber-500', label: `SCADE TRA ${diffDays} GG`, bg: 'bg-amber-500/10 border-amber-500/30' };
   return { color: 'text-emerald-500', label: `Valido (${diffDays} gg)`, bg: 'bg-emerald-500/10 border-emerald-500/30' };
+};
+
+
+const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+  if (totalPages <= 1) return null;
+  const pages = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+      pages.push(i);
+    } else if (i === currentPage - 3 || i === currentPage + 3) {
+      pages.push('...');
+    }
+  }
+  const uniquePages = pages.filter((p, index) => pages.indexOf(p) === index);
+
+  return (
+    <div className="flex items-center justify-center gap-2 mt-6 pb-4">
+      <button onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} className="px-3 py-1.5 bg-slate-900 border border-slate-700 text-slate-400 rounded-lg disabled:opacity-50 hover:bg-slate-800 transition-colors">Prec</button>
+      {uniquePages.map((p, idx) => (
+        <button key={idx} onClick={() => p !== '...' && onPageChange(p)} disabled={p === '...'} className={`px-3.5 py-1.5 border rounded-lg transition-colors ${p === currentPage ? 'bg-brand-blue text-brand-black border-brand-blue font-bold shadow-md' : p === '...' ? 'bg-transparent border-transparent text-slate-500' : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white'}`}>{p}</button>
+      ))}
+      <button onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} className="px-3 py-1.5 bg-slate-900 border border-slate-700 text-slate-400 rounded-lg disabled:opacity-50 hover:bg-slate-800 transition-colors">Succ</button>
+    </div>
+  );
 };
 
 const ProductsManagement = () => {
@@ -216,7 +240,7 @@ const ProductsManagement = () => {
   };
 
   const toggleSelectAll = (filteredPallets) => {
-    const visibleIds = filteredPallets.map(p => p.id);
+    const visibleIds = currentPallets.map(p => p.id);
     if (selectedPallets.length === visibleIds.length) {
       setSelectedPallets([]); // deseleziona tutti
     } else {
@@ -291,6 +315,17 @@ const ProductsManagement = () => {
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
 
+  // Paginazione
+  const [palletsCurrentPage, setPalletsCurrentPage] = useState(1);
+  const [productsCurrentPage, setProductsCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  useEffect(() => {
+    setPalletsCurrentPage(1);
+    setProductsCurrentPage(1);
+  }, [searchTerm, filterWarehouse, filterStatus, filterStartDate, filterEndDate]);
+
+
   const filteredPallets = pallets.filter(p => {
     const searchLower = searchTerm.toLowerCase();
     const matchSearch = p.product_name.toLowerCase().includes(searchLower) || 
@@ -332,8 +367,19 @@ const ProductsManagement = () => {
            (p.notes && p.notes.toLowerCase().includes(searchLower));
   });
 
+
+  const indexOfLastPallet = palletsCurrentPage * itemsPerPage;
+  const indexOfFirstPallet = indexOfLastPallet - itemsPerPage;
+  const currentPallets = filteredPallets.slice(indexOfFirstPallet, indexOfLastPallet);
+  const totalPalletPages = Math.ceil(filteredPallets.length / itemsPerPage);
+
+  const indexOfLastProduct = productsCurrentPage * itemsPerPage;
+  const indexOfFirstProduct = indexOfLastProduct - itemsPerPage;
+  const currentProducts = filteredProducts.slice(indexOfFirstProduct, indexOfLastProduct);
+  const totalProductPages = Math.ceil(filteredProducts.length / itemsPerPage);
+
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
+  <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
       <div className="max-w-7xl mx-auto animate-fade-in-up">
         
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
@@ -416,7 +462,7 @@ const ProductsManagement = () => {
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
                       <th className="px-3 py-3 w-12 text-center">
-                        <div onClick={() => toggleSelectAll(filteredPallets)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.length > 0 && selectedPallets.length === filteredPallets.length ? 'bg-brand-blue border-brand-blue' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.length > 0 && selectedPallets.length === filteredPallets.length && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
+                        <div onClick={() => toggleSelectAll(currentPallets)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.length > 0 && selectedPallets.length > 0 && selectedPallets.length === currentPallets.length ? 'bg-brand-blue border-brand-blue' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.length > 0 && selectedPallets.length > 0 && selectedPallets.length === currentPallets.length && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
                       </th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Paletta</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
@@ -429,9 +475,9 @@ const ProductsManagement = () => {
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
-                    {filteredPallets.length === 0 ? (
+                    {currentPallets.length === 0 ? (
                       <tr><td colSpan="9" className="p-12 text-center text-slate-500 italic font-medium">Nessuna paletta trovata.</td></tr>
-                    ) : filteredPallets.map(p => (
+                    ) : currentPallets.map(p => (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                         <td className="p-4 text-center">
                           <div onClick={() => toggleSelect(p.id)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.includes(p.id) ? 'bg-brand-blue border-brand-blue shadow-[0_0_10px_rgba(14,165,233,0.3)]' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.includes(p.id) && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
@@ -535,9 +581,9 @@ const ProductsManagement = () => {
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
-                    {filteredProducts.length === 0 ? (
+                    {currentProducts.length === 0 ? (
                       <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
-                    ) : filteredProducts.map(p => {
+                    ) : currentProducts.map(p => {
                       const totalStock = pallets.filter(pal => pal.product_id === p.id && pal.status !== 'SHIPPED').reduce((acc, curr) => acc + parseFloat(curr.quantity || 0), 0);
                       return (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
@@ -561,6 +607,11 @@ const ProductsManagement = () => {
                 </>
               )}
             </table>
+                    {activeTab === 'pallets' ? (
+              <Pagination currentPage={palletsCurrentPage} totalPages={totalPalletPages} onPageChange={setPalletsCurrentPage} />
+            ) : (
+              <Pagination currentPage={productsCurrentPage} totalPages={totalProductPages} onPageChange={setProductsCurrentPage} />
+            )}
           </div>
         </div>
       </div>
@@ -575,8 +626,8 @@ const ProductsManagement = () => {
             <form onSubmit={handleCreateProduct} className="space-y-6">
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Articolo (SKU) *</label>
-                <input required value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue font-mono uppercase" />
-              </div>
+                <input required value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                </div>
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Nome Prodotto *</label>
                 <input required value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
@@ -587,7 +638,7 @@ const ProductsManagement = () => {
                   <select required value={newProduct.uom} onChange={e => setNewProduct({...newProduct, uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
                     <option value="Pezzi">Pezzi</option>
                     <option value="Scatole">Scatole</option>
-                    <option value="Bancali">Bancali (Pallet)</option>
+                    <option value="Bancali">Bancale Intero</option>
                     <option value="KG">KG</option>
                     <option value="Metro Cubo">Metro Cubo (m³)</option>
                   </select>
@@ -845,6 +896,9 @@ const ProductsManagement = () => {
 };
 
 export default ProductsManagement;
+
+
+
 
 
 

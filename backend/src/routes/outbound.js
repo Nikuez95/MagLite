@@ -316,7 +316,7 @@ async function outboundRoutes(fastify, options) {
         doc.font('Helvetica-Bold').text(item.pallet_code, 390, y);
         
         let qtyText = `${item.quantity_required} ${item.uom}`;
-        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancale' && item.uom !== 'Bancali') {
+        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali' && item.uom !== 'Bancali') {
            const scatole = Math.floor(item.quantity_required / item.units_per_box);
            const sfusi = item.quantity_required % item.units_per_box;
            let breakDown = [];
@@ -470,7 +470,7 @@ async function outboundRoutes(fastify, options) {
           const pallet = pallets[0];
           let newQty;
 
-          if (item.requested_uom === 'Bancale' && actualPicked >= 1) {
+          if (item.requested_uom === 'Bancali' && actualPicked >= 1) {
             newQty = 0;
           } else {
             let deduction = actualPicked;
@@ -540,7 +540,7 @@ async function outboundRoutes(fastify, options) {
                (pal.quantity - COALESCE((
                  SELECT SUM(
                    CASE 
-                     WHEN oi.requested_uom = 'Bancale' THEN pal.quantity 
+                     WHEN oi.requested_uom = 'Bancali' THEN pal.quantity 
                      WHEN oi.requested_uom = 'Scatole' THEN (oi.quantity_required * p.units_per_box)
                      ELSE oi.quantity_required 
                    END

@@ -6,7 +6,7 @@ if (!code.includes('const formatUOM')) {
   const helpers = \
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
-  if (u.includes('bancale')) return 'Bancali';
+  if (u.includes('Bancali')) return 'Bancali';
   if (u === 'kg') return 'KG';
   if (u.includes('metr')) return 'Metri Cubi';
   if (u === 'scatole') return 'Scatole';
@@ -17,7 +17,7 @@ const formatUOM = (uom) => {
 const formatQuantity = (qty, uom) => {
   const q = parseFloat(qty || 0);
   const u = (uom || '').toLowerCase();
-  if (u.includes('pezzi') || u.includes('scatole') || u.includes('bancale')) {
+  if (u.includes('pezzi') || u.includes('scatole') || u.includes('Bancali')) {
     return q.toFixed(0);
   }
   return q.toFixed(2);

@@ -89,7 +89,7 @@ const Outbound = () => {
   const [showPickModal, setShowPickModal] = useState(false);
   const [pickingPallet, setPickingPallet] = useState(null);
   const [pickQty, setPickQty] = useState('');
-  const [pickUom, setPickUom] = useState('Bancale');
+  const [pickUom, setPickUom] = useState('Bancali');
 
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, id: null, code: '', expected: '', input: '' });
   
@@ -201,7 +201,7 @@ const Outbound = () => {
       actualRequested *= (pallet.units_per_box || 1);
     }
     
-    if (!qty || qty <= 0 || (requestedUom !== 'Bancale' && actualRequested > maxQty)) {
+    if (!qty || qty <= 0 || (requestedUom !== 'Bancali' && actualRequested > maxQty)) {
       appAlert('Quantità non valida o superiore alla disponibilità.');
       return;
     }
@@ -575,7 +575,7 @@ const Outbound = () => {
                                 <button onClick={() => {
                                   setPickingPallet({...p, label: p.product_name});
                                   setPickQty(1);
-                                  setPickUom('Bancale');
+                                  setPickUom('Bancali');
                                   setShowPickModal(true);
                                 }} className="bg-sky-500/20 text-sky-400 px-3 py-2 rounded-lg text-xs font-bold hover:bg-sky-500 hover:text-brand-black transition-colors">
                                   + Aggiungi
@@ -621,12 +621,12 @@ const Outbound = () => {
             <p className="text-brand-blue font-mono mb-4 text-lg text-center">{pickingPallet.pallet_code}</p>
 
             <div className="flex gap-2 mb-4">
-              {Array.from(new Set(['Bancale', 'Scatole', pickingPallet.uom === 'Bancali' ? 'Unità' : (pickingPallet.uom || 'Pezzi')])).map(u => (
+              {Array.from(new Set(['Bancali', 'Scatole', pickingPallet.uom === 'Bancali' ? 'Unità' : (pickingPallet.uom || 'Pezzi')])).map(u => (
                 <button 
                   key={u}
                   onClick={() => {
                      setPickUom(u);
-                     if (u === 'Bancale') setPickQty(1);
+                     if (u === 'Bancali') setPickQty(1);
                      else setPickQty('');
                   }}
                   className={`flex-1 py-2 text-xs font-bold rounded-lg border transition-colors ${pickUom === u ? 'bg-brand-blue text-brand-black border-brand-blue' : 'bg-slate-800 text-slate-400 border-slate-700'}`}
@@ -636,7 +636,7 @@ const Outbound = () => {
               ))}
             </div>
 
-            {pickUom !== 'Bancale' && (
+            {pickUom !== 'Bancali' && (
               <div className="mb-6">
                 <label className="block text-slate-400 text-xs font-bold mb-2">Quantità ({pickUom})</label>
                 <input 
@@ -654,7 +654,7 @@ const Outbound = () => {
               <button onClick={() => setShowPickModal(false)} className="flex-1 py-3 text-slate-400 font-bold hover:text-brand-white transition-colors bg-slate-800 rounded-xl">Annulla</button>
               <button onClick={() => {
                  const maxQty = pickingPallet.available_quantity ?? pickingPallet.quantity;
-                 if (!pickQty || parseFloat(pickQty) <= 0 || (pickUom !== 'Bancale' && parseFloat(pickQty) > maxQty)) {
+                 if (!pickQty || parseFloat(pickQty) <= 0 || (pickUom !== 'Bancali' && parseFloat(pickQty) > maxQty)) {
                    appAlert('Quantità non valida o superiore alla disponibilità.');
                    return;
                  }

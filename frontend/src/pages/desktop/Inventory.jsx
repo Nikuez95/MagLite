@@ -22,7 +22,7 @@ const defaultColumns = [
 
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
-  if (u.includes('bancal')) return 'Bancale';
+  if (u.includes('bancal')) return 'Bancali';
   if (u === 'kg') return 'KG';
   if (u.includes('metr')) return 'Metri Cubi';
   if (u === 'scatole') return 'Scatole';

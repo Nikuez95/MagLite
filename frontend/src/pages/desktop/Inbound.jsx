@@ -25,7 +25,9 @@ const Inbound = () => {
 
   const [formData, setFormData] = useState({
     customer_id: null,
-    product_id: null,
+      product_id: null,
+      isNewProduct: false,
+      newProductName: '',
     quantity: '',
     entry_uom: 'Base',
     units_per_box: '',
@@ -74,7 +76,7 @@ const Inbound = () => {
         setFormData(prev => ({ ...prev, quantity: (upb * bpp).toString() }));
       } else if (formData.entry_uom === 'Scatole') {
         setFormData(prev => ({ ...prev, quantity: bpp.toString() }));
-      } else if (formData.entry_uom === 'Bancale') {
+      } else if (formData.entry_uom === 'Bancali') {
         setFormData(prev => ({ ...prev, quantity: '1' }));
       }
     }
@@ -85,13 +87,15 @@ const Inbound = () => {
       appAlert('Seleziona prima il Cliente Proprietario!');
       return;
     }
+    const uom = await appPrompt('Inserisci unit di misura (es. Scatole, Bancali, Pezzi, KG, Metro Cubo):', 'Unit Base');
+    if (!uom) return;
     setIsProcessing(true);
     try {
-      const sku = `PROD-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
+      const sku = "PROD-" + Math.random().toString(36).substring(2,6).toUpperCase();
       const payload = { 
         sku, 
         name: inputValue, 
-        uom: 'Pezzi', 
+        uom: uom, 
         customer_id: formData.customer_id 
       };
       
@@ -111,7 +115,7 @@ const Inbound = () => {
 
   const filteredProducts = products.filter(p => p.raw.customer_id === formData.customer_id);
 
-  const handleAddToCart = (e) => {
+  const handleAddToCart = async (e) => {
     e.preventDefault();
     if (!formData.customer_id || !formData.product_id || !formData.quantity || formData.num_pallets < 1) {
       appAlert('Compila tutti i campi obbligatori');
@@ -119,8 +123,42 @@ const Inbound = () => {
     }
 
     const customer = customers.find(c => c.value === formData.customer_id)?.label;
-    const productObj = products.find(p => p.value === formData.product_id);
-    const product = productObj?.label;
+    let finalProductId = formData.product_id;
+    let finalProductName = '';
+
+    if (formData.isNewProduct) {
+      setIsProcessing(true);
+      try {
+        const sku = "PROD-" + Math.random().toString(36).substring(2,6).toUpperCase();
+        let uomToSave = formData.entry_uom;
+        if (uomToSave === 'Base') uomToSave = 'Scatole';
+        
+        const payload = { 
+          sku, 
+          name: formData.newProductName, 
+          uom: uomToSave, 
+          customer_id: formData.customer_id,
+          units_per_box: parseFloat(formData.units_per_box) || 1,
+          boxes_per_pallet: parseFloat(formData.boxes_per_pallet) || 1
+        };
+        
+        const res = await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, { 
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        finalProductId = res.data.id;
+        finalProductName = `${sku} - ${formData.newProductName}`;
+        
+        await fetchData(); // refresh products list
+      } catch (err) {
+        appAlert(err.response?.data?.error || 'Errore creazione prodotto al volo');
+        setIsProcessing(false);
+        return;
+      }
+      setIsProcessing(false);
+    } else {
+      finalProductName = products.find(p => p.value === formData.product_id)?.label;
+    }
+    const product = finalProductName;
 
     let actualQty = parseFloat(formData.quantity);
     const upb = parseFloat(formData.units_per_box) || 1;
@@ -130,7 +168,7 @@ const Inbound = () => {
 
     if (formData.entry_uom === 'Scatole') {
       actualQty *= upb;
-    } else if (formData.entry_uom === 'Bancale') {
+    } else if (formData.entry_uom === 'Bancali') {
       actualQty *= (upb * bpp);
     } else if (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') {
       pallet_uom = formData.entry_uom === 'KG' ? 'KG' : 'Metro Cubo';
@@ -140,7 +178,7 @@ const Inbound = () => {
       id: Date.now(),
       customer_id: formData.customer_id,
       customer_name: customer,
-      product_id: formData.product_id,
+      product_id: finalProductId,
       product_name: product,
       quantity: actualQty,
       units_per_box: upb,
@@ -169,7 +207,9 @@ const Inbound = () => {
       client_pallet_number: '', 
       client_article_number: '', 
       expiration_date: '',
-      arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+      arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16),
+      isNewProduct: false,
+      newProductName: ''
     }));
   };
 
@@ -235,10 +275,10 @@ const Inbound = () => {
     const bpp = parseFloat(formData.boxes_per_pallet) || 1;
 
     if (formData.entry_uom === 'Scatole') actualQtyForHint *= upb;
-    else if (formData.entry_uom === 'Bancale') actualQtyForHint *= (upb * bpp);
+    else if (formData.entry_uom === 'Bancali') actualQtyForHint *= (upb * bpp);
 
     const productObj = products.find(p => p.value === formData.product_id);
-    const baseProdUom = productObj?.raw?.uom || 'Pezzi';
+    const baseProdUom = productObj?.raw?.uom || 'Scatole';
     const prodUom = (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') ? formData.entry_uom : baseProdUom;
 
     if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali' && prodUom !== 'KG' && prodUom !== 'Metro Cubo') {
@@ -304,16 +344,32 @@ const Inbound = () => {
                   placeholder={formData.customer_id ? "Seleziona o crea..." : "Seleziona prima il cliente"}
                   isDisabled={!formData.customer_id || isProcessing}
                   formatCreateLabel={(val) => `Crea nuovo per questo cliente: "${val}"`}
-                  onCreateOption={handleCreateProduct}
-                  value={products.find(p => p.value === formData.product_id)}
+                  value={formData.isNewProduct ? { label: formData.newProductName, value: formData.product_id } : products.find(p => p.value === formData.product_id)}
                   onChange={val => {
-                    const prod = products.find(p => p.value === val.value);
-                    setFormData({
-                      ...formData, 
-                      product_id: val.value,
-                      units_per_box: prod?.raw?.units_per_box || '',
-                      boxes_per_pallet: prod?.raw?.boxes_per_pallet || ''
-                    });
+                    if (!val) {
+                      setFormData({...formData, product_id: null, isNewProduct: false, newProductName: ''});
+                      return;
+                    }
+                    if (val.__isNew__) {
+                      setFormData({
+                        ...formData,
+                        product_id: 'NEW',
+                        isNewProduct: true,
+                        newProductName: val.value,
+                        units_per_box: '',
+                        boxes_per_pallet: ''
+                      });
+                    } else {
+                      const prod = products.find(p => p.value === val.value);
+                      setFormData({
+                        ...formData, 
+                        product_id: val.value,
+                        isNewProduct: false,
+                        newProductName: '',
+                        units_per_box: prod?.raw?.units_per_box || '',
+                        boxes_per_pallet: prod?.raw?.boxes_per_pallet || ''
+                      });
+                    }
                   }}
                 />
               </div>
@@ -338,9 +394,9 @@ const Inbound = () => {
                 <div className="md:col-span-1">
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità</label>
                   <select value={formData.entry_uom} onChange={e => setFormData({...formData, entry_uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue">
-                    <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'})</option>
+                    <option value="Base">Unità Base ({products.find(p => p.value === formData.product_id)?.raw?.uom || 'Scatole'})</option>
                     <option value="Scatole">Scatole</option>
-                    <option value="Bancale">Intero Bancale</option>
+                    <option value="Bancali">Intero Bancali</option>
                     <option value="KG">KG</option>
                     <option value="Metro Cubo">Metro Cubo (m³)</option>
                   </select>
@@ -554,6 +610,7 @@ const Inbound = () => {
 };
 
 export default Inbound;
+
 
 
 

@@ -87,7 +87,6 @@ async function palletRoutes(fastify, options) {
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         ORDER BY p.created_at DESC
-        LIMIT 100
       `);
       return rows;
     } catch (err) {
@@ -677,4 +676,5 @@ async function palletRoutes(fastify, options) {
 }
 
 module.exports = palletRoutes;
+
 
