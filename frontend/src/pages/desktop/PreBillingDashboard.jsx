@@ -277,7 +277,20 @@ const PreBillingDashboard = () => {
 
     doc.save(`Proforma_${cust.business_name.replace(/\s/g, '_')}_${reportData.period.replace('/', '_')}.pdf`);
 
-    axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, { customer_id: selectedCustomer.value, period_month: month, period_year: year, base_total: baseTotal, vat_amount: vatAmount, grand_total: grandTotal }, { headers: { Authorization: `Bearer ${getToken()}` } }).then(() => appAlert('Proforma archiviata correttamente nel registro storico!')).catch(() => console.error('Impossibile archiviare la fattura'));
+    axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, { 
+      customer_id: selectedCustomer.value, 
+      period_month: month, 
+      period_year: year, 
+      base_total: baseTotal, 
+      vat_amount: vatAmount, 
+      grand_total: grandTotal,
+      invoice_data: {
+        items: invoiceItems.filter(i => i.visible),
+        pallets: palletDetails.filter(p => p.visibleInPdf),
+        vatRate,
+        period: reportData.period
+      }
+    }, { headers: { Authorization: `Bearer ${getToken()}` } }).then(() => appAlert('Proforma archiviata correttamente nel registro storico!')).catch(() => console.error('Impossibile archiviare la fattura'));
   };
 
   const selectStyles = {

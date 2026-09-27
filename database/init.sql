@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS USERS (
     password_hash VARCHAR(255) NOT NULL,
     role ENUM('developer', 'backoffice', 'operator') NOT NULL DEFAULT 'operator',
     requires_password_change BOOLEAN DEFAULT TRUE,
+    preferences JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -24,11 +25,13 @@ CREATE TABLE IF NOT EXISTS PRODUCTS (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sku VARCHAR(100) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
-    uom VARCHAR(50) NOT NULL DEFAULT 'Pezzi',
+    uom VARCHAR(50) NOT NULL DEFAULT 'Scatole',
     units_per_box INT DEFAULT 1,
     boxes_per_pallet INT DEFAULT 1,
     customer_id INT NOT NULL,
     notes TEXT,
+    default_article_number VARCHAR(100) DEFAULT NULL,
+    flags JSON DEFAULT NULL,
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT
 );
 
@@ -63,8 +66,9 @@ CREATE TABLE IF NOT EXISTS PALLETS (
     client_pallet_number VARCHAR(100),
     client_article_number VARCHAR(100),
     expiration_date DATE,
+    shipped_at DATETIME DEFAULT NULL,
+    flags JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_pallet_code (pallet_code),
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT,
     FOREIGN KEY (product_id) REFERENCES PRODUCTS(id) ON DELETE RESTRICT
 );
@@ -75,11 +79,11 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   customer_id INT NOT NULL,
   exit_date DATE NOT NULL,
   status ENUM('PENDING', 'PICKING', 'READY', 'SHIPPED') DEFAULT 'PENDING',
-  client_ddt VARCHAR(100),
-  picking_operator VARCHAR(50),
-  start_picking_at DATETIME,
-  end_picking_at DATETIME,
-  shipped_at DATETIME,
+  client_ddt VARCHAR(100) DEFAULT NULL,
+  picking_operator VARCHAR(100) DEFAULT NULL,
+  start_picking_at DATETIME DEFAULT NULL,
+  end_picking_at DATETIME DEFAULT NULL,
+  shipped_at DATETIME DEFAULT NULL,
   created_by VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id)
@@ -94,7 +98,7 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ITEMS (
   quantity_picked INT DEFAULT 0,
   requested_uom VARCHAR(50) DEFAULT NULL,
   status ENUM('PENDING', 'PICKED') DEFAULT 'PENDING',
-  picked_at DATETIME,
+  picked_at DATETIME DEFAULT NULL,
   FOREIGN KEY (order_id) REFERENCES OUTBOUND_ORDERS(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)
 );
@@ -108,4 +112,53 @@ CREATE TABLE IF NOT EXISTS AUDIT_LOGS (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS billing_rules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    rule_code VARCHAR(50) NOT NULL UNIQUE,
+    description VARCHAR(255) NOT NULL,
+    default_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    rule_type ENUM('EVENT', 'STORAGE', 'FLAG', 'DISCOUNT_PERCENT', 'DISCOUNT_FIXED', 'MANUAL') NOT NULL
+);
 
+INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_type) VALUES 
+('IN_PALLET', 'Ingresso Paletta', 20.00, 'EVENT'),
+('OUT_PALLET', 'Uscita Paletta', 20.00, 'EVENT'),
+('SOSTA_15', 'Sosta (Ingresso <= 15)', 4.00, 'STORAGE'),
+('SOSTA_MAGGIORE_15', 'Sosta (Ingresso > 15)', 8.00, 'STORAGE');
+
+CREATE TABLE IF NOT EXISTS client_tariffs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    rule_code VARCHAR(50) NOT NULL,
+    custom_price DECIMAL(10,2) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY(customer_id, rule_code)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    setting_key VARCHAR(100) PRIMARY KEY,
+    setting_value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS invoices (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    period_month INT NOT NULL,
+    period_year INT NOT NULL,
+    base_total DECIMAL(10, 2) NOT NULL,
+    vat_amount DECIMAL(10, 2) NOT NULL,
+    grand_total DECIMAL(10, 2) NOT NULL,
+    invoice_data JSON DEFAULT NULL,
+    is_paid BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_proforma (customer_id, period_month, period_year)
+);
+
+CREATE TABLE IF NOT EXISTS expenses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    description VARCHAR(255) NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    expense_date DATE NOT NULL,
+    category VARCHAR(100) DEFAULT 'Generale',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

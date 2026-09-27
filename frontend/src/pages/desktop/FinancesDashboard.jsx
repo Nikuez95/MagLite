@@ -37,6 +37,7 @@ const FinancesDashboard = () => {
   const totalIncome = timeline.reduce((acc, curr) => acc + curr.income, 0);
   const totalExpense = timeline.reduce((acc, curr) => acc + curr.expense, 0);
   const totalProfit = totalIncome - totalExpense;
+  const totalUnpaid = timeline.reduce((acc, curr) => acc + (curr.unpaid || 0), 0);
 
   return (
     <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
@@ -51,11 +52,16 @@ const FinancesDashboard = () => {
         </div>
 
         {/* KPIs */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
+          <div className="absolute -right-6 -top-6 text-brand-blue/10 group-hover:text-brand-blue/20 transition-colors"><TrendingUp size={120} /></div>
+          <h3 className="text-slate-400 font-bold mb-1">Fatturato (Entrate)</h3>
+          <div className="text-3xl font-black text-brand-blue">EUR {totalIncome.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
+        </div>
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
-            <div className="absolute -right-6 -top-6 text-brand-blue/10 group-hover:text-brand-blue/20 transition-colors"><TrendingUp size={120} /></div>
-            <h3 className="text-slate-400 font-bold mb-1">Fatturato Globale (Entrate)</h3>
-            <div className="text-3xl font-black text-brand-blue">EUR {totalIncome.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
+            <div className="absolute -right-6 -top-6 text-amber-500/10 group-hover:text-amber-500/20 transition-colors"><TrendingUp size={120} /></div>
+            <h3 className="text-slate-400 font-bold mb-1">Da Incassare (Sospesi)</h3>
+            <div className="text-3xl font-black text-amber-500">EUR {totalUnpaid.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
             <div className="absolute -right-6 -top-6 text-rose-500/10 group-hover:text-rose-500/20 transition-colors"><TrendingDown size={120} /></div>
