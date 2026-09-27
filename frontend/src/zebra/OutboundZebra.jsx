@@ -18,6 +18,8 @@ const OutboundZebra = () => {
   const [scannedPallet, setScannedPallet] = useState('');
   const [qtyInput, setQtyInput] = useState('');
   
+  const [mixedPalletItems, setMixedPalletItems] = useState([]);
+  
   const [error, setError] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -30,8 +32,8 @@ const OutboundZebra = () => {
     }
   }, [step]);
 
-  const handleScan = (barcode) => {
-    if (isProcessing || step === 'FINISHED' || step === 'INPUT_QTY') return;
+  const handleScan = async (barcode) => {
+    if (isProcessing || step === 'FINISHED' || step === 'INPUT_QTY' || step === 'SELECT_MIXED_ITEM') return;
     
     setError(null);
     if (step === 'SCAN_ORDER') {
@@ -48,8 +50,24 @@ const OutboundZebra = () => {
     } else if (step === 'SCAN_PALLET') {
       if (barcode.toLowerCase() === currentItem.pallet_code.toLowerCase()) {
         setScannedPallet(barcode);
-        setStep('INPUT_QTY');
-        setQtyInput(currentItem.quantity_required.toString()); // default al richiesto
+        // Verifica se la paletta è frammentata
+        try {
+          setIsProcessing(true);
+          const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/${barcode}`, {
+            headers: { Authorization: `Bearer ${getToken()}` }
+          });
+          if (res.data.isMixed) {
+            setMixedPalletItems(res.data.items);
+            setStep('SELECT_MIXED_ITEM');
+          } else {
+            setStep('INPUT_QTY');
+            setQtyInput(currentItem.quantity_required.toString());
+          }
+        } catch (err) {
+          setError('Errore lettura dettagli paletta.');
+        } finally {
+          setIsProcessing(false);
+        }
       } else {
         setError(`Paletta errata. Attesa: ${currentItem.pallet_code}`);
       }
@@ -79,11 +97,12 @@ const OutboundZebra = () => {
   };
 
   const checkAndSkipPin = (item) => {
-    if (!item.loc_pin) {
-      // Nessuna posizione assegnata, salta il PIN
-      setStep('SCAN_PALLET');
+    if (item.pallet_code.startsWith('NOBAR-')) {
+      setScannedPallet(item.pallet_code);
+      setStep('INPUT_QTY');
+      setQtyInput(item.quantity_required.toString());
     } else {
-      setStep('SCAN_PIN');
+      setStep('SCAN_PALLET');
     }
   };
 
@@ -290,7 +309,7 @@ const OutboundZebra = () => {
             <div>
               <p className="text-xs text-slate-500 uppercase font-bold mb-1">Recati qui:</p>
               <p className="text-brand-white font-bold text-xl">
-                {currentItem?.zone ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : 'Cerca in magazzino'}
+                {currentItem?.zone ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : (currentItem?.location || 'Cerca in magazzino')}
               </p>
             </div>
           </div>
@@ -314,6 +333,35 @@ const OutboundZebra = () => {
             </div>
           )}
 
+          {step === 'SELECT_MIXED_ITEM' && (
+            <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 flex flex-col gap-4">
+              <p className="text-amber-500 font-bold text-xl text-center flex items-center justify-center gap-2">
+                Paletta Frammentata!
+              </p>
+              <p className="text-brand-white text-center text-sm mb-4">Seleziona quale articolo stai prelevando fisicamente da questa paletta:</p>
+              <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto">
+                {mixedPalletItems.map(mItem => (
+                  <button 
+                    key={mItem.id}
+                    onClick={() => {
+                      if (mItem.product_id === currentItem.product_id) {
+                        setStep('INPUT_QTY');
+                        setQtyInput(currentItem.quantity_required.toString());
+                        setError(null);
+                      } else {
+                        setError(`Hai selezionato l'articolo sbagliato! L'ordine richiede: ${currentItem.product_name}`);
+                      }
+                    }}
+                    className="bg-slate-900 border border-slate-700 p-4 rounded-2xl text-left hover:border-brand-blue transition-colors"
+                  >
+                    <p className="font-bold text-brand-white text-lg">{mItem.product_name}</p>
+                    <p className="text-slate-400 text-sm mt-1">Lotto: {mItem.batch || 'N/D'} | Q.tà sulla paletta: {mItem.quantity}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {step === 'INPUT_QTY' && (
             <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 flex flex-col gap-4">
               <p className="text-brand-white font-bold text-xl text-center">3. Conferma Quantità</p>
@@ -334,7 +382,7 @@ const OutboundZebra = () => {
 
               <div className="flex gap-2 items-center justify-center">
                 <input 
-                  type="number" 
+                  type="number" onWheel={(e) => e.target.blur()} 
                   autoFocus
                   className="bg-slate-900 border-2 border-brand-blue text-brand-white text-center text-4xl font-black w-32 h-20 rounded-2xl"
                   value={qtyInput}

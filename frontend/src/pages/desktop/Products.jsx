@@ -1,8 +1,37 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock } from 'lucide-react';
 import { io } from 'socket.io-client';
 import CreatableSelect from 'react-select/creatable';
+
+const formatUOM = (uom) => {
+  const u = (uom || '').toLowerCase();
+  if (u.includes('bancal')) return 'Bancali';
+  if (u === 'kg') return 'KG';
+  if (u.includes('metr')) return 'Metri Cubi';
+  if (u === 'scatole') return 'Scatole';
+  if (u === 'pezzi') return 'Pezzi';
+  return uom;
+};
+
+const formatQuantity = (qty, uom) => {
+  const q = parseFloat(qty || 0);
+  const u = (uom || '').toLowerCase();
+  if (u.includes('pezzi') || u.includes('scatole') || u.includes('bancal')) {
+    return q.toFixed(0);
+  }
+  return q.toFixed(2);
+};
+
+const formatPalletCode = (code) => {
+  if (!code) return '';
+  const parts = code.split('-');
+  if (parts.length >= 3) {
+    return parts.slice(2).join('-');
+  }
+  return code;
+};
 
 const getExpirationStatus = (expDate, warningDays) => {
   if (!expDate) return null;
@@ -17,6 +46,30 @@ const getExpirationStatus = (expDate, warningDays) => {
   if (diffDays < 0) return { color: 'text-rose-500', label: 'SCADUTO', bg: 'bg-rose-500/10 border-rose-500/30' };
   if (diffDays <= warningDays) return { color: 'text-amber-500', label: `SCADE TRA ${diffDays} GG`, bg: 'bg-amber-500/10 border-amber-500/30' };
   return { color: 'text-emerald-500', label: `Valido (${diffDays} gg)`, bg: 'bg-emerald-500/10 border-emerald-500/30' };
+};
+
+
+const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+  if (totalPages <= 1) return null;
+  const pages = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+      pages.push(i);
+    } else if (i === currentPage - 3 || i === currentPage + 3) {
+      pages.push('...');
+    }
+  }
+  const uniquePages = pages.filter((p, index) => pages.indexOf(p) === index);
+
+  return (
+    <div className="flex items-center justify-center gap-2 mt-6 pb-4">
+      <button onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} className="px-3 py-1.5 bg-slate-900 border border-slate-700 text-slate-400 rounded-lg disabled:opacity-50 hover:bg-slate-800 transition-colors">Prec</button>
+      {uniquePages.map((p, idx) => (
+        <button key={idx} onClick={() => p !== '...' && onPageChange(p)} disabled={p === '...'} className={`px-3.5 py-1.5 border rounded-lg transition-colors ${p === currentPage ? 'bg-brand-blue text-brand-black border-brand-blue font-bold shadow-md' : p === '...' ? 'bg-transparent border-transparent text-slate-500' : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white'}`}>{p}</button>
+      ))}
+      <button onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} className="px-3 py-1.5 bg-slate-900 border border-slate-700 text-slate-400 rounded-lg disabled:opacity-50 hover:bg-slate-800 transition-colors">Succ</button>
+    </div>
+  );
 };
 
 const ProductsManagement = () => {
@@ -38,6 +91,7 @@ const ProductsManagement = () => {
   };
   const [activeTab, setActiveTab] = useState('pallets'); // 'pallets' o 'products'
   const [pallets, setPallets] = useState([]);
+  const [selectedPallets, setSelectedPallets] = useState([]);
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -62,10 +116,18 @@ const ProductsManagement = () => {
     error: null 
   });
   
+  // Modifica Quantità Paletta
+  const [adjustQtyModal, setAdjustQtyModal] = useState({
+    show: false,
+    pallet: null,
+    newQuantity: '',
+    error: null
+  });
+  
   const [historyModal, setHistoryModal] = useState(null);
   const [historyData, setHistoryData] = useState(null);
 
-  const [printModal, setPrintModal] = useState({ show: false, code: '', copies: 1, format: 'THERMAL' });
+  const [printModal, setPrintModal] = useState({ show: false, code: '', copies: 1, format: 'A4', isBulk: false });
 
   const getToken = () => localStorage.getItem('maglite_token');
   
@@ -132,7 +194,7 @@ const ProductsManagement = () => {
       setNewProduct({ sku: '', name: '', uom: 'Scatole', customer_id: '', notes: '' });
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore');
+      appAlert(err.response?.data?.error || 'Errore');
     } finally {
       setIsProcessing(false);
     }
@@ -156,7 +218,7 @@ const ProductsManagement = () => {
       setDeleteConfirmModal({ show: false, type: null, id: null, title: '' });
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.error || 'Impossibile eliminare (in uso?)');
+      appAlert(err.response?.data?.error || 'Impossibile eliminare (in uso?)');
       setDeleteConfirmModal({ show: false, type: null, id: null, title: '' });
     } finally {
       setIsProcessing(false);
@@ -169,6 +231,49 @@ const ProductsManagement = () => {
 
   const handleDeletePallet = (code) => {
     setDeleteConfirmModal({ show: true, type: 'pallet', id: code, title: `Eliminare definitivamente la paletta ${code}?` });
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedPallets(prev => 
+      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = (filteredPallets) => {
+    const visibleIds = currentPallets.map(p => p.id);
+    if (selectedPallets.length === visibleIds.length) {
+      setSelectedPallets([]); // deseleziona tutti
+    } else {
+      setSelectedPallets(visibleIds); // seleziona tutti i visibili
+    }
+  };
+
+  const handlePrintBulk = () => { if (selectedPallets.length === 0) return; setPrintModal({ show: true, isBulk: true, format: "A4", copies: 1, code: "" }); };
+
+  const handleAdjustQty = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setAdjustQtyModal(prev => ({ ...prev, error: null }));
+    const qty = parseFloat(adjustQtyModal.newQuantity);
+    if (isNaN(qty) || qty < 0) {
+      setAdjustQtyModal(prev => ({ ...prev, error: 'Inserisci una quantità numerica valida (>= 0)' }));
+      setIsProcessing(false);
+      return;
+    }
+    try {
+      await axios.put(`http://${window.location.hostname}:3000/api/pallets/${adjustQtyModal.pallet.pallet_code}/quantity`, {
+        pallet_id: adjustQtyModal.pallet.id,
+        quantity: qty
+      }, { headers: { Authorization: `Bearer ${getToken()}` } });
+      
+      setAdjustQtyModal({ show: false, pallet: null, newQuantity: '', error: null });
+      fetchData();
+    } catch (err) {
+      setAdjustQtyModal(prev => ({ ...prev, error: err.response?.data?.error || 'Errore modifica quantità' }));
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleUpdatePallet = async (e) => {
@@ -209,6 +314,17 @@ const ProductsManagement = () => {
 
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
+
+  // Paginazione
+  const [palletsCurrentPage, setPalletsCurrentPage] = useState(1);
+  const [productsCurrentPage, setProductsCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  useEffect(() => {
+    setPalletsCurrentPage(1);
+    setProductsCurrentPage(1);
+  }, [searchTerm, filterWarehouse, filterStatus, filterStartDate, filterEndDate]);
+
 
   const filteredPallets = pallets.filter(p => {
     const searchLower = searchTerm.toLowerCase();
@@ -251,11 +367,22 @@ const ProductsManagement = () => {
            (p.notes && p.notes.toLowerCase().includes(searchLower));
   });
 
+
+  const indexOfLastPallet = palletsCurrentPage * itemsPerPage;
+  const indexOfFirstPallet = indexOfLastPallet - itemsPerPage;
+  const currentPallets = filteredPallets.slice(indexOfFirstPallet, indexOfLastPallet);
+  const totalPalletPages = Math.ceil(filteredPallets.length / itemsPerPage);
+
+  const indexOfLastProduct = productsCurrentPage * itemsPerPage;
+  const indexOfFirstProduct = indexOfLastProduct - itemsPerPage;
+  const currentProducts = filteredProducts.slice(indexOfFirstProduct, indexOfLastProduct);
+  const totalProductPages = Math.ceil(filteredProducts.length / itemsPerPage);
+
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
+  <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
       <div className="max-w-7xl mx-auto animate-fade-in-up">
         
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
           <div>
             <h1 className="text-3xl font-bold text-brand-white mb-2 flex items-center gap-3">
               <Package className="text-brand-blue" size={32} />
@@ -278,7 +405,7 @@ const ProductsManagement = () => {
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex flex-col md:flex-row gap-4 items-center">
+          <div className="p-4 border-b border-slate-800 flex flex-col md:flex-row flex-wrap gap-4 items-start md:items-center">
             <div className="relative flex-1 w-full">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
               <input type="text" placeholder="Ricerca universale..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl pl-12 pr-4 py-3 focus:ring-brand-blue focus:border-brand-blue transition-all" />
@@ -316,42 +443,59 @@ const ProductsManagement = () => {
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <Clock size={16} className="text-amber-500" />
                   <span className="text-slate-400">Avviso (gg):</span>
-                  <input type="number" value={expirationWarningDays} onChange={e => setExpirationWarningDays(parseInt(e.target.value) || 0)} className="w-16 bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} value={expirationWarningDays} onChange={e => setExpirationWarningDays(parseInt(e.target.value) || 0)} className="w-16 bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue" />
                 </div>
               </>
+            )}
+            
+            {activeTab === 'pallets' && selectedPallets.length > 0 && (
+              <button onClick={handlePrintBulk} className="flex-1 md:flex-none justify-center flex items-center gap-2 px-5 py-3 bg-brand-blue/20 text-brand-blue border border-brand-blue font-bold rounded-xl hover:bg-brand-blue hover:text-brand-black transition-all shadow-[0_0_20px_rgba(14,165,233,0.1)] active:scale-95">
+                <Printer size={18} /> Stampa {selectedPallets.length} Selezionate (Griglia)
+              </button>
             )}
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
               {activeTab === 'pallets' ? (
                 <>
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Paletta</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Arrivo</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Lotto/Scad</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Note</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Posizione</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
+                      <th className="px-3 py-3 w-12 text-center">
+                        <div onClick={() => toggleSelectAll(currentPallets)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.length > 0 && selectedPallets.length > 0 && selectedPallets.length === currentPallets.length ? 'bg-brand-blue border-brand-blue' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.length > 0 && selectedPallets.length > 0 && selectedPallets.length === currentPallets.length && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
+                      </th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Paletta</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Arrivo</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Lotto/Scad</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Posizione</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
-                    {filteredPallets.length === 0 ? (
-                      <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessuna paletta trovata.</td></tr>
-                    ) : filteredPallets.map(p => (
+                    {currentPallets.length === 0 ? (
+                      <tr><td colSpan="9" className="p-12 text-center text-slate-500 italic font-medium">Nessuna paletta trovata.</td></tr>
+                    ) : currentPallets.map(p => (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                        <td className="p-4">
-                          <button onClick={() => setPrintModal({ show: true, code: p.pallet_code, copies: 1, format: 'THERMAL' })} className="font-mono text-brand-blue font-bold text-xs flex items-center gap-1 hover:underline" title="Ristampa Etichetta">
-                            <Printer size={12} /> {p.pallet_code}
-                          </button>
+                        <td className="p-4 text-center">
+                          <div onClick={() => toggleSelect(p.id)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.includes(p.id) ? 'bg-brand-blue border-brand-blue shadow-[0_0_10px_rgba(14,165,233,0.3)]' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.includes(p.id) && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-1 items-start">
+                            <button onClick={() => setPrintModal({ show: true, code: p.pallet_code, copies: 1, format: 'THERMAL' })} className="font-mono text-brand-blue font-bold text-xs flex items-center gap-1 hover:underline" title="Ristampa Etichetta">
+                              <Printer size={12} /> {formatPalletCode(p.pallet_code)}
+                            </button>
+                            {p.is_mixed === 1 && (
+                              <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title="Paletta Frammentata">Mista</span>
+                            )}
+                          </div>
                           <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${p.warehouse === 'Settala' ? 'bg-brand-blue/10 text-brand-blue border border-brand-blue/30' : 'bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/30'}`}>
                             {p.warehouse}
                           </div>
                         </td>
-                        <td className="p-4">
+                        <td className="px-3 py-3">
                           <div className="font-bold">{p.product_name}</div>
                           <div className="text-slate-400 text-xs">{p.customer_name}</div>
                           {(p.client_pallet_number || p.client_article_number) && (
@@ -362,22 +506,22 @@ const ProductsManagement = () => {
                           )}
                         </td>
                         <td className="p-4 text-center">
-                          {p.units_per_box > 1 && p.uom !== 'Scatole' && p.uom !== 'Bancali' && p.uom !== 'Bancale' ? (
+                          {p.units_per_box > 1 && !(p.uom || '').toLowerCase().includes('scatol') && !(p.uom || '').toLowerCase().includes('bancal') ? (
                             <div className="flex flex-col items-center">
-                              <span className="font-bold text-brand-blue">{p.quantity} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></span>
+                              <span className="font-bold text-brand-blue">{formatQuantity(p.quantity, p.uom)} <span className="text-[10px] text-slate-500 uppercase">({formatUOM(p.uom || 'Pezzi')})</span></span>
                               <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">
                                 {Math.floor(p.quantity / p.units_per_box)} Scat.
                                 {(p.quantity % p.units_per_box) > 0 && ` + ${(p.quantity % p.units_per_box)} Sfusi`}
                               </span>
                             </div>
                           ) : (
-                            <span className="font-bold text-brand-blue">{p.quantity} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></span>
+                            <span className="font-bold text-brand-blue">{formatQuantity(p.quantity, p.uom)} <span className="text-[10px] text-slate-500 uppercase">({formatUOM(p.uom || 'Pezzi')})</span></span>
                           )}
                         </td>
-                        <td className="p-4 text-slate-300 text-sm font-medium">
+                        <td className="px-3 py-3 text-slate-300 text-sm font-medium">
                           {new Date(p.created_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                         </td>
-                        <td className="p-4 text-slate-400 text-sm">
+                        <td className="px-3 py-3 text-slate-400 text-sm">
                           <div>{p.batch || '-'}</div>
                           {p.expiration_date && (() => {
                             const status = getExpirationStatus(p.expiration_date, expirationWarningDays);
@@ -388,14 +532,14 @@ const ProductsManagement = () => {
                             );
                           })()}
                         </td>
-                        <td className="p-4">
+                        <td className="px-3 py-3">
                           {p.notes || p.product_notes ? (
                             <div className="max-w-[150px] truncate text-slate-400 text-xs" title={`${p.product_notes ? `Pr: ${p.product_notes}\n` : ''}${p.notes ? `Pal: ${p.notes}` : ''}`}>
                               {p.notes || p.product_notes}
                             </div>
                           ) : <span className="text-slate-600 text-xs">-</span>}
                         </td>
-                        <td className="p-4">
+                        <td className="px-3 py-3">
                           {p.status === 'PENDING' ? (
                             <span className="text-slate-500 italic text-sm font-medium bg-slate-950 px-2 py-1 rounded border border-slate-800">⏳ IN ATTESA</span>
                           ) : (
@@ -404,8 +548,11 @@ const ProductsManagement = () => {
                             </span>
                           )}
                         </td>
-                        <td className="p-4 text-right">
+                        <td className="px-3 py-3 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            <button onClick={() => setAdjustQtyModal({ show: true, pallet: p, newQuantity: p.quantity, error: null })} className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 rounded-xl transition-colors" title="Modifica Quantità">
+                              <Package size={18} />
+                            </button>
                             <button onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica">
                               <Edit3 size={18} />
                             </button>
@@ -424,30 +571,30 @@ const ProductsManagement = () => {
                 <>
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">SKU</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Nome Prodotto</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Cliente</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Giacenza Totale</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">UDM Base</th>
-                      <th className="p-4 font-semibold uppercase tracking-wider text-xs">Note</th>
-                      {isDeveloper && <th className="p-4 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">SKU</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Nome Prodotto</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Cliente</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Giacenza Totale</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">UDM Base</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note</th>
+                      {isDeveloper && <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
-                    {filteredProducts.length === 0 ? (
+                    {currentProducts.length === 0 ? (
                       <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
-                    ) : filteredProducts.map(p => {
-                      const totalStock = stock.filter(pal => pal.product_id === p.id && pal.status !== 'SHIPPED').reduce((acc, curr) => acc + curr.quantity, 0);
+                    ) : currentProducts.map(p => {
+                      const totalStock = pallets.filter(pal => pal.product_id === p.id && pal.status !== 'SHIPPED').reduce((acc, curr) => acc + parseFloat(curr.quantity || 0), 0);
                       return (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                        <td className="p-4 font-mono text-brand-blue text-xs font-bold">{p.sku}</td>
-                        <td className="p-4 font-bold">{p.name}</td>
-                        <td className="p-4 text-slate-400">{p.customer_name}</td>
-                        <td className="p-4 font-bold text-brand-blue">{totalStock} <span className="text-[10px] text-slate-500 uppercase">({p.uom || 'Pezzi'})</span></td>
-                        <td className="p-4 text-slate-300 text-sm">{p.uom}</td>
-                        <td className="p-4 text-slate-400 text-xs">{p.notes || '-'}</td>
+                        <td className="px-3 py-3 font-mono text-brand-blue text-xs font-bold">{p.sku}</td>
+                        <td className="px-3 py-3 font-bold">{p.name}</td>
+                        <td className="px-3 py-3 text-slate-400">{p.customer_name}</td>
+                        <td className="px-3 py-3 font-bold text-brand-blue">{formatQuantity(totalStock, p.uom || 'Pezzi')} <span className="text-[10px] text-slate-500 uppercase">({formatUOM(p.uom || 'Pezzi')})</span></td>
+                        <td className="px-3 py-3 text-slate-300 text-sm">{p.uom}</td>
+                        <td className="px-3 py-3 text-slate-400 text-xs">{p.notes || '-'}</td>
                         {isDeveloper && (
-                          <td className="p-4 text-right">
+                          <td className="px-3 py-3 text-right">
                             <button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
                               <Trash2 size={18} />
                             </button>
@@ -460,6 +607,11 @@ const ProductsManagement = () => {
                 </>
               )}
             </table>
+                    {activeTab === 'pallets' ? (
+              <Pagination currentPage={palletsCurrentPage} totalPages={totalPalletPages} onPageChange={setPalletsCurrentPage} />
+            ) : (
+              <Pagination currentPage={productsCurrentPage} totalPages={totalProductPages} onPageChange={setProductsCurrentPage} />
+            )}
           </div>
         </div>
       </div>
@@ -474,8 +626,8 @@ const ProductsManagement = () => {
             <form onSubmit={handleCreateProduct} className="space-y-6">
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Articolo (SKU) *</label>
-                <input required value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue font-mono uppercase" />
-              </div>
+                <input required value={newProduct.sku} onChange={e => setNewProduct({...newProduct, sku: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                </div>
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Nome Prodotto *</label>
                 <input required value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
@@ -486,7 +638,7 @@ const ProductsManagement = () => {
                   <select required value={newProduct.uom} onChange={e => setNewProduct({...newProduct, uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
                     <option value="Pezzi">Pezzi</option>
                     <option value="Scatole">Scatole</option>
-                    <option value="Bancali">Bancali (Pallet)</option>
+                    <option value="Bancali">Bancale Intero</option>
                     <option value="KG">KG</option>
                     <option value="Metro Cubo">Metro Cubo (m³)</option>
                   </select>
@@ -502,7 +654,7 @@ const ProductsManagement = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola</label>
-                  <input type="number" min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
                 </div>
               </div>
               <div>
@@ -512,6 +664,45 @@ const ProductsManagement = () => {
               <div className="flex gap-4 mt-8 pt-8 border-t border-slate-800/80">
                 <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
                 <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">Crea Prodotto</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {adjustQtyModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl relative animate-fade-in-up">
+            <h2 className="text-2xl font-bold text-brand-white mb-6 flex items-center gap-3">
+              <Package className="text-amber-500" />
+              Modifica Quantità
+            </h2>
+            <form onSubmit={handleAdjustQty}>
+              <div className="mb-6">
+                <label className="block text-slate-400 mb-2 font-semibold">Nuova Quantità (Pezzi)</label>
+                <input
+                  type="number" onWheel={(e) => e.target.blur()}
+                  min="0"
+                  step="0.01"
+                  className="w-full bg-slate-950 border border-slate-800 p-4 rounded-xl text-brand-white focus:border-brand-blue"
+                  value={adjustQtyModal.newQuantity}
+                  onChange={e => setAdjustQtyModal(prev => ({ ...prev, newQuantity: e.target.value }))}
+                  required
+                />
+              </div>
+              {adjustQtyModal.error && (
+                <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center gap-3 text-rose-500">
+                  <XCircle size={20} />
+                  <span className="font-semibold">{adjustQtyModal.error}</span>
+                </div>
+              )}
+              <div className="flex gap-4">
+                <button type="button" onClick={() => setAdjustQtyModal({ show: false, pallet: null, newQuantity: '', error: null })} className="flex-1 py-4 bg-slate-800 text-brand-white rounded-xl font-bold hover:bg-slate-700 transition-colors">
+                  Annulla
+                </button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-amber-600 text-brand-white rounded-xl font-bold hover:bg-amber-500 transition-colors disabled:opacity-50">
+                  {isProcessing ? 'Salvataggio...' : 'Salva'}
+                </button>
               </div>
             </form>
           </div>
@@ -622,7 +813,7 @@ const ProductsManagement = () => {
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Paletta</label>
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-brand-blue font-bold text-center">
-                  {printModal.code}
+                  {printModal.isBulk ? `Stampa Multipla (${selectedPallets.length} Etichette Selezionate)` : formatPalletCode(printModal.code)}
                 </div>
               </div>
               
@@ -642,16 +833,35 @@ const ProductsManagement = () => {
 
               <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Moltiplicatore (Copie)</label>
-                <input type="number" min="1" max="100" value={printModal.copies} onChange={e => setPrintModal({...printModal, copies: parseInt(e.target.value) || 1})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue text-center font-bold text-lg" />
+                <input type="number" onWheel={(e) => e.target.blur()} min="1" max="100" value={printModal.copies} onChange={e => setPrintModal({...printModal, copies: parseInt(e.target.value) || 1})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue text-center font-bold text-lg" />
               </div>
 
               <div className="flex gap-4 border-t border-slate-800/80 pt-6">
-                <button onClick={() => setPrintModal({ show: false, code: '', copies: 1, format: 'THERMAL' })} className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">
+                <button onClick={() => setPrintModal({ show: false, code: "", copies: 1, format: "A4", isBulk: false })} className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">
                   Annulla
                 </button>
                 <button onClick={() => {
-                  window.open(`http://${window.location.hostname}:3000/api/pallets/${printModal.code}/print?token=${getToken()}&format=${printModal.format}&copies=${printModal.copies}`, '_blank');
-                  setPrintModal({ show: false, code: '', copies: 1, format: 'THERMAL' });
+                  if (printModal.isBulk) {
+                    axios.post(`http://${window.location.hostname}:3000/api/pallets/print-bulk`, {
+                      ids: selectedPallets,
+                      paper_format: printModal.format,
+                      print_mode: printModal.format === 'A4' ? 'GRID' : 'SINGLE_PAGE',
+                      copies: printModal.copies
+                    }, {
+                      headers: { Authorization: `Bearer ${getToken()}` },
+                      responseType: 'blob'
+                    }).then(response => {
+                      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+                      window.open(url, '_blank');
+                      setPrintModal({ show: false, code: "", copies: 1, format: "A4", isBulk: false });
+                      setSelectedPallets([]);
+                    }).catch(err => {
+                      appAlert("Errore durante la generazione della stampa bulk.");
+                    });
+                  } else {
+                    window.open(`http://${window.location.hostname}:3000/api/pallets/${printModal.code}/print?token=${getToken()}&format=${printModal.format}&copies=${printModal.copies}`, '_blank');
+                    setPrintModal({ show: false, code: "", copies: 1, format: "A4", isBulk: false });
+                  }
                 }} className="flex-1 py-3 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors flex justify-center items-center gap-2">
                   <Printer size={18} /> Stampa
                 </button>
@@ -686,3 +896,26 @@ const ProductsManagement = () => {
 };
 
 export default ProductsManagement;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

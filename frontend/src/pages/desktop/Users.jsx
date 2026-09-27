@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { UserPlus, Shield, User, Trash2, Key } from 'lucide-react';
@@ -46,7 +47,7 @@ const UsersManagement = () => {
       fetchUsers();
     } catch (err) {
       if (err.response?.status !== 404) {
-        alert(err.response?.data?.error || 'Errore durante l\'eliminazione');
+        appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione');
       }
     } finally {
       setIsProcessing(false);
@@ -62,9 +63,9 @@ const UsersManagement = () => {
         { newPassword: resetModal.newPwd },
         { headers: { Authorization: `Bearer ${getToken()}` } }
       );
-      alert(`Password resettata! Al prossimo accesso dovrà obbligatoriamente cambiarla.`);
+      appAlert(`Password resettata! Al prossimo accesso dovrà obbligatoriamente cambiarla.`);
     } catch (err) {
-      alert(err.response?.data?.error || 'Errore durante il reset');
+      appAlert(err.response?.data?.error || 'Errore durante il reset');
     } finally {
       setIsProcessing(false);
       setResetModal({ show: false, user: null, newPwd: '' });
@@ -154,7 +155,7 @@ const UsersManagement = () => {
             <div className="text-slate-500 animate-pulse font-medium">Caricamento lista...</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
+              <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-400 text-sm">
                     <th className="pb-4 font-semibold uppercase tracking-wider text-xs">Username</th>
@@ -244,3 +245,9 @@ const UsersManagement = () => {
 };
 
 export default UsersManagement;
+
+
+
+
+
+

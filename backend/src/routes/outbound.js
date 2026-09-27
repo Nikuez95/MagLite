@@ -316,7 +316,7 @@ async function outboundRoutes(fastify, options) {
         doc.font('Helvetica-Bold').text(item.pallet_code, 390, y);
         
         let qtyText = `${item.quantity_required} ${item.uom}`;
-        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancale' && item.uom !== 'Bancali') {
+        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali' && item.uom !== 'Bancali') {
            const scatole = Math.floor(item.quantity_required / item.units_per_box);
            const sfusi = item.quantity_required % item.units_per_box;
            let breakDown = [];
@@ -433,6 +433,8 @@ async function outboundRoutes(fastify, options) {
         await db.query('UPDATE OUTBOUND_ORDERS SET status = "READY", end_picking_at = CURRENT_TIMESTAMP WHERE id = ?', [order_id]);
       }
 
+      if (fastify.io) fastify.io.emit('dashboard_update');
+
       return { success: true, all_picked: allPicked };
     } catch (err) {
       fastify.log.error(err);
@@ -463,12 +465,12 @@ async function outboundRoutes(fastify, options) {
         const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
 
         // Scarica la giacenza
-        const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ?', [item.pallet_code]);
+        const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ? AND pal.product_id = ?', [item.pallet_code, item.product_id]);
         if (pallets.length > 0) {
           const pallet = pallets[0];
           let newQty;
 
-          if (item.requested_uom === 'Bancale' && actualPicked >= 1) {
+          if (item.requested_uom === 'Bancali' && actualPicked >= 1) {
             newQty = 0;
           } else {
             let deduction = actualPicked;
@@ -508,6 +510,9 @@ async function outboundRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
+      
+      if (fastify.io) fastify.io.emit('dashboard_update');
+      
       return { success: true };
     } catch (err) {
       if (connection) {
@@ -535,7 +540,7 @@ async function outboundRoutes(fastify, options) {
                (pal.quantity - COALESCE((
                  SELECT SUM(
                    CASE 
-                     WHEN oi.requested_uom = 'Bancale' THEN pal.quantity 
+                     WHEN oi.requested_uom = 'Bancali' THEN pal.quantity 
                      WHEN oi.requested_uom = 'Scatole' THEN (oi.quantity_required * p.units_per_box)
                      ELSE oi.quantity_required 
                    END

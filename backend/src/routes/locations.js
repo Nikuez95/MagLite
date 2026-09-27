@@ -9,13 +9,12 @@ async function locationRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT l.*, 
-               p.pallet_code, p.quantity, p.batch, p.expiration_date, p.notes,
-               p.client_pallet_number, p.client_article_number,
-               pr.name as product_name, pr.notes as product_notes, c.business_name as customer_name
+               GROUP_CONCAT(DISTINCT p.pallet_code SEPARATOR ', ') as pallet_code,
+               GROUP_CONCAT(DISTINCT pr.name SEPARATOR ', ') as product_name
         FROM LOCATIONS l
         LEFT JOIN PALLETS p ON l.barcode = p.location AND p.status = 'STOCKED'
         LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
-        LEFT JOIN CUSTOMERS c ON p.customer_id = c.id
+        GROUP BY l.id
         ORDER BY l.zone ASC, l.col ASC, l.pos ASC
       `);
       return rows;
@@ -209,6 +208,39 @@ async function locationRoutes(fastify, options) {
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante la generazione del PDF' });
+    }
+  });
+
+  fastify.get('/free', async (request, reply) => {
+    try {
+      const [rows] = await db.query('SELECT * FROM FREE_LOCATIONS ORDER BY name ASC');
+      return rows;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore fetch free locations' });
+    }
+  });
+
+  fastify.post('/free', async (request, reply) => {
+    const { name } = request.body;
+    if (!name || name.trim() === '') return reply.code(400).send({ error: 'Nome obbligatorio' });
+    try {
+      await db.query('INSERT INTO FREE_LOCATIONS (name) VALUES (?)', [name.trim().toUpperCase()]);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore creazione free location (forse nome duplicato?)' });
+    }
+  });
+
+  fastify.delete('/free/:id', async (request, reply) => {
+    const { id } = request.params;
+    try {
+      await db.query('DELETE FROM FREE_LOCATIONS WHERE id = ?', [id]);
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore eliminazione free location' });
     }
   });
 }

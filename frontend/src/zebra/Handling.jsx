@@ -1,3 +1,4 @@
+import { appAlert, appConfirm, appPrompt } from "../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -108,7 +109,7 @@ const Handling = () => {
 
   const confirmStow = async (targetLocation, targetPin) => {
     if (!targetPin) {
-      alert("Inserisci il PIN di sicurezza!");
+      appAlert("Inserisci il PIN di sicurezza!");
       return;
     }
     try {
@@ -269,7 +270,7 @@ const Handling = () => {
 
           <button 
             onClick={() => {
-              if(!selectedLocation) { alert("Seleziona una posizione!"); return; }
+              if(!selectedLocation) { appAlert("Seleziona una posizione!"); return; }
               setSuggestedLocation(selectedLocation);
               setPinInput('');
               setStatus('WAITING_PIN'); // Torna alla validazione PIN per questa nuova posizione

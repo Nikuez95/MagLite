@@ -6,6 +6,8 @@ async function runMigrations() {
     console.log('Running automatic database migrations...');
     
     const queries = [
+      "CREATE TABLE IF NOT EXISTS FREE_LOCATIONS (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);",
+      "ALTER TABLE PALLETS DROP INDEX pallet_code;",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN client_ddt VARCHAR(100) DEFAULT NULL;",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN start_picking_at DATETIME DEFAULT NULL;",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN end_picking_at DATETIME DEFAULT NULL;",
@@ -13,6 +15,7 @@ async function runMigrations() {
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN picking_operator VARCHAR(100) DEFAULT NULL;",
       "ALTER TABLE OUTBOUND_ITEMS ADD COLUMN picked_at DATETIME DEFAULT NULL;",
       "ALTER TABLE PALLETS ADD COLUMN pallet_uom VARCHAR(50) DEFAULT NULL;",
+      "ALTER TABLE PRODUCTS MODIFY uom VARCHAR(50) NOT NULL DEFAULT 'Scatole';",
       "ALTER TABLE USERS ADD COLUMN preferences JSON DEFAULT NULL;"
     ];
 
@@ -20,7 +23,6 @@ async function runMigrations() {
       try {
         await connection.query(query);
       } catch (err) {
-        // Ignora l'errore se la colonna esiste già (ER_DUP_FIELDNAME)
         if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_DUP_KEY') {
           console.warn(`Migration note for query [${query}]:`, err.message);
         }

@@ -81,14 +81,14 @@ const AuditLogs = () => {
 
         <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
-                  <th className="p-4 font-semibold uppercase tracking-wider text-xs">Data & Ora</th>
-                  <th className="p-4 font-semibold uppercase tracking-wider text-xs">Azione</th>
-                  <th className="p-4 font-semibold uppercase tracking-wider text-xs">Dettagli</th>
-                  <th className="p-4 font-semibold uppercase tracking-wider text-xs">Utente</th>
-                  <th className="p-4 font-semibold uppercase tracking-wider text-xs">Sorgente</th>
+                  <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Data & Ora</th>
+                  <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Azione</th>
+                  <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Dettagli</th>
+                  <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Utente</th>
+                  <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Sorgente</th>
                 </tr>
               </thead>
               <tbody className="text-brand-white">
@@ -98,21 +98,21 @@ const AuditLogs = () => {
                   <tr><td colSpan="5" className="p-12 text-center text-slate-500 italic">Nessun log trovato.</td></tr>
                 ) : logs.map(log => (
                   <tr key={log.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                    <td className="p-4 text-xs font-mono text-brand-blue whitespace-nowrap">
+                    <td className="px-3 py-3 text-xs font-mono text-brand-blue whitespace-nowrap">
                       {new Date(log.created_at).toLocaleString('it-IT')}
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-3">
                       <span className="text-xs font-bold px-2 py-1 rounded uppercase tracking-wider bg-slate-800 text-slate-300">
                         {log.action}
                       </span>
                     </td>
-                    <td className="p-4 text-sm">{log.details}</td>
-                    <td className="p-4">
+                    <td className="px-3 py-3 text-sm">{log.details}</td>
+                    <td className="px-3 py-3">
                       <div className="flex items-center gap-1 text-slate-400 text-xs">
                         <User size={14} /> {log.username}
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-3">
                       <div className="flex items-center gap-1 text-slate-400 text-xs">
                         <Monitor size={14} /> {log.source}
                       </div>
@@ -130,3 +130,8 @@ const AuditLogs = () => {
 };
 
 export default AuditLogs;
+
+
+
+
+

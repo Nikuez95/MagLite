@@ -4,6 +4,7 @@ import { Search, SlidersHorizontal, Filter, Download, Printer, GripVertical } fr
 import Select from 'react-select';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { io } from 'socket.io-client';
 
 const defaultColumns = [
   { key: 'code', label: 'Cod. Paletta', visible: true },
@@ -17,6 +18,36 @@ const defaultColumns = [
   { key: 'notes', label: 'Note', visible: false },
   { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: false }
 ];
+
+
+const formatUOM = (uom) => {
+  const u = (uom || '').toLowerCase();
+  if (u.includes('bancal')) return 'Bancali';
+  if (u === 'kg') return 'KG';
+  if (u.includes('metr')) return 'Metri Cubi';
+  if (u === 'scatole') return 'Scatole';
+  if (u === 'pezzi') return 'Pezzi';
+  return uom;
+};
+
+const formatQuantity = (qty, uom) => {
+  const q = parseFloat(qty || 0);
+  const u = (uom || '').toLowerCase();
+  if (u.includes('pezzi') || u.includes('scatole') || u.includes('bancal')) {
+    return q.toFixed(0);
+  }
+  return q.toFixed(2);
+};
+
+const formatPalletCode = (code) => {
+  if (!code) return '';
+  if (code === 'MULTIPLI' || code.includes('Palette')) return code;
+  const parts = code.split('-');
+  if (parts.length >= 3) {
+    return parts.slice(2).join('-');
+  }
+  return code;
+};
 
 const Inventory = () => {
   const [pallets, setPallets] = useState([]);
@@ -39,10 +70,6 @@ const Inventory = () => {
 
   const getToken = () => localStorage.getItem('maglite_token');
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -58,6 +85,14 @@ const Inventory = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('stow_updated', () => fetchData());
+    socket.on('dashboard_update', () => fetchData());
+    return () => socket.disconnect();
+  }, []);
 
   const savePreferences = async (newColumns) => {
     try {
@@ -110,12 +145,42 @@ const Inventory = () => {
     setDraggedColumnIndex(null);
   };
 
+  const [groupByBatch, setGroupByBatch] = useState(false);
+
   const processedData = useMemo(() => {
     let data = pallets;
     if (selectedCustomers.length > 0) {
       const customerIds = selectedCustomers.map(c => c.value);
       data = data.filter(p => customerIds.includes(p.customer_id));
     }
+
+    if (groupByBatch) {
+      const groups = {};
+      data.forEach(p => {
+        const key = `${p.product_id}_${p.batch || 'NOBATCH'}`;
+        if (!groups[key]) {
+          groups[key] = {
+            ...p,
+            id: key,
+            quantity: parseFloat(p.quantity) || 0,
+            palletCount: 1,
+            location: '', 
+            zone: '',
+            col: '',
+            pos: '',
+            pallet_code: 'MULTIPLI'
+          };
+        } else {
+          groups[key].quantity += (parseFloat(p.quantity) || 0);
+          groups[key].palletCount += 1;
+        }
+      });
+      data = Object.values(groups).map(g => {
+        g.pallet_code = `${g.palletCount} Palette`;
+        return g;
+      });
+    }
+
     data = [...data].sort((a, b) => {
       if (sortBy === 'alphabetical') {
         return a.product_name.localeCompare(b.product_name);
@@ -137,38 +202,69 @@ const Inventory = () => {
       return 0;
     });
     return data;
-  }, [pallets, selectedCustomers, sortBy]);
+  }, [pallets, selectedCustomers, sortBy, groupByBatch]);
 
   const getCellValue = (row, key) => {
     switch (key) {
       case 'code': return row.pallet_code;
       case 'customer': return row.customer_name;
       case 'product': return row.product_name;
-      case 'quantity': return `${row.quantity} ${row.uom}`;
-      case 'location': return row.location ? `${row.zone} ${row.col} ${row.pos}` : 'IN ATTESA';
+      case 'quantity': return `${formatQuantity(row.quantity, row.uom)} ${formatUOM(row.uom)}`;
+      case 'location': return groupByBatch ? '-' : (row.location ? `${row.zone} ${row.col} ${row.pos}` : 'IN ATTESA');
       case 'arrival': return new Date(row.created_at).toLocaleDateString('it-IT');
       case 'batch': return row.batch || '-';
       case 'status': return row.status;
-      case 'notes': return row.notes || '-';
-      case 'clientPallet': return row.client_pallet_number || '-';
+      case 'notes': return groupByBatch ? '-' : (row.notes || '-');
+      case 'clientPallet': return groupByBatch ? '-' : (row.client_pallet_number || '-');
       default: return '';
     }
   };
 
   const renderCellHtml = (row, key) => {
     switch (key) {
-      case 'code': return <span className="font-mono text-sm text-brand-blue font-bold whitespace-nowrap">{row.pallet_code}</span>;
-      case 'customer': return <span className="text-sm font-semibold text-slate-300">{row.customer_name}</span>;
-      case 'product': return <span className="font-bold text-brand-white">{row.product_name}</span>;
-      case 'quantity': return (
-        <div className="text-right">
-          <span className="font-black text-brand-blue text-lg">{row.quantity}</span>
-          <span className="text-xs text-slate-500 ml-1 uppercase">{row.uom}</span>
+      case 'code': return (
+        <div className="flex flex-col gap-1 items-start">
+          <span className="font-mono text-sm text-brand-blue font-bold whitespace-nowrap">{formatPalletCode(row.pallet_code)}</span>
+          {row.is_mixed === 1 && !groupByBatch && (
+            <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title="Paletta Frammentata">Mista</span>
+          )}
         </div>
       );
+      case 'customer': return <span className="text-sm font-semibold text-slate-300">{row.customer_name}</span>;
+      case 'product': return <span className="font-bold text-brand-white">{row.product_name}</span>;
+      case 'quantity': {
+        const qty = parseFloat(row.quantity) || 0;
+        const upb = parseInt(row.units_per_box) || 1;
+        const uom = row.uom || "";
+        
+        if (upb > 1 && !uom.toLowerCase().includes('scatol') && !uom.toLowerCase().includes('bancal') && uom !== 'KG' && uom !== 'Metro Cubo') {
+          const scatole = Math.floor(qty / upb);
+          const sfusi = qty % upb;
+          return (
+            <div className="flex flex-col items-end">
+              <div className="text-right">
+                <span className="font-black text-brand-blue text-lg">{qty}</span>
+                <span className="text-[10px] text-slate-500 ml-1 uppercase">({uom || 'Pezzi'})</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">
+                {scatole} Scat. {sfusi > 0 ? ` + ${sfusi} Sfusi` : ''}
+              </span>
+            </div>
+          );
+        }
+
+        return (
+          <div className="text-right">
+            <span className="font-black text-brand-blue text-lg">{qty}</span>
+            <span className="text-xs text-slate-500 ml-1 uppercase">{uom}</span>
+          </div>
+        );
+      }
       case 'location': return (
         <div className="text-center">
-          {row.location ? (
+          {groupByBatch ? (
+            <span className="text-slate-500 font-bold">-</span>
+          ) : row.location ? (
             <span className="inline-flex items-center gap-1 bg-slate-950 border border-slate-700 px-3 py-1 rounded-lg text-sm font-bold text-brand-white">
               {row.zone} {row.col} {row.pos}
             </span>
@@ -184,8 +280,8 @@ const Inventory = () => {
           {row.status}
         </span>
       );
-      case 'notes': return <div className="text-xs text-slate-400 max-w-xs truncate" title={row.notes}>{row.notes || '-'}</div>;
-      case 'clientPallet': return <span className="text-xs text-slate-400">{row.client_pallet_number || '-'}</span>;
+      case 'notes': return groupByBatch ? <span className="text-slate-500">-</span> : <div className="text-xs text-slate-400 max-w-xs truncate" title={row.notes}>{row.notes || '-'}</div>;
+      case 'clientPallet': return groupByBatch ? <span className="text-slate-500">-</span> : <span className="text-xs text-slate-400">{row.client_pallet_number || '-'}</span>;
       default: return null;
     }
   };
@@ -294,7 +390,7 @@ const Inventory = () => {
 
       {/* Pannello Controlli */}
       <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-6 mb-8 shadow-xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6 border-b border-slate-800 pb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-6 border-b border-slate-800 pb-6">
           <div>
             <label className="flex items-center gap-2 text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
               <Filter size={16} /> Filtra per Clienti
@@ -321,6 +417,20 @@ const Inventory = () => {
               <option value="zone">Ordine per Zone (Magazzino)</option>
               <option value="arrival">Ordine di Arrivo (Data)</option>
             </select>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
+              Vista Inventario
+            </label>
+            <div className="flex items-center gap-3 h-[42px]">
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" className="sr-only peer" checked={groupByBatch} onChange={() => setGroupByBatch(!groupByBatch)} />
+                <div className="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-brand-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-blue"></div>
+                <span className="ml-3 text-sm font-bold text-brand-white">
+                  {groupByBatch ? 'Totali per Lotto' : 'Spaccato per Posizioni'}
+                </span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -384,3 +494,4 @@ const Inventory = () => {
 };
 
 export default Inventory;
+
