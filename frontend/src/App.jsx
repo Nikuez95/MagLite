@@ -14,6 +14,10 @@ import Inbound from './pages/desktop/Inbound';
 import Outbound from './pages/desktop/Outbound';
 import Inventory from './pages/desktop/Inventory';
 import Locations from './pages/desktop/Locations';
+import ClientTariffManager from './pages/desktop/ClientTariffManager';
+import Settings from './pages/desktop/Settings';
+import BillingRulesManager from './pages/desktop/BillingRulesManager';
+import PreBillingDashboard from './pages/desktop/PreBillingDashboard';
 import Dashboard from './pages/desktop/Dashboard';
 import AuditLogs from './pages/desktop/AuditLogs';
 
@@ -63,6 +67,10 @@ function App() {
           <Route path="customers" element={<Customers />} />
           <Route path="products" element={<Products />} />
           <Route path="locations" element={<Locations />} />
+          <Route path="billing-tariffs" element={<ClientTariffManager />} />
+          <Route path="billing-dashboard" element={<PreBillingDashboard />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="billing-rules" element={<BillingRulesManager />} />
           <Route path="documents" element={<div className="text-3xl font-bold text-brand-white">Fatture e DDT</div>} />
           <Route path="users" element={<UsersManagement />} />
           <Route path="audit" element={<AuditLogs />} />

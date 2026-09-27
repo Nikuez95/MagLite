@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X, ChevronDown, ChevronUp, Package } from 'lucide-react';
+import { Settings2, Building, LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X, ChevronDown, ChevronUp, Package, Calculator, ReceiptText, Coins } from 'lucide-react';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
@@ -31,6 +31,15 @@ const DesktopLayout = () => {
     { name: 'Documenti (DDT)', path: '/desktop/documents', icon: FileText },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History },
+    {
+      name: 'Amministrazione',
+      icon: Calculator,
+      submenu: [
+        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2 },
+        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins },
+        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText }
+      ]
+    },
   ];
 
   return (
@@ -151,9 +160,9 @@ const DesktopLayout = () => {
 
         {/* Footer Sidebar */}
         <div className="p-4 border-t border-slate-800 flex flex-col gap-2">
-          <button className="flex items-center gap-4 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-brand-white w-full transition-all">
+          <button onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }} className="flex items-center gap-4 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-brand-white w-full transition-all">
             <Settings size={20} />
-            <span className="text-sm font-medium">Impostazioni</span>
+            <span className="text-sm font-medium" onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}>Impostazioni Aziendali</span>
           </button>
           <button 
             onClick={() => {
