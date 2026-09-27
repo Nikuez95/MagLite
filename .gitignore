@@ -8,3 +8,13 @@ yarn-debug.log*
 yarn-error.log*
 .idea/
 .vscode/
+
+# Temporary root scripts
+/fix_*.js
+/check_*.js
+/apply_*.js
+/script.js
+/b64.txt
+
+# Logs
+*.log
