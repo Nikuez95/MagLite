@@ -14,6 +14,7 @@ const defaultColumns = [
   { key: 'location', label: 'Posizione', visible: true },
   { key: 'arrival', label: 'Arrivo', visible: true },
   { key: 'batch', label: 'Lotto', visible: true },
+  { key: 'flags', label: 'Flag', visible: true },
   { key: 'status', label: 'Stato', visible: false },
   { key: 'notes', label: 'Note', visible: false },
   { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: false }
@@ -60,10 +61,14 @@ const Inventory = () => {
 
   const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
   const [columns, setColumns] = useState(() => {
+    let cols = defaultColumns;
     if (user.preferences && user.preferences.inventoryColumns) {
-      return user.preferences.inventoryColumns;
+      cols = user.preferences.inventoryColumns;
     }
-    return defaultColumns;
+    if (!cols.find(c => c.key === 'flags')) {
+      cols.splice(7, 0, { key: 'flags', label: 'Flag', visible: true });
+    }
+    return cols;
   });
 
   const [draggedColumnIndex, setDraggedColumnIndex] = useState(null);
@@ -213,6 +218,10 @@ const Inventory = () => {
       case 'location': return groupByBatch ? '-' : (row.location ? `${row.zone} ${row.col} ${row.pos}` : 'IN ATTESA');
       case 'arrival': return new Date(row.created_at).toLocaleDateString('it-IT');
       case 'batch': return row.batch || '-';
+      case 'flags': {
+        const parsedFlags = row.flags && typeof row.flags === 'string' ? JSON.parse(row.flags) : row.flags || [];
+        return parsedFlags.join(' | ');
+      }
       case 'status': return row.status;
       case 'notes': return groupByBatch ? '-' : (row.notes || '-');
       case 'clientPallet': return groupByBatch ? '-' : (row.client_pallet_number || '-');
@@ -275,6 +284,17 @@ const Inventory = () => {
       );
       case 'arrival': return <span className="text-sm text-slate-400">{new Date(row.created_at).toLocaleDateString('it-IT')}</span>;
       case 'batch': return <span className="text-sm text-slate-300">{row.batch || '-'}</span>;
+      case 'flags': {
+        const parsedFlags = row.flags && typeof row.flags === 'string' ? JSON.parse(row.flags) : row.flags || [];
+        if (parsedFlags.length === 0) return <span className="text-slate-600 text-xs">-</span>;
+        return (
+          <div className="flex gap-1 flex-wrap">
+            {parsedFlags.map(f => (
+              <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider text-[9px]">{f}</span>
+            ))}
+          </div>
+        );
+      }
       case 'status': return (
         <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded-md ${row.status === 'STOCKED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
           {row.status}

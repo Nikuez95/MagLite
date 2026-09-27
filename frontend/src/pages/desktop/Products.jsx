@@ -1,4 +1,4 @@
-import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
+import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock } from 'lucide-react';
@@ -87,7 +87,10 @@ const ProductsManagement = () => {
     option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc', cursor: 'pointer' }),
     singleValue: base => ({ ...base, color: '#f8fafc', fontWeight: 'bold' }),
     input: base => ({ ...base, color: '#f8fafc' }),
-    placeholder: base => ({ ...base, color: '#475569' })
+    placeholder: base => ({ ...base, color: '#475569' }),
+    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155' }),
+    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.75rem', textTransform: 'uppercase' }),
+    multiValueRemove: base => ({ ...base, color: '#94a3b8', ':hover': { backgroundColor: '#f43f5e', color: '#fff' } })
   };
   const [activeTab, setActiveTab] = useState('pallets'); // 'pallets' o 'products'
   const [pallets, setPallets] = useState([]);
@@ -96,7 +99,8 @@ const ProductsManagement = () => {
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newProduct, setNewProduct] = useState({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '' });
+  const [newProduct, setNewProduct] = useState({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '', default_article_number: '', flags: [] });
+  const [editProductModal, setEditProductModal] = useState({ show: false, product: null });
   const [isProcessing, setIsProcessing] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -187,11 +191,60 @@ const ProductsManagement = () => {
     if (isProcessing) return;
     setIsProcessing(true);
     try {
-      await axios.post(`http://${window.location.hostname}:3000/api/products`, newProduct, {
+      const payload = {
+        ...newProduct,
+        flags: newProduct.flags ? newProduct.flags.map(f => f.value) : []
+      };
+      await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       setShowAddModal(false);
-      setNewProduct({ sku: '', name: '', uom: 'Scatole', customer_id: '', notes: '' });
+      setNewProduct({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '', default_article_number: '', flags: [] });
+      fetchData();
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Errore');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleUpdateProduct = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    
+    // Controlla se i flag sono cambiati
+    const originalFlagsStr = JSON.stringify(editProductModal.product.original_flags || []);
+    const currentFlags = editProductModal.product.flags ? editProductModal.product.flags.map(f => f.value) : [];
+    const currentFlagsStr = JSON.stringify(currentFlags);
+    
+    let updateExistingPallets = false;
+    
+    if (originalFlagsStr !== currentFlagsStr) {
+      const choice = await appConfirmThreeWay(
+        "I Flag di questo prodotto sono stati modificati.\nCome vuoi procedere con i bancali già in magazzino?",
+        "Aggiornamento Flag",
+        "Applica a tutto",
+        "Da ora in poi",
+        "Annulla Operazione"
+      );
+      if (choice === 'CANCEL') {
+        setIsProcessing(false);
+        return;
+      }
+      updateExistingPallets = (choice === 'CONFIRM');
+    }
+    
+    setIsProcessing(true);
+    try {
+      const payload = {
+        ...editProductModal.product,
+        flags: currentFlags,
+        updateExistingPallets
+      };
+      await axios.put(`http://${window.location.hostname}:3000/api/products/${editProductModal.product.id}`, payload, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setEditProductModal({ show: false, product: null });
       fetchData();
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore');
@@ -368,6 +421,19 @@ const ProductsManagement = () => {
   });
 
 
+  const availableFlagsOptions = React.useMemo(() => {
+    const flagsSet = new Set();
+    products.forEach(p => {
+      const pf = typeof p.flags === 'string' ? JSON.parse(p.flags) : (p.flags || []);
+      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
+    });
+    pallets.forEach(p => {
+      const pf = typeof p.flags === 'string' ? JSON.parse(p.flags) : (p.flags || []);
+      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
+    });
+    return Array.from(flagsSet).map(f => ({ label: f, value: f }));
+  }, [products, pallets]);
+
   const indexOfLastPallet = palletsCurrentPage * itemsPerPage;
   const indexOfFirstPallet = indexOfLastPallet - itemsPerPage;
   const currentPallets = filteredPallets.slice(indexOfFirstPallet, indexOfLastPallet);
@@ -469,7 +535,7 @@ const ProductsManagement = () => {
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Arrivo</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Lotto/Scad</th>
-                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note / Flag</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Posizione</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
                     </tr>
@@ -538,6 +604,17 @@ const ProductsManagement = () => {
                               {p.notes || p.product_notes}
                             </div>
                           ) : <span className="text-slate-600 text-xs">-</span>}
+                          {(() => {
+                            const parsedFlags = p.flags && typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags || [];
+                            if (parsedFlags.length === 0) return null;
+                            return (
+                              <div className="flex gap-1 mt-1 flex-wrap">
+                                {parsedFlags.map(f => (
+                                  <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider text-[9px]">{f}</span>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-3 py-3">
                           {p.status === 'PENDING' ? (
@@ -573,31 +650,48 @@ const ProductsManagement = () => {
                     <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">SKU</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Nome Prodotto</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Articolo Dft</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Cliente</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Giacenza Totale</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">UDM Base</th>
-                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note</th>
+                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note / Flag</th>
                       {isDeveloper && <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
                     {currentProducts.length === 0 ? (
-                      <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
+                      <tr><td colSpan="8" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
                     ) : currentProducts.map(p => {
                       const totalStock = pallets.filter(pal => pal.product_id === p.id && pal.status !== 'SHIPPED').reduce((acc, curr) => acc + parseFloat(curr.quantity || 0), 0);
+                      const parsedFlags = p.flags && typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags || [];
                       return (
                       <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                         <td className="px-3 py-3 font-mono text-brand-blue text-xs font-bold">{p.sku}</td>
                         <td className="px-3 py-3 font-bold">{p.name}</td>
+                        <td className="px-3 py-3 text-slate-400">{p.default_article_number || '-'}</td>
                         <td className="px-3 py-3 text-slate-400">{p.customer_name}</td>
                         <td className="px-3 py-3 font-bold text-brand-blue">{formatQuantity(totalStock, p.uom || 'Pezzi')} <span className="text-[10px] text-slate-500 uppercase">({formatUOM(p.uom || 'Pezzi')})</span></td>
                         <td className="px-3 py-3 text-slate-300 text-sm">{p.uom}</td>
-                        <td className="px-3 py-3 text-slate-400 text-xs">{p.notes || '-'}</td>
+                        <td className="px-3 py-3 text-slate-400 text-xs">
+                          <div className="mb-1">{p.notes || '-'}</div>
+                          {parsedFlags.length > 0 && (
+                            <div className="flex gap-1 flex-wrap">
+                              {parsedFlags.map(f => (
+                                <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider text-[9px]">{f}</span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
                         {isDeveloper && (
                           <td className="px-3 py-3 text-right">
-                            <button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
-                              <Trash2 size={18} />
-                            </button>
+                            <div className="flex items-center justify-end gap-2">
+                              <button onClick={() => setEditProductModal({ show: true, product: { ...p, flags: parsedFlags.map(f => ({ label: f, value: f })), original_flags: parsedFlags } })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica Anagrafica">
+                                <Edit3 size={18} />
+                              </button>
+                              <button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
+                                <Trash2 size={18} />
+                              </button>
+                            </div>
                           </td>
                         )}
                       </tr>
@@ -634,8 +728,60 @@ const ProductsManagement = () => {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola</label>
+                  <input type="number" onWheel={(e) => e.target.blur()} min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Num.Articolo di Default</label>
+                  <input value={newProduct.default_article_number} onChange={e => setNewProduct({...newProduct, default_article_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" placeholder="Es. ART-001" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
+                <CreatableSelect
+                  isMulti
+                  styles={selectStyles}
+                  placeholder="Digita un flag e premi invio..."
+                  noOptionsMessage={() => "Nessun flag trovato"}
+                  formatCreateLabel={(val) => `Crea flag "${val}"`}
+                  value={newProduct.flags}
+                  options={availableFlagsOptions}
+                  onChange={val => setNewProduct({...newProduct, flags: val})}
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Note Generiche (Opzionale)</label>
+                <textarea value={newProduct.notes} onChange={e => setNewProduct({...newProduct, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue resize-none h-20"></textarea>
+              </div>
+              <div className="flex gap-4 mt-8 pt-8 border-t border-slate-800/80">
+                <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">Crea Prodotto</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editProductModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 max-w-md w-full shadow-2xl animate-fade-in-up max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-bold text-brand-white mb-8 flex items-center gap-3">
+              <span className="w-10 h-10 bg-brand-blue/20 flex items-center justify-center rounded-xl text-brand-blue"><Edit3 size={24} /></span>
+              Modifica Anagrafica
+            </h2>
+            <form onSubmit={handleUpdateProduct} className="space-y-6">
+              <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Articolo (SKU) *</label>
+                <input required value={editProductModal.product.sku} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, sku: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+              </div>
+              <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Nome Prodotto *</label>
+                <input required value={editProductModal.product.name} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, name: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità Base (UDM) *</label>
-                  <select required value={newProduct.uom} onChange={e => setNewProduct({...newProduct, uom: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
+                  <select required value={editProductModal.product.uom} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, uom: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
                     <option value="Pezzi">Pezzi</option>
                     <option value="Scatole">Scatole</option>
                     <option value="Bancali">Bancale Intero</option>
@@ -645,7 +791,7 @@ const ProductsManagement = () => {
                 </div>
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Cliente Proprietario *</label>
-                  <select required value={newProduct.customer_id} onChange={e => setNewProduct({...newProduct, customer_id: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
+                  <select required value={editProductModal.product.customer_id} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, customer_id: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue">
                     <option value="" disabled>Seleziona cliente...</option>
                     {customers.map(c => <option key={c.id} value={c.id}>{c.business_name}</option>)}
                   </select>
@@ -654,16 +800,33 @@ const ProductsManagement = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Unità per Scatola</label>
-                  <input type="number" onWheel={(e) => e.target.blur()} min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                  <input type="number" onWheel={(e) => e.target.blur()} min="1" value={editProductModal.product.units_per_box} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, units_per_box: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Num.Articolo di Default</label>
+                  <input value={editProductModal.product.default_article_number || ''} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, default_article_number: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue" placeholder="Es. ART-001" />
                 </div>
               </div>
               <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
+                <CreatableSelect
+                  isMulti
+                  styles={selectStyles}
+                  placeholder="Digita un flag e premi invio..."
+                  noOptionsMessage={() => "Nessun flag trovato"}
+                  formatCreateLabel={(val) => `Crea flag "${val}"`}
+                  value={editProductModal.product.flags || []}
+                  options={availableFlagsOptions}
+                  onChange={val => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, flags: val }})}
+                />
+              </div>
+              <div>
                 <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Note Generiche (Opzionale)</label>
-                <textarea value={newProduct.notes} onChange={e => setNewProduct({...newProduct, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue resize-none h-20"></textarea>
+                <textarea value={editProductModal.product.notes || ''} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, notes: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-4 focus:ring-brand-blue resize-none h-20"></textarea>
               </div>
               <div className="flex gap-4 mt-8 pt-8 border-t border-slate-800/80">
-                <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
-                <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">Crea Prodotto</button>
+                <button type="button" onClick={() => setEditProductModal({ show: false, product: null })} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-bold transition-colors shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50">Salva Modifiche</button>
               </div>
             </form>
           </div>

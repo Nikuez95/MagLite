@@ -8,6 +8,7 @@ import { Download, PackagePlus, FileText, Trash2, Plus, Printer } from 'lucide-r
 const Inbound = () => {
   const [customers, setCustomers] = useState([]);
   const [products, setProducts] = useState([]);
+  const [serverFlags, setServerFlags] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -35,6 +36,7 @@ const Inbound = () => {
     batch: '',
     client_pallet_number: '',
     client_article_number: '',
+    flags: [],
     warehouse: 'Settala',
     num_pallets: 1,
     notes: '',
@@ -49,14 +51,16 @@ const Inbound = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [custRes, prodRes, freeRes] = await Promise.all([
+      const [custRes, prodRes, freeRes, flagsRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers })
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/products/flags`, { headers }).catch(() => ({ data: [] }))
       ]);
       setCustomers(custRes.data.map(c => ({ value: c.id, label: c.business_name })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
       setFreeLocations(freeRes.data.map(fl => ({ value: fl.name, label: fl.name })));
+      setServerFlags(flagsRes.data);
     } catch (err) {
       console.error(err);
     }
@@ -139,7 +143,9 @@ const Inbound = () => {
           uom: uomToSave, 
           customer_id: formData.customer_id,
           units_per_box: parseFloat(formData.units_per_box) || 1,
-          boxes_per_pallet: parseFloat(formData.boxes_per_pallet) || 1
+          boxes_per_pallet: parseFloat(formData.boxes_per_pallet) || 1,
+          default_article_number: formData.client_article_number || null,
+          flags: formData.flags ? formData.flags.map(f => f.value) : []
         };
         
         const res = await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, { 
@@ -191,7 +197,8 @@ const Inbound = () => {
       client_pallet_number: formData.client_pallet_number,
       client_article_number: formData.client_article_number,
       expiration_date: formData.expiration_date,
-      arrival_date: formData.arrival_date
+      arrival_date: formData.arrival_date,
+      flags: formData.flags ? formData.flags.map(f => f.value) : []
     };
 
     setCart(prev => [...prev, newItem]);
@@ -209,7 +216,8 @@ const Inbound = () => {
       expiration_date: '',
       arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16),
       isNewProduct: false,
-      newProductName: ''
+      newProductName: '',
+      flags: []
     }));
   };
 
@@ -265,7 +273,10 @@ const Inbound = () => {
     menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #1e293b' }),
     option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc', cursor: 'pointer' }),
     singleValue: base => ({ ...base, color: '#f8fafc' }),
-    input: base => ({ ...base, color: '#f8fafc' })
+    input: base => ({ ...base, color: '#f8fafc' }),
+    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155' }),
+    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.75rem', textTransform: 'uppercase' }),
+    multiValueRemove: base => ({ ...base, color: '#94a3b8', ':hover': { backgroundColor: '#f43f5e', color: '#fff' } })
   };
 
   const renderQuantityHint = () => {
@@ -300,6 +311,15 @@ const Inbound = () => {
       );
     }
   };
+
+  const availableFlagsOptions = React.useMemo(() => {
+    const flagsSet = new Set(serverFlags);
+    products.forEach(p => {
+      const pf = typeof p.raw.flags === 'string' ? JSON.parse(p.raw.flags) : (p.raw.flags || []);
+      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
+    });
+    return Array.from(flagsSet).map(f => ({ label: f, value: f }));
+  }, [products, serverFlags]);
 
   const totalPalletsToGenerate = cart.reduce((acc, curr) => acc + curr.num_pallets, 0);
 
@@ -357,17 +377,23 @@ const Inbound = () => {
                         isNewProduct: true,
                         newProductName: val.value,
                         units_per_box: '',
-                        boxes_per_pallet: ''
+                        boxes_per_pallet: '',
+                        client_article_number: '',
+                        flags: []
                       });
                     } else {
                       const prod = products.find(p => p.value === val.value);
+                      const defaultArticle = prod?.raw?.default_article_number || '';
+                      const parsedFlags = prod?.raw?.flags ? (typeof prod.raw.flags === 'string' ? JSON.parse(prod.raw.flags) : prod.raw.flags) : [];
                       setFormData({
                         ...formData, 
                         product_id: val.value,
                         isNewProduct: false,
                         newProductName: '',
                         units_per_box: prod?.raw?.units_per_box || '',
-                        boxes_per_pallet: prod?.raw?.boxes_per_pallet || ''
+                        boxes_per_pallet: prod?.raw?.boxes_per_pallet || '',
+                        client_article_number: defaultArticle,
+                        flags: parsedFlags.map(f => ({ label: f, value: f }))
                       });
                     }
                   }}
@@ -427,6 +453,20 @@ const Inbound = () => {
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Data di Arrivo *</label>
                   <input type="datetime-local" required value={formData.arrival_date} onChange={e => setFormData({...formData, arrival_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue [color-scheme:dark]" />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Flag (es. ADR) - Opzionale</label>
+                <CreatableSelect
+                  isMulti
+                  styles={selectStyles}
+                  placeholder="Digita un flag e premi invio..."
+                  noOptionsMessage={() => "Nessun flag trovato"}
+                  formatCreateLabel={(val) => `Crea flag "${val}"`}
+                  value={formData.flags}
+                  options={availableFlagsOptions}
+                  onChange={val => setFormData({...formData, flags: val})}
+                />
               </div>
 
               <div>
