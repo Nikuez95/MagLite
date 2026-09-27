@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Settings2, Building, LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X, ChevronDown, ChevronUp, Package, Calculator, ReceiptText, Coins } from 'lucide-react';
+import { Settings2, Building, LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X, ChevronDown, ChevronUp, Package, Calculator, ReceiptText, Coins, DollarSign, Activity, TrendingDown, Archive } from 'lucide-react';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
@@ -31,6 +31,16 @@ const DesktopLayout = () => {
     { name: 'Documenti (DDT)', path: '/desktop/documents', icon: FileText },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History },
+    
+    {
+      name: 'Finanza',
+      icon: DollarSign,
+      submenu: [
+        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity },
+        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown },
+        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive }
+      ]
+    },
     {
       name: 'Amministrazione',
       icon: Calculator,

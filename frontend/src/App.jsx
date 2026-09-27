@@ -18,6 +18,9 @@ import ClientTariffManager from './pages/desktop/ClientTariffManager';
 import Settings from './pages/desktop/Settings';
 import BillingRulesManager from './pages/desktop/BillingRulesManager';
 import PreBillingDashboard from './pages/desktop/PreBillingDashboard';
+import FinancesDashboard from './pages/desktop/FinancesDashboard';
+import InvoicesHistory from './pages/desktop/InvoicesHistory';
+import ExpensesManager from './pages/desktop/ExpensesManager';
 import Dashboard from './pages/desktop/Dashboard';
 import AuditLogs from './pages/desktop/AuditLogs';
 
@@ -69,6 +72,9 @@ function App() {
           <Route path="locations" element={<Locations />} />
           <Route path="billing-tariffs" element={<ClientTariffManager />} />
           <Route path="billing-dashboard" element={<PreBillingDashboard />} />
+          <Route path="finances" element={<FinancesDashboard />} />
+          <Route path="invoices-history" element={<InvoicesHistory />} />
+          <Route path="expenses" element={<ExpensesManager />} />
           <Route path="settings" element={<Settings />} />
           <Route path="billing-rules" element={<BillingRulesManager />} />
           <Route path="documents" element={<div className="text-3xl font-bold text-brand-white">Fatture e DDT</div>} />

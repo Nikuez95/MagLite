@@ -42,6 +42,7 @@ fastify.register(require('./routes/audit'), { prefix: '/api/audit' });
 fastify.register(require('./routes/outbound'), { prefix: '/api/outbound' });
 fastify.register(require('./routes/billing'), { prefix: '/api/billing' });
 fastify.register(require('./routes/settings'), { prefix: '/api/settings' });
+fastify.register(require('./routes/finances'), { prefix: '/api/finances' });
 
 // Health check endpoint (non protetto)
 fastify.get('/api/health', async () => {
