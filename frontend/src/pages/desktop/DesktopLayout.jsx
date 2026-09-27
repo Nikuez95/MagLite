@@ -1,19 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Users, Box, Map, History, LogOut, Settings, FileText, Search, UserCog, PackagePlus, PackageMinus, PackageSearch, Menu, X, ChevronDown, ChevronUp, Package } from 'lucide-react';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [openSubmenus, setOpenSubmenus] = useState({
+    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products'].includes(location.pathname)
+  });
+
+  const toggleSubmenu = (name) => {
+    setOpenSubmenus(prev => ({ ...prev, [name]: !prev[name] }));
+  };
 
   const menu = [
     { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard },
-    { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus },
-    { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus },
-    { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch },
+    { 
+      name: 'Merce', 
+      icon: Package, 
+      submenu: [
+        { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus },
+        { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus },
+        { name: 'Prodotti', path: '/desktop/products', icon: Box },
+        { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch },
+      ]
+    },
     { name: 'Clienti', path: '/desktop/customers', icon: Users },
-    { name: 'Prodotti', path: '/desktop/products', icon: Box },
     { name: 'Magazzino', path: '/desktop/locations', icon: Map },
     { name: 'Documenti (DDT)', path: '/desktop/documents', icon: FileText },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog },
@@ -65,6 +78,55 @@ const DesktopLayout = () => {
         <nav className="flex-1 p-4 flex flex-col gap-2 mt-4">
           <p className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Menu Principale</p>
           {menu.map((item) => {
+            if (item.submenu) {
+              const isOpen = openSubmenus[item.name];
+              const isChildActive = item.submenu.some(subItem => location.pathname === subItem.path);
+              const Icon = item.icon;
+              return (
+                <div key={item.name} className="flex flex-col gap-1">
+                  <button
+                    onClick={() => toggleSubmenu(item.name)}
+                    className={`flex items-center justify-between px-4 py-3.5 rounded-xl transition-all ${
+                      isChildActive && !isOpen
+                        ? 'bg-brand-blue/10 text-brand-blue font-bold shadow-sm'
+                        : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white font-medium'
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <Icon size={22} className={isChildActive && !isOpen ? 'text-brand-blue' : 'text-slate-400'} />
+                      <span className="text-sm">{item.name}</span>
+                    </div>
+                    {isOpen ? <ChevronUp size={18} className={isChildActive ? 'text-brand-blue' : 'text-slate-400'} /> : <ChevronDown size={18} className={isChildActive ? 'text-brand-blue' : 'text-slate-400'} />}
+                  </button>
+                  {isOpen && (
+                    <div className="flex flex-col gap-1 pl-12 pr-2 py-1">
+                      {item.submenu.map((subItem) => {
+                        const isSubActive = location.pathname === subItem.path;
+                        const SubIcon = subItem.icon;
+                        return (
+                          <button
+                            key={subItem.name}
+                            onClick={() => {
+                              navigate(subItem.path);
+                              setMobileMenuOpen(false);
+                            }}
+                            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
+                              isSubActive
+                                ? 'bg-brand-blue text-brand-black font-bold shadow-md'
+                                : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white font-medium'
+                            }`}
+                          >
+                            <SubIcon size={18} className={isSubActive ? 'text-brand-black' : 'text-slate-400'} />
+                            <span className="text-sm">{subItem.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             const isActive = location.pathname === item.path;
             const Icon = item.icon;
             return (
