@@ -24,13 +24,13 @@ async function authRoutes(fastify, options) {
         return reply.code(401).send({ error: 'Credenziali non valide' });
       }
 
-      // Genera il token JWT includendo ruolo e ID
+      // Genera il token JWT includendo ruolo e ID (Senza scadenza)
       const token = fastify.jwt.sign({ 
         id: user.id, 
         username: user.username, 
         role: user.role,
         requires_password_change: !!user.requires_password_change
-      }, { expiresIn: '12h' }); // Scade in 12 ore, ideale per un turno logistico
+      });
 
       return {
         token,
@@ -86,13 +86,13 @@ async function authRoutes(fastify, options) {
       
       await db.query('UPDATE USERS SET password_hash = ?, requires_password_change = FALSE WHERE id = ?', [hash, request.user.id]);
       
-      // Rigeneriamo il token per rimuovere il flag requires_password_change
+      // Rigeneriamo il token per rimuovere il flag requires_password_change (Senza scadenza)
       const newToken = fastify.jwt.sign({ 
         id: request.user.id, 
         username: request.user.username, 
         role: request.user.role,
         requires_password_change: false
-      }, { expiresIn: '12h' });
+      });
 
       return { success: true, message: 'Password aggiornata con successo', token: newToken };
     } catch (err) {
