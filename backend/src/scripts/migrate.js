@@ -19,7 +19,9 @@ async function runMigrations() {
       "ALTER TABLE USERS ADD COLUMN preferences JSON DEFAULT NULL;",
       "ALTER TABLE PRODUCTS ADD COLUMN default_article_number VARCHAR(100) DEFAULT NULL;",
       "ALTER TABLE PRODUCTS ADD COLUMN flags JSON DEFAULT NULL;",
-      "ALTER TABLE PALLETS ADD COLUMN flags JSON DEFAULT NULL;"
+      "ALTER TABLE PALLETS ADD COLUMN flags JSON DEFAULT NULL;",
+      "ALTER TABLE invoices ADD COLUMN invoice_data JSON DEFAULT NULL;",
+      "ALTER TABLE invoices ADD COLUMN is_paid BOOLEAN DEFAULT FALSE;"
     ];
 
     for (const query of queries) {
@@ -40,3 +42,4 @@ async function runMigrations() {
 }
 
 module.exports = runMigrations;
+

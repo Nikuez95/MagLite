@@ -1,9 +1,10 @@
 import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
-import { Download, PackagePlus, FileText, Trash2, Plus, Printer } from 'lucide-react';
+import Papa from 'papaparse';
+import { Download, Upload, PackagePlus, FileText, Trash2, Plus, Printer } from 'lucide-react';
 
 const Inbound = () => {
   const [customers, setCustomers] = useState([]);
@@ -119,7 +120,157 @@ const Inbound = () => {
 
   const filteredProducts = products.filter(p => p.raw.customer_id === formData.customer_id);
 
+
+  const fileInputRef = useRef(null);
+
+  const handleDownloadTemplate = () => {
+    const csvContent = "Prodotto,Quantita,Unita_Misura,Pezzi_Per_Scatola,Scatole_Per_Bancale,Lotto,Scadenza,Moltiplicatore_Palette,Magazzino,Paletta_Cliente,Articolo_Cliente,Note\n" +
+      "\"Acqua Naturale 1.5L\",1,Bancali,6,84,\"L-1234\",\"2027-12-31\",2,\"Settala\",\"PAL-001\",\"ART-ACQ\",\"Attenzione fragile\"\n" +
+      "\"Biscotti Frollini\",50,Scatole,12,60,\"L-999\",\"2026-10-15\",1,\"Settala\",\"\",\"\",\"\"\n" +
+      "\"Farina 00 1Kg\",200,Base,10,50,\"\",\"\",1,\"Settala\",\"\",\"\",\"\"";
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", "template_inbound.csv");
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!formData.customer_id) {
+      appAlert('Seleziona prima il Cliente Proprietario a cui associare il CSV!');
+      e.target.value = null;
+      return;
+    }
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        setIsProcessing(true);
+        const newCartItems = [];
+        let errors = 0;
+
+        for (const row of results.data) {
+          const prodName = row.Prodotto?.trim();
+          const qtyStr = row.Quantita?.trim();
+          if (!prodName || !qtyStr) {
+            errors++;
+            continue;
+          }
+
+          let qty = parseFloat(qtyStr);
+          if (isNaN(qty) || qty <= 0) {
+            errors++;
+            continue;
+          }
+
+          const entryUom = row.Unita_Misura?.trim() || 'Base';
+          const upb = parseFloat(row.Pezzi_Per_Scatola) || 1;
+          const bpp = parseFloat(row.Scatole_Per_Bancale) || 1;
+          const lotto = row.Lotto?.trim() || '';
+          const scadenza = row.Scadenza?.trim() || null;
+          const palletsCount = parseInt(row.Moltiplicatore_Palette) || 1;
+          const magazzino = row.Magazzino?.trim() || 'Settala';
+          const palletCliente = row.Paletta_Cliente?.trim() || '';
+          const articoloCliente = row.Articolo_Cliente?.trim() || '';
+          const note = row.Note?.trim() || '';
+
+          let finalProductId = null;
+          let existingProd = products.find(p => p.label === prodName && p.raw.customer_id === formData.customer_id);
+
+          if (!existingProd) {
+            try {
+              const sku = "PROD-" + Math.random().toString(36).substring(2,6).toUpperCase();
+              let uomToSave = entryUom;
+              if (uomToSave === 'Base') uomToSave = 'Scatole';
+              
+              const payload = { 
+                sku, 
+                name: prodName, 
+                uom: uomToSave, 
+                customer_id: formData.customer_id,
+                units_per_box: upb,
+                boxes_per_pallet: bpp
+              };
+              
+              const res = await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, { 
+                headers: { Authorization: `Bearer ${getToken()}` }
+              });
+              finalProductId = res.data.id;
+              
+              const newOption = { value: finalProductId, label: prodName, raw: { customer_id: formData.customer_id, uom: uomToSave, units_per_box: upb, boxes_per_pallet: bpp } };
+              setProducts(prev => [...prev, newOption]);
+              products.push(newOption); 
+            } catch (err) {
+              console.error("Failed to create product", prodName);
+              errors++;
+              continue;
+            }
+          } else {
+            finalProductId = existingProd.value;
+          }
+
+          let actualQty = qty;
+          let pallet_uom = null;
+          
+          if (entryUom === 'Scatole') {
+            actualQty *= upb;
+          } else if (entryUom === 'Bancali') {
+            actualQty *= (upb * bpp);
+          } else if (entryUom === 'KG' || entryUom === 'Metro Cubo') {
+            pallet_uom = entryUom === 'KG' ? 'KG' : 'Metro Cubo';
+          }
+
+          newCartItems.push({
+            id: Date.now() + Math.random(),
+            customer_id: formData.customer_id,
+            product_id: finalProductId,
+            product_name: prodName,
+            quantity: actualQty,
+            units_per_box: upb,
+            boxes_per_pallet: bpp,
+            pallet_uom: pallet_uom,
+            batch: lotto,
+            warehouse: magazzino,
+            num_pallets: palletsCount,
+            notes: note,
+            client_pallet_number: palletCliente,
+            client_article_number: articoloCliente,
+            expiration_date: scadenza,
+            arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+          });
+        }
+
+        if (newCartItems.length > 0) {
+          setCart(prev => [...prev, ...newCartItems]);
+        }
+        
+        setIsProcessing(false);
+        e.target.value = null; 
+        
+        if (errors > 0) {
+          appAlert(`Caricamento completato con ${errors} righe saltate (dati mancanti o invalidi). Elementi aggiunti: ${newCartItems.length}`);
+        } else {
+          appAlert(`Caricamento CSV completato! Aggiunti ${newCartItems.length} elementi alla lista.`, 'Successo', 'success');
+        }
+      },
+      error: (error) => {
+        setIsProcessing(false);
+        appAlert('Errore nella lettura del file CSV: ' + error.message);
+        e.target.value = null;
+      }
+    });
+  };
+
   const handleAddToCart = async (e) => {
+
     e.preventDefault();
     if (!formData.customer_id || !formData.product_id || !formData.quantity || formData.num_pallets < 1) {
       appAlert('Compila tutti i campi obbligatori');
@@ -340,6 +491,31 @@ const Inbound = () => {
           {/* Form */}
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-xl">
             <h2 className="text-xl font-bold text-brand-white mb-6">Inserimento Merce</h2>
+              <div className="flex gap-2 mb-6">
+                <input 
+                  type="file" 
+                  accept=".csv" 
+                  ref={fileInputRef} 
+                  onChange={handleFileUpload} 
+                  className="hidden" 
+                />
+                <button 
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex-1 py-2 bg-brand-blue/10 text-brand-blue border border-brand-blue/30 rounded-xl font-bold hover:bg-brand-blue hover:text-brand-black transition-colors flex items-center justify-center gap-2 text-sm"
+                >
+                  <Upload size={16} />
+                  Carica da CSV
+                </button>
+                <button 
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  className="flex-1 py-2 bg-slate-800 text-slate-300 border border-slate-700 rounded-xl font-bold hover:bg-slate-700 transition-colors flex items-center justify-center gap-2 text-sm"
+                >
+                  <Download size={16} />
+                  Template
+                </button>
+              </div>
             
             <form onSubmit={handleAddToCart} className="space-y-6">
               
@@ -439,7 +615,7 @@ const Inbound = () => {
                   <input value={formData.client_pallet_number} onChange={e => setFormData({...formData, client_pallet_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. PAL-CLI-123" />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Num. Articolo (Opzionale)</label>
+                  <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Codice Articolo (Opz.)</label>
                   <input value={formData.client_article_number} onChange={e => setFormData({...formData, client_article_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. ART-001" />
                 </div>
               </div>

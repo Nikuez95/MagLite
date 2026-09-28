@@ -119,8 +119,8 @@ async function productRoutes(fastify, options) {
     }
   });
   fastify.delete('/:id', async (request, reply) => {
-    if (request.user.role !== 'developer') {
-      return reply.code(403).send({ error: 'Solo i developer possono eliminare anagrafiche' });
+    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
+      return reply.code(403).send({ error: 'Solo developer e backoffice possono eliminare anagrafiche' });
     }
     try {
       const [[product]] = await db.query('SELECT name FROM PRODUCTS WHERE id = ?', [request.params.id]);

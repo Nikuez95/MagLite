@@ -146,6 +146,7 @@ const ProductsManagement = () => {
   };
   const user = getUser();
   const isDeveloper = user?.role === 'developer';
+  const canManageProducts = user?.role === 'developer' || user?.role === 'backoffice';
 
   const fetchData = async () => {
     try {
@@ -655,7 +656,7 @@ const ProductsManagement = () => {
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Giacenza Totale</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">UDM Base</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note / Flag</th>
-                      {isDeveloper && <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
+                      {canManageProducts && <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>}
                     </tr>
                   </thead>
                   <tbody className="text-brand-white">
