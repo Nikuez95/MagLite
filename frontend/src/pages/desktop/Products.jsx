@@ -683,10 +683,10 @@ const ProductsManagement = () => {
                             </div>
                           )}
                         </td>
-                        {isDeveloper && (
-                          <td className="px-3 py-3 text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <button onClick={() => setEditProductModal({ show: true, product: { ...p, flags: parsedFlags.map(f => ({ label: f, value: f })), original_flags: parsedFlags } })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica Anagrafica">
+                        {canManageProducts && (
+                            <td className="px-3 py-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button onClick={() => setEditProductModal({ show: true, product: { ...p, flags: parsedFlags.map(f => ({ label: f, value: f })), original_flags: parsedFlags } })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica Anagrafica">
                                 <Edit3 size={18} />
                               </button>
                               <button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
