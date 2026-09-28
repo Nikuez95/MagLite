@@ -197,7 +197,8 @@ const Inbound = () => {
                 uom: uomToSave, 
                 customer_id: formData.customer_id,
                 units_per_box: upb,
-                boxes_per_pallet: bpp
+                boxes_per_pallet: bpp,
+                default_article_number: articoloCliente || null
               };
               
               const res = await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, { 
@@ -205,7 +206,7 @@ const Inbound = () => {
               });
               finalProductId = res.data.id;
               
-              const newOption = { value: finalProductId, label: prodName, raw: { customer_id: formData.customer_id, uom: uomToSave, units_per_box: upb, boxes_per_pallet: bpp } };
+              const newOption = { value: finalProductId, label: prodName, raw: { customer_id: formData.customer_id, uom: uomToSave, units_per_box: upb, boxes_per_pallet: bpp, default_article_number: articoloCliente || '' } };
               setProducts(prev => [...prev, newOption]);
               products.push(newOption); 
             } catch (err) {
