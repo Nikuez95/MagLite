@@ -123,6 +123,8 @@ const TMSDashboard = () => {
   
   // Drag State for Native DnD
   const [draggedDriverId, setDraggedDriverId] = useState(null);
+  
+  
 
   // --- LOGIC ---
   const handleOpenDriverModal = (driver = null) => {
@@ -215,7 +217,7 @@ const TMSDashboard = () => {
     });
   };
 
-  const moveTrip = (tripId, destColId) => {
+  const moveTripToPosition = (tripId, destColId, targetTripId = null) => {
     let sourceColId = null;
     let trip = null;
     
@@ -224,10 +226,10 @@ const TMSDashboard = () => {
       if (t) { sourceColId = colId; trip = { ...t }; break; }
     }
     if (!trip) return;
-    if (sourceColId === destColId) return;
+    // allow same column reordering: if (sourceColId === destColId && !targetTripId) return;
 
     const sourceCol = [...columns[sourceColId]];
-    const destCol = [...(columns[destColId] || [])];
+    let destCol = sourceColId === destColId ? sourceCol : [...(columns[destColId] || [])];
 
     const sourceIndex = sourceCol.findIndex(t => t.id === tripId);
     sourceCol.splice(sourceIndex, 1);
@@ -235,8 +237,26 @@ const TMSDashboard = () => {
     if (sourceColId === 'unassigned' && destColId !== 'unassigned') trip.status = 'ASSIGNED';
     else if (sourceColId !== 'unassigned' && destColId === 'unassigned') trip.status = 'UNASSIGNED';
 
-    destCol.push(trip);
+    if (targetTripId) {
+      const targetIndex = destCol.findIndex(t => t.id === targetTripId);
+      if (targetIndex > -1) destCol.splice(targetIndex, 0, trip);
+      else destCol.push(trip);
+    } else {
+      destCol.push(trip);
+    }
     setColumns({ ...columns, [sourceColId]: sourceCol, [destColId]: destCol });
+  };
+
+  const onNativeDropCard = (e, destColId, targetTripId) => {
+    e.currentTarget.classList.remove('!border-t-4', '!border-brand-blue', 'scale-[1.02]');
+    e.preventDefault();
+    e.stopPropagation();
+    const type = e.dataTransfer.getData('type');
+    if (type !== 'trip') return;
+    const tripId = e.dataTransfer.getData('tripId');
+    if (tripId && tripId !== targetTripId) moveTripToPosition(tripId, destColId, targetTripId);
+    
+    
   };
 
   const onNativeDrop = (e, destColId) => {
@@ -261,7 +281,7 @@ const TMSDashboard = () => {
 
     // Drop Viaggi
     const tripId = e.dataTransfer.getData('tripId');
-    if (tripId) moveTrip(tripId, destColId);
+    if (tripId) moveTripToPosition(tripId, destColId, null);
   };
 
   // --- RENDERERS ---
@@ -280,7 +300,7 @@ const TMSDashboard = () => {
     return filtered;
   }, [columns, viewMode, selectedDate]);
 
-  const renderKanbanCard = (trip) => {
+  const renderKanbanCard = (trip, colId) => {
     const isSpecial = trip.status === 'ADMIN';
 
     return (
@@ -292,7 +312,13 @@ const TMSDashboard = () => {
           e.dataTransfer.setData('type', 'trip');
         }}
         onClick={() => handleOpenTripModal(trip)}
-        className={`mb-3 p-4 rounded-xl border-l-4 bg-slate-950 border-y border-r border-y-slate-800 border-r-slate-800 shadow-lg transition-all cursor-grab active:cursor-grabbing hover:border-r-slate-600 hover:bg-slate-900/80 ${STATUS_COLORS[trip.status].split(' ')[0]}`}
+        onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
+        onDragEnter={e => { e.preventDefault(); e.currentTarget.classList.add('!border-t-4', '!border-brand-blue', 'scale-[1.02]'); }}
+        onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('!border-t-4', '!border-brand-blue', 'scale-[1.02]'); }}
+        
+        
+        onDrop={e => onNativeDropCard(e, colId, trip.id)}
+        className={`mb-3 p-4 rounded-xl border-l-4 bg-slate-950 border-y border-r border-y-slate-800 border-r-slate-800 shadow-lg transition-all cursor-grab active:cursor-grabbing hover:border-r-slate-600 hover:bg-slate-900/80 ${STATUS_COLORS[trip.status].split(' ')[0]} `}
       >
         {isSpecial ? (
           <>
@@ -553,7 +579,7 @@ const TMSDashboard = () => {
               ) : (
                 // Full Kanban Unassigned Card
                 <React.Fragment key={trip.id}>
-                  {renderKanbanCard(trip)}
+                  {renderKanbanCard(trip, 'unassigned')}
                 </React.Fragment>
               )
             ))}
@@ -590,7 +616,7 @@ const TMSDashboard = () => {
                   <div className="flex-1 p-3 overflow-y-auto custom-scrollbar">
                     {displayedColumns[driver.id]?.map(trip => (
                       <React.Fragment key={trip.id}>
-                        {renderKanbanCard(trip)}
+                        {renderKanbanCard(trip, driver.id)}
                       </React.Fragment>
                     ))}
                   </div>
