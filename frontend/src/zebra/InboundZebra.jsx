@@ -206,7 +206,7 @@ const InboundZebra = () => {
             return (
               <button 
                 key={item.id}
-                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(''); setExistingPalletInput(''); setLocationInput(''); setError(null); }}
+                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(''); setLocationInput(''); setError(null); }}
                 className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800'}`}
               >
                 <div className="flex justify-between items-start mb-2">
@@ -240,6 +240,8 @@ const InboundZebra = () => {
   }
 
   if (step === 'INPUT_QTY') {
+    if (!selectedItem) return null;
+
     const exp = parseFloat(selectedItem.expected_quantity);
     const act = parseFloat(selectedItem.actual_quantity || 0);
     const remaining = Math.max(0, exp - act);

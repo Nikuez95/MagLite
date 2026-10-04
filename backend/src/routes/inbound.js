@@ -71,7 +71,7 @@ async function inboundRoutes(fastify, options) {
 
       const [items] = await db.query('SELECT * FROM INBOUND_DDT_ITEMS WHERE inbound_ddt_id = ?', [ddt.id]);
       
-      return { ...ddt, items };
+      return { ddt, items };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore fetch DDT details' });

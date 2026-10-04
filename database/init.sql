@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS PALLETS (
     batch VARCHAR(100),
     warehouse VARCHAR(50),
     status ENUM('PENDING', 'STOCKED', 'SHIPPED') DEFAULT 'PENDING',
+    inbound_ddt_id INT DEFAULT NULL,
     location VARCHAR(50),
     notes TEXT,
     client_pallet_number VARCHAR(100),
@@ -161,4 +162,37 @@ CREATE TABLE IF NOT EXISTS expenses (
     expense_date DATE NOT NULL,
     category VARCHAR(100) DEFAULT 'Generale',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS INBOUND_DDTS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ddt_number VARCHAR(50) NOT NULL UNIQUE,
+    customer_id INT NOT NULL,
+    status ENUM('PENDING', 'IN_PROGRESS', 'COMPLETED', 'DISCREPANCY') DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closed_at DATETIME DEFAULT NULL,
+    notes TEXT,
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS INBOUND_DDT_ITEMS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    inbound_ddt_id INT NOT NULL,
+    product_id INT NOT NULL,
+    sku VARCHAR(100) DEFAULT NULL,
+    product_name VARCHAR(255) DEFAULT NULL,
+    product_uom VARCHAR(50) DEFAULT NULL,
+    expected_quantity DECIMAL(10,2) NOT NULL,
+    actual_quantity DECIMAL(10,2) DEFAULT 0,
+    units_per_box INT,
+    boxes_per_pallet INT,
+    pallet_uom VARCHAR(50),
+    batch VARCHAR(100),
+    client_pallet_number VARCHAR(100),
+    client_article_number VARCHAR(100),
+    expiration_date DATE,
+    notes TEXT,
+    FOREIGN KEY (inbound_ddt_id) REFERENCES INBOUND_DDTS(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)
 );
