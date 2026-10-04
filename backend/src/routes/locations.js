@@ -28,6 +28,36 @@ async function locationRoutes(fastify, options) {
     }
   });
 
+  // GET /api/locations/routing-zones
+  fastify.get('/routing-zones', async (request, reply) => {
+    try {
+      // Zone classiche
+      const [classicZones] = await db.query('SELECT DISTINCT zone FROM LOCATIONS WHERE zone IS NOT NULL');
+      const zones = classicZones.map(z => z.zone);
+
+      // Free Locations dalla tabella
+      const [freeLocRows] = await db.query('SELECT name FROM FREE_LOCATIONS');
+      
+      // Free Locations (nomi location legacy dalle palette che non sono in LOCATIONS)
+      const [legacyFreeLocations] = await db.query(`
+        SELECT DISTINCT p.location 
+        FROM PALLETS p 
+        LEFT JOIN LOCATIONS l ON p.location = l.barcode 
+        WHERE l.barcode IS NULL AND p.location IS NOT NULL AND p.location != ''
+      `);
+      
+      const allZones = [...new Set([
+        ...zones, 
+        ...freeLocRows.map(f => f.name),
+        ...legacyFreeLocations.map(f => f.location)
+      ])];
+      return allZones;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore recupero zone per routing' });
+    }
+  });
+
   // POST /api/locations/bulk - Generatore massivo
   fastify.post('/bulk', async (request, reply) => {
     const { zone, rack, levels } = request.body;

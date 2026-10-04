@@ -2,6 +2,121 @@ const db = require('../config/db');
 const PDFDocument = require('pdfkit');
 const bwipjs = require('bwip-js');
 
+async function getRoutingSettings(connection) {
+  const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
+  let zonePriority = [];
+  let posPriority = [];
+  rows.forEach(r => {
+    if (r.setting_key === 'zone_routing_priority') zonePriority = JSON.parse(r.setting_value);
+    if (r.setting_key === 'position_routing_priority') posPriority = JSON.parse(r.setting_value);
+  });
+  return { zonePriority, posPriority };
+}
+
+function sortPalletsByRouting(pallets, zonePriority, posPriority) {
+  const getZoneIndex = (z) => {
+    if (!z || z === 'null') return 999;
+    const idx = zonePriority.indexOf(z);
+    return idx >= 0 ? idx : 999;
+  };
+  
+  const getPosIndex = (pos) => {
+    if (!pos) return 999;
+    for (let i = 0; i < posPriority.length; i++) {
+        const p = posPriority[i];
+        if (p.split(',').map(s=>s.trim()).includes(pos)) return i;
+    }
+    return 999;
+  };
+
+  return pallets.sort((a, b) => {
+    // 1. Expiration (FIFO)
+    const expA = a.expiration_date ? new Date(a.expiration_date).getTime() : 9999999999999;
+    const expB = b.expiration_date ? new Date(b.expiration_date).getTime() : 9999999999999;
+    if (expA !== expB) return expA - expB;
+    
+    // 2. Zone Priority
+    const trueZoneA = (a.zone && a.zone !== 'null') ? a.zone : a.location;
+    const trueZoneB = (b.zone && b.zone !== 'null') ? b.zone : b.location;
+    const zA = getZoneIndex(trueZoneA);
+    const zB = getZoneIndex(trueZoneB);
+    if (zA !== zB) return zA - zB;
+    
+    // 3. Pos Priority
+    const pA = getPosIndex(a.pos);
+    const pB = getPosIndex(b.pos);
+    if (pA !== pB) return pA - pB;
+    
+    return 0;
+  });
+}
+
+async function allocateOutboundItems(items, connection) {
+  const allocatedPallets = [];
+  const { zonePriority, posPriority } = await getRoutingSettings(connection);
+
+  for (const req of items) {
+    // Se c'è già il pallet_code (vecchio sistema), lo passiamo senza toccarlo
+    if (req.pallet_code) {
+      allocatedPallets.push(req);
+      continue;
+    }
+
+    let query = `
+      SELECT pal.*, loc.zone, loc.col, loc.pos, p.units_per_box 
+      FROM PALLETS pal 
+      JOIN PRODUCTS p ON pal.product_id = p.id 
+      LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode 
+      WHERE pal.product_id = ? AND pal.status != 'SHIPPED' AND pal.quantity > 0
+    `;
+    const params = [req.product_id];
+    if (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') {
+       query += ` AND pal.batch = ?`;
+       params.push(req.batch);
+    } else if (req.batch === 'Nessun lotto') {
+       query += ` AND (pal.batch IS NULL OR pal.batch = '')`;
+    }
+    
+    const [available] = await connection.query(query, params);
+    sortPalletsByRouting(available, zonePriority, posPriority);
+
+    let remainingToAllocate = parseFloat(req.quantity_required);
+    let allocatedForThisReq = [];
+
+    for (const pal of available) {
+       if (remainingToAllocate <= 0) break;
+
+       let palletQtyInRequestedUom = parseFloat(pal.quantity);
+       if (req.requested_uom === 'Scatole' || req.requested_uom === 'Cartoni') {
+          palletQtyInRequestedUom = palletQtyInRequestedUom / (pal.units_per_box || 1);
+       } else if (req.requested_uom === 'Bancali') {
+          palletQtyInRequestedUom = 1;
+       }
+
+       if (palletQtyInRequestedUom <= 0) continue;
+
+       let take = Math.min(remainingToAllocate, palletQtyInRequestedUom);
+       
+       allocatedForThisReq.push({
+          pallet_code: pal.pallet_code,
+          product_id: req.product_id,
+          quantity_required: take,
+          requested_uom: req.requested_uom
+       });
+       
+       remainingToAllocate -= take;
+       if (req.requested_uom === 'Bancali' && take >= 1) remainingToAllocate = 0;
+    }
+
+    if (remainingToAllocate > 0) {
+       throw new Error(`Quantità insufficiente in magazzino per l'articolo ID ${req.product_id}`);
+    }
+    
+    allocatedPallets.push(...allocatedForThisReq);
+  }
+  return allocatedPallets;
+}
+
 async function outboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -39,7 +154,8 @@ async function outboundRoutes(fastify, options) {
       );
       const orderId = orderRes.insertId;
 
-      for (const item of items) {
+      const allocatedItemsPOST = await allocateOutboundItems(items, connection);
+      for (const item of allocatedItemsPOST) {
         await connection.query(
           'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
           [orderId, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
@@ -69,7 +185,7 @@ async function outboundRoutes(fastify, options) {
         connection.release();
       }
       fastify.log.error(err);
-      return reply.code(500).send({ error: "Errore nella creazione dell'ordine" });
+      return reply.code(400).send({ error: err.message || "Errore nella creazione dell'ordine" });
     }
   });
 
@@ -98,7 +214,8 @@ async function outboundRoutes(fastify, options) {
 
       await connection.query('DELETE FROM OUTBOUND_ITEMS WHERE order_id = ?', [id]);
 
-      for (const item of items) {
+      const allocatedItemsPUT = await allocateOutboundItems(items, connection);
+      for (const item of allocatedItemsPUT) {
         await connection.query(
           'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
           [id, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
@@ -223,8 +340,15 @@ async function outboundRoutes(fastify, options) {
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
-        ORDER BY loc.zone ASC, loc.col ASC, loc.pos ASC
       `, [order.id]);
+
+      const connection = await db.getConnection();
+      try {
+        const { zonePriority, posPriority } = await getRoutingSettings(connection);
+        sortPalletsByRouting(items, zonePriority, posPriority);
+      } finally {
+        connection.release();
+      }
 
       const doc = new PDFDocument({ size: 'A4', margin: 40 });
       reply.header('Content-Type', 'application/pdf');
@@ -309,36 +433,45 @@ async function outboundRoutes(fastify, options) {
       let tableTop = doc.y;
       
       const drawTableHeader = (yPos) => {
-        doc.rect(40, yPos, 510, 25).fill('#192935');
+        doc.rect(40, yPos, 515, 25).fill('#192935');
         doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
-        doc.text('POSIZIONE', 50, yPos + 8);
-        doc.text('ARTICOLO', 150, yPos + 8);
-        doc.text('LOTTO', 315, yPos + 8);
-        doc.text('PALETTA', 390, yPos + 8);
-        doc.text('Q.TÀ', 495, yPos + 8);
+        doc.text('POSIZIONE', 45, yPos + 8);
+        doc.text('ARTICOLO', 135, yPos + 8);
+        doc.text('LOTTO', 265, yPos + 8);
+        doc.text('PALETTA', 345, yPos + 8);
+        doc.text('Q.TÀ', 485, yPos + 8);
       };
 
       drawTableHeader(tableTop);
       let y = tableTop + 35;
 
-      doc.fillColor('#192935').font('Helvetica').fontSize(10);
       for (const item of items) {
-        if (y > 750) {
+        let locStr = 'NO POS.';
+        if (item.zone && item.zone !== 'null') {
+          locStr = `${item.zone} | ${item.col} | ${item.pos}`;
+        } else if (item.location && item.location !== 'null') {
+          locStr = item.location;
+        }
+
+        // Calculate height for article name to allow multiline
+        const articleHeight = doc.font('Helvetica').fontSize(9).heightOfString(item.product_name, { width: 120 });
+        const rowHeight = Math.max(25, articleHeight + 10);
+
+        if (y + rowHeight > 780) {
           doc.addPage();
           drawTableHeader(40);
           y = 75;
-          doc.fillColor('#192935').font('Helvetica').fontSize(10);
         }
         
-        const locStr = item.location ? `${item.zone} | ${item.col} | ${item.pos}` : 'NO POS.';
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#192935').text(locStr, 45, y, { width: 85 });
+        doc.font('Helvetica').fontSize(9).fillColor('#334155').text(item.product_name, 135, y, { width: 120 });
+        doc.text(item.batch || '-', 265, y, { width: 75 });
         
-        doc.font('Helvetica-Bold').fillColor('#192935').text(locStr, 50, y);
-        doc.font('Helvetica').fillColor('#334155').text(item.product_name, 150, y, { width: 155, lineBreak: false });
-        doc.text(item.batch || '-', 315, y);
-        doc.font('Helvetica-Bold').fillColor('#192935').text(item.pallet_code, 390, y);
+        const displayPallet = item.pallet_code.startsWith('NOBAR-') ? '-' : item.pallet_code;
+        doc.font('Helvetica-Bold').fontSize(8).fillColor('#192935').text(displayPallet, 345, y, { width: 135 });
         
         let qtyText = `${item.quantity_required} ${item.uom}`;
-        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali' && item.uom !== 'Bancali') {
+        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali') {
            const scatole = Math.floor(item.quantity_required / item.units_per_box);
            const sfusi = item.quantity_required % item.units_per_box;
            let breakDown = [];
@@ -347,10 +480,10 @@ async function outboundRoutes(fastify, options) {
            qtyText = breakDown.join(' + ');
         }
 
-        doc.fillColor('#192935').font('Helvetica-Bold').text(qtyText, 495, y, { lineBreak: false });
+        doc.fillColor('#192935').font('Helvetica-Bold').fontSize(9).text(qtyText, 485, y, { width: 70 });
         
-        doc.moveTo(40, y + 15).lineTo(550, y + 15).lineWidth(0.5).strokeColor('#e2e8f0').stroke();
-        y += 25;
+        doc.moveTo(40, y + rowHeight - 5).lineTo(555, y + rowHeight - 5).lineWidth(0.5).strokeColor('#e2e8f0').stroke();
+        y += rowHeight;
       }
 
       doc.end();
@@ -380,11 +513,15 @@ async function outboundRoutes(fastify, options) {
         JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
-        ORDER BY 
-          loc.zone ASC, 
-          loc.col ASC, 
-          loc.pos ASC
       `, [order.id]);
+
+      const connection = await db.getConnection();
+      try {
+        const { zonePriority, posPriority } = await getRoutingSettings(connection);
+        sortPalletsByRouting(items, zonePriority, posPriority);
+      } finally {
+        connection.release();
+      }
 
       // Imposta in PICKING se era PENDING
       if (order.status === 'PENDING') {

@@ -18,6 +18,7 @@ import Inventory from './pages/desktop/Inventory';
 import Locations from './pages/desktop/Locations';
 import ClientTariffManager from './pages/desktop/ClientTariffManager';
 import Settings from './pages/desktop/Settings';
+import RoutingManager from './pages/desktop/RoutingManager';
 import BillingRulesManager from './pages/desktop/BillingRulesManager';
 import PreBillingDashboard from './pages/desktop/PreBillingDashboard';
 import FinancesDashboard from './pages/desktop/FinancesDashboard';
@@ -79,6 +80,7 @@ function App() {
           <Route path="invoices-history" element={<InvoicesHistory />} />
           <Route path="expenses" element={<ExpensesManager />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="settings/routing" element={<RoutingManager />} />
           <Route path="billing-rules" element={<BillingRulesManager />} />
           <Route path="documents" element={<InboundDDTs />} />
           <Route path="users" element={<UsersManagement />} />

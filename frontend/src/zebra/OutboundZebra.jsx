@@ -104,7 +104,9 @@ const OutboundZebra = () => {
   };
 
   const checkAndSkipPin = (item) => {
-    if (item.pallet_code.startsWith('NOBAR-') || item.zone === 'FREE_LOCATIONS') {
+    const isFreeLocation = (!item.zone || item.zone === 'null') && (item.location && item.location !== 'null');
+    
+    if (item.pallet_code.startsWith('NOBAR-') || isFreeLocation) {
       setScannedPallet(item.pallet_code);
       setStep('INPUT_QTY');
       setQtyInput(item.quantity_required.toString());
@@ -320,7 +322,7 @@ const OutboundZebra = () => {
             <div>
               <p className="text-xs text-slate-500 uppercase font-bold mb-1">Recati qui:</p>
               <p className="text-brand-white font-bold text-xl">
-                {currentItem?.zone ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : (currentItem?.location || 'Cerca in magazzino')}
+                {(currentItem?.zone && currentItem.zone !== 'null') ? `${currentItem.zone} | ${currentItem.col} | ${currentItem.pos}` : (currentItem?.location || 'Cerca in magazzino')}
               </p>
             </div>
           </div>

@@ -172,7 +172,11 @@ const DesktopLayout = () => {
         <div className="p-4 border-t border-slate-800 flex flex-col gap-2">
           <button onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }} className="flex items-center gap-4 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-brand-white w-full transition-all">
             <Settings size={20} />
-            <span className="text-sm font-medium" onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}>Impostazioni Aziendali</span>
+            <span className="text-sm font-medium">Impostazioni Aziendali</span>
+          </button>
+          <button onClick={() => { navigate('/desktop/settings/routing'); setMobileMenuOpen(false); }} className="flex items-center gap-4 px-4 py-3 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-brand-white w-full transition-all">
+            <Map size={20} />
+            <span className="text-sm font-medium">Regole di Prelievo</span>
           </button>
           <button 
             onClick={() => {
