@@ -9,7 +9,8 @@ const Locations = () => {
   const [locations, setLocations] = useState([]);
   const [freeLocations, setFreeLocations] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [activeTab, setActiveTab] = useState('mapped'); // 'mapped' or 'free'
+  const [activeTab, setActiveTab] = useState('mapped');
+  const [requirePins, setRequirePins] = useState(true); // 'mapped' or 'free'
   const [bulkMode, setBulkMode] = useState('STANDARD'); // STANDARD, TERRA, CUSTOM
   const [bulkForm, setBulkForm] = useState({
     zone: 'CELLA2',
@@ -34,12 +35,16 @@ const Locations = () => {
 
   const fetchLocations = async () => {
     try {
-      const [resLoc, resFree] = await Promise.all([
+      const [resLoc, resFree, resSettings] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${getToken()}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${getToken()}` } })
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${getToken()}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers: { Authorization: `Bearer ${getToken()}` } })
       ]);
       setLocations(resLoc.data);
       setFreeLocations(resFree.data);
+      if (resSettings.data && resSettings.data.require_location_pins !== undefined) {
+        setRequirePins(resSettings.data.require_location_pins === 'true');
+      }
     } catch (err) {
       console.error(err);
     }
@@ -55,6 +60,17 @@ const Locations = () => {
 
     return () => socket.disconnect();
   }, []);
+
+  const togglePins = async () => {
+    const newValue = !requirePins;
+    try {
+      await axios.post(`http://${window.location.hostname}:3000/api/settings`, { require_location_pins: newValue.toString() }, { headers: { Authorization: `Bearer ${getToken()}` } });
+      setRequirePins(newValue);
+      appAlert(`Richiesta PIN ${newValue ? 'attivata' : 'disattivata'} con successo!`, 'Successo', 'success');
+    } catch (err) {
+      appAlert('Errore nel salvataggio impostazioni');
+    }
+  };
 
   const handleBulkGenerate = async (e) => {
     e.preventDefault();
@@ -181,7 +197,16 @@ const Locations = () => {
             </h1>
             <p className="text-slate-400">Genera e gestisci le postazioni con i loro Codici PIN di Sicurezza.</p>
           </div>
-          <div className="flex gap-2 p-1 bg-slate-900 border border-slate-800 rounded-xl">
+          <div className="flex items-center gap-4">
+            <label className="flex items-center cursor-pointer gap-2 bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl transition-all hover:border-brand-blue">
+              <span className="text-sm font-bold text-slate-300">Richiedi PIN Scaffale (Zebra)</span>
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={requirePins} onChange={togglePins} />
+                <div className={`block w-10 h-6 rounded-full transition-colors ${requirePins ? 'bg-brand-blue' : 'bg-slate-700'}`}></div>
+                <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${requirePins ? 'transform translate-x-4' : ''}`}></div>
+              </div>
+            </label>
+            <div className="flex gap-2 p-1 bg-slate-900 border border-slate-800 rounded-xl">
             <button
               onClick={() => setActiveTab('mapped')}
               className={`px-4 py-2 rounded-lg font-bold transition-colors ${activeTab === 'mapped' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'}`}
@@ -194,6 +219,7 @@ const Locations = () => {
             >
               Posizioni Libere
             </button>
+          </div>
           </div>
         </div>
 

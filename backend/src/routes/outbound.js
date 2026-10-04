@@ -263,7 +263,7 @@ async function outboundRoutes(fastify, options) {
         SELECT i.*, p.name as product_name, p.uom as base_uom, pal.batch, pal.location
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
         WHERE i.order_id = ?
       `, [id]);
       
@@ -337,7 +337,7 @@ async function outboundRoutes(fastify, options) {
         SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, p.units_per_box, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [order.id]);
@@ -510,7 +510,7 @@ async function outboundRoutes(fastify, options) {
         SELECT i.*, p.name as product_name, p.units_per_box, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [order.id]);
@@ -543,7 +543,7 @@ async function outboundRoutes(fastify, options) {
       const [items] = await db.query(`
         SELECT i.*, pal.location, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         JOIN PRODUCTS pr ON i.product_id = pr.id
         WHERE i.id = ? AND i.order_id = ?
@@ -743,7 +743,7 @@ async function outboundRoutes(fastify, options) {
         JOIN OUTBOUND_ORDERS o ON i.order_id = o.id
         JOIN CUSTOMERS c ON o.customer_id = c.id
         JOIN PRODUCTS p ON i.product_id = p.id
-        LEFT JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        LEFT JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
         WHERE o.status = 'SHIPPED'
         ORDER BY o.shipped_at DESC
       `);
