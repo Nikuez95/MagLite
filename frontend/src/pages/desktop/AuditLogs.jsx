@@ -99,7 +99,7 @@ const AuditLogs = () => {
                 ) : logs.map(log => (
                   <tr key={log.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                     <td className="px-3 py-3 text-xs font-mono text-brand-blue whitespace-nowrap">
-                      {new Date(log.created_at).toLocaleString('it-IT')}
+                      {new Date(log.created_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome' })}
                     </td>
                     <td className="px-3 py-3">
                       <span className="text-xs font-bold px-2 py-1 rounded uppercase tracking-wider bg-slate-800 text-slate-300">

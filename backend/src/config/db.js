@@ -8,6 +8,7 @@ const pool = mysql.createPool({
   user: process.env.DB_USER || 'maglite_user',
   password: process.env.DB_PASSWORD || 'maglite_pass',
   database: process.env.DB_NAME || 'maglite_db',
+  timezone: '+00:00', // FIXED: Ensures Node parses DB time correctly as UTC instead of Local
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
