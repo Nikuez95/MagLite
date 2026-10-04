@@ -4,7 +4,7 @@ const bwipjs = require('bwip-js');
 const fs = require('fs');
 const path = require('path');
 
-const logoPath = path.join(__dirname, '../../../logo_xs.png');
+const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
 
 async function drawLabel(doc, lbl, x, y, w, h) {
   // Bordo arrotondato moderno
@@ -23,8 +23,15 @@ async function drawLabel(doc, lbl, x, y, w, h) {
   doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
   doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
 
-  // CLIENTE
-  doc.fontSize(11).font('Helvetica-Bold').fillColor('#334155').text((lbl.customer_name || '').toUpperCase(), x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
+  // CLIENTE (Auto-shrink text per evitare a capo)
+  let cName = (lbl.customer_name || '').toUpperCase();
+  let maxFontSizeC = 11;
+  doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
+  while(doc.widthOfString(cName) > (w - 24) && maxFontSizeC > 6) {
+    maxFontSizeC -= 0.5;
+    doc.fontSize(maxFontSizeC);
+  }
+  doc.fillColor('#334155').text(cName, x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
 
   // PRODOTTO (Auto-shrink text per evitare a capo)
   let pName = (lbl.product_name || '').toUpperCase();
@@ -86,6 +93,7 @@ async function palletRoutes(fastify, options) {
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
+        WHERE p.status != 'SHIPPED'
         ORDER BY p.created_at DESC
       `);
       return rows;

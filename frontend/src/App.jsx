@@ -13,6 +13,7 @@ import Products from './pages/desktop/Products';
 import Inbound from './pages/desktop/Inbound';
 import InboundDDTs from './pages/desktop/InboundDDTs';
 import Outbound from './pages/desktop/Outbound';
+import OutboundHistory from './pages/desktop/OutboundHistory';
 import Inventory from './pages/desktop/Inventory';
 import Locations from './pages/desktop/Locations';
 import ClientTariffManager from './pages/desktop/ClientTariffManager';
@@ -67,6 +68,7 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="inbound" element={<Inbound />} />
           <Route path="outbound" element={<Outbound />} />
+          <Route path="outbound/history" element={<OutboundHistory />} />
           <Route path="inventory" element={<Inventory />} />
           <Route path="customers" element={<Customers />} />
           <Route path="products" element={<Products />} />

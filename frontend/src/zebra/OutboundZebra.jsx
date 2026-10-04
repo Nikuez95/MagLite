@@ -50,18 +50,25 @@ const OutboundZebra = () => {
     } else if (step === 'SCAN_PALLET') {
       if (barcode.toLowerCase() === currentItem.pallet_code.toLowerCase()) {
         setScannedPallet(barcode);
-        // Verifica se la paletta è frammentata
+        // Verifica se la paletta è frammentata o se va prelevata per intero
         try {
           setIsProcessing(true);
           const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/${barcode}`, {
-            headers: { Authorization: `Bearer ${getToken()}` }
+            headers: { Authorization: `Bearer ${token}` }
           });
           if (res.data.isMixed) {
             setMixedPalletItems(res.data.items);
             setStep('SELECT_MIXED_ITEM');
           } else {
-            setStep('INPUT_QTY');
-            setQtyInput(currentItem.quantity_required.toString());
+            const palletQty = parseFloat(res.data.quantity);
+            const reqQty = parseFloat(currentItem.quantity_required);
+            if (palletQty === reqQty) {
+                // Preleva tutto il bancale! Skip INPUT_QTY
+                await processPick(reqQty, barcode);
+            } else {
+                setStep('INPUT_QTY');
+                setQtyInput(reqQty.toString());
+            }
           }
         } catch (err) {
           setError('Errore lettura dettagli paletta.');
@@ -97,7 +104,7 @@ const OutboundZebra = () => {
   };
 
   const checkAndSkipPin = (item) => {
-    if (item.pallet_code.startsWith('NOBAR-')) {
+    if (item.pallet_code.startsWith('NOBAR-') || item.zone === 'FREE_LOCATIONS') {
       setScannedPallet(item.pallet_code);
       setStep('INPUT_QTY');
       setQtyInput(item.quantity_required.toString());
@@ -108,13 +115,7 @@ const OutboundZebra = () => {
 
   const currentItem = items[currentItemIndex];
 
-  const handleConfirmQty = async () => {
-    const q = parseFloat(qtyInput);
-    if (isNaN(q) || q !== parseFloat(currentItem.quantity_required)) {
-      setError(`Attenzione: devi prelevare esattamente ${currentItem.quantity_required} pezzi!`);
-      return;
-    }
-    
+  const processPick = async (q, overridePallet = null) => {
     setIsProcessing(true);
     setError(null);
     try {
@@ -122,7 +123,7 @@ const OutboundZebra = () => {
         order_id: order.id,
         item_id: currentItem.id,
         pin: scannedPin,
-        pallet_code: scannedPallet,
+        pallet_code: overridePallet || scannedPallet,
         qty_picked: q
       }, {
         headers: { Authorization: `Bearer ${token}` }
@@ -142,9 +143,19 @@ const OutboundZebra = () => {
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Errore di salvataggio');
+      if(step !== 'SCAN_PALLET') setStep('INPUT_QTY');
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleConfirmQty = async () => {
+    const q = parseFloat(qtyInput);
+    if (isNaN(q) || q !== parseFloat(currentItem.quantity_required)) {
+      setError(`Attenzione: devi prelevare esattamente ${currentItem.quantity_required} pezzi!`);
+      return;
+    }
+    await processPick(q);
   };
 
   const [manualScanInput, setManualScanInput] = useState('');

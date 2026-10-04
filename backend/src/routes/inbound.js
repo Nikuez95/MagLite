@@ -198,7 +198,7 @@ async function inboundRoutes(fastify, options) {
 
       const fsModule = require('fs');
       const path = require('path');
-      const logoPath = path.join(__dirname, '../../../logo_xs.png');
+      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
       
       if (fsModule.existsSync(logoPath)) {
         doc.image(logoPath, (doc.page.width - 200) / 2, doc.y, { fit: [200, 60], align: 'center' });
@@ -268,7 +268,7 @@ async function inboundRoutes(fastify, options) {
       const bwipjs = require('bwip-js');
       const path = require('path');
       const fsModule = require('fs');
-      const logoPath = path.join(__dirname, '../../../logo_xs.png');
+      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
       
       const isId = !isNaN(identifier);
       const queryStr = isId ? 'SELECT d.id FROM INBOUND_DDTS d WHERE d.id = ?' : 'SELECT d.id FROM INBOUND_DDTS d WHERE d.ddt_number = ?';
@@ -317,8 +317,15 @@ async function inboundRoutes(fastify, options) {
   doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
   doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
 
-  // CLIENTE
-  doc.fontSize(11).font('Helvetica-Bold').fillColor('#334155').text((lbl.customer_name || '').toUpperCase(), x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
+  // CLIENTE (Auto-shrink text per evitare a capo)
+  let cName = (lbl.customer_name || '').toUpperCase();
+  let maxFontSizeC = 11;
+  doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
+  while(doc.widthOfString(cName) > (w - 24) && maxFontSizeC > 6) {
+    maxFontSizeC -= 0.5;
+    doc.fontSize(maxFontSizeC);
+  }
+  doc.fillColor('#334155').text(cName, x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
 
   // PRODOTTO (Auto-shrink text per evitare a capo)
   let pName = (lbl.product_name || '').toUpperCase();

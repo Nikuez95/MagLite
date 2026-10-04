@@ -77,13 +77,15 @@ const InvoicesHistory = () => {
         doc.addImage(img, 'PNG', 14, 15, 20, 20);
       } catch(e) {}
 
-      doc.setFontSize(22);
+      doc.setFontSize(16);
       doc.setFont("helvetica", "bold");
-      doc.text(companySettings.company_name || 'La Mia Azienda', 38, 25);
+      const companyName = companySettings.company_name || 'La Mia Azienda';
+      const companyNameLines = doc.splitTextToSize(companyName, 75);
+      doc.text(companyNameLines, 38, 22);
       
       doc.setFontSize(10);
       doc.setFont("helvetica", "normal");
-      let startY = 32;
+      let startY = 22 + (companyNameLines.length * 6);
       if (companySettings.company_address) { doc.text(companySettings.company_address, 38, startY); startY+=5; }
       if (companySettings.company_piva) { doc.text(`P.IVA: ${companySettings.company_piva}`, 38, startY); startY+=5; }
       if (companySettings.company_cf) { doc.text(`CF: ${companySettings.company_cf}`, 38, startY); startY+=5; }

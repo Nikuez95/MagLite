@@ -2,8 +2,9 @@ import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
-import { Truck, Search, Plus, Trash2, Printer, CheckCircle, Clock, Eye, XCircle, PackageSearch, X, Loader2 } from 'lucide-react';
+import { Truck, Search, Plus, Trash2, Printer, CheckCircle, Clock, Eye, XCircle, PackageSearch, X, Loader2, History } from 'lucide-react';
 import { jwtDecode } from 'jwt-decode';
+import { useNavigate } from 'react-router-dom';
 
 function TimelineModal({ order, onClose, token }) {
   const [details, setDetails] = useState(null);
@@ -71,6 +72,7 @@ function TimelineModal({ order, onClose, token }) {
 }
 
 const Outbound = () => {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [products, setProducts] = useState([]);
@@ -322,9 +324,14 @@ const Outbound = () => {
           </h1>
           <p className="text-slate-400 mt-2">Gestione DDT interni e picking guidato Zebra</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)]">
-          <Plus size={20} /> Nuova Spedizione
-        </button>
+        <div className="flex gap-3">
+          <button onClick={() => navigate('/desktop/outbound/history')} className="bg-slate-800 hover:bg-slate-700 text-brand-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-all">
+            <History size={20} /> Storico Articoli Usciti
+          </button>
+          <button onClick={() => setShowModal(true)} className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)]">
+            <Plus size={20} /> Nuova Spedizione
+          </button>
+        </div>
       </div>
 
       {/* Filters */}

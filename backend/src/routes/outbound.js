@@ -232,42 +232,65 @@ async function outboundRoutes(fastify, options) {
       reply.send(doc);
 
       // --- BRAND HEADER ---
-      doc.rect(0, 0, doc.page.width, 80).fill('#0ea5e9'); // Brand blue
-      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(28).text('LOGISTIC PORCELLI', 40, 25, { align: 'left' });
-      doc.fontSize(10).font('Helvetica').text('Magazzino e Logistica Avanzata', 40, 55, { align: 'left' });
+      const fs = require('fs');
+      const path = require('path');
+      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
       
-      // Reset color
-      doc.fillColor('#000000');
+      if (fs.existsSync(logoPath)) {
+        doc.image(logoPath, 40, 30, { fit: [150, 50] });
+      } else {
+        doc.fillColor('#192935').font('Helvetica-Bold').fontSize(24).text('LOGISTIC PORCELLI', 40, 35, { align: 'left' });
+      }
+      
+      doc.fillColor('#64748b').fontSize(10).font('Helvetica').text('Magazzino e Logistica Avanzata', 350, 45, { align: 'right', width: 200 });
       doc.moveDown(4);
 
       // --- DOCUMENT TITLE ---
-      doc.font('Helvetica-Bold').fontSize(16).text('DOCUMENTO DI TRASPORTO INTERNO (PICKING LIST)', { align: 'left' });
-      doc.moveTo(40, doc.y + 5).lineTo(550, doc.y + 5).lineWidth(2).strokeColor('#0ea5e9').stroke();
-      doc.moveDown();
+      doc.y = 95;
+      doc.fillColor('#192935').font('Helvetica-Bold').fontSize(16).text('DOCUMENTO DI TRASPORTO INTERNO (PICKING LIST)', 40, doc.y, { align: 'left' });
+      doc.moveTo(40, doc.y + 5).lineTo(550, doc.y + 5).lineWidth(2).strokeColor('#192935').stroke();
+      doc.moveDown(1.5);
 
       // --- INFO CARDS ---
-      const infoTop = doc.y + 10;
+      const infoTop = doc.y;
       doc.lineWidth(1);
       
       // Box Cliente
-      doc.rect(40, infoTop, 245, 60).fillAndStroke('#f8fafc', '#cbd5e1');
+      doc.rect(40, infoTop, 245, 60).fillAndStroke('#f8fafc', '#e2e8f0');
       doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9).text('CLIENTE DESTINATARIO:', 50, infoTop + 10);
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(14).text(order.customer_name, 50, infoTop + 25);
+      
+      // Auto-shrink nome cliente
+      let cName = (order.customer_name || '').toUpperCase();
+      let maxFontSizeC = 14;
+      doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
+      while (doc.widthOfString(cName) > 225 && maxFontSizeC > 8) {
+        maxFontSizeC -= 1;
+        doc.fontSize(maxFontSizeC);
+      }
+      doc.fillColor('#192935').text(cName, 50, infoTop + 25);
 
       // Box Spedizione
-      doc.rect(305, infoTop, 245, 60).fillAndStroke('#f8fafc', '#cbd5e1');
+      doc.rect(305, infoTop, 245, 60).fillAndStroke('#f8fafc', '#e2e8f0');
       doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9).text('DATA PREVISTA USCITA:', 315, infoTop + 10);
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(14).text(new Date(order.exit_date).toLocaleDateString('it-IT'), 315, infoTop + 25);
+      doc.fillColor('#192935').font('Helvetica-Bold').fontSize(14).text(new Date(order.exit_date).toLocaleDateString('it-IT'), 315, infoTop + 25);
 
       doc.y = infoTop + 75;
       
+      const detailsLines = [];
       if (order.client_ddt) {
-        doc.fillColor('#0ea5e9').font('Helvetica-Bold').fontSize(11).text(`RIF. DDT CLIENTE: ${order.client_ddt}`, { align: 'center' });
+        detailsLines.push(`RIF. DDT CLIENTE: ${order.client_ddt}`);
+      }
+      if (order.created_by) {
+        detailsLines.push(`PREPARATO DA: ${order.created_by}`);
+      }
+
+      if (detailsLines.length > 0) {
+        doc.fillColor('#192935').font('Helvetica-Bold').fontSize(11).text(detailsLines.join('   |   '), { align: 'center' });
         doc.moveDown(0.5);
       }
 
       // --- BARCODE SECTION ---
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(12).text('CODICE ORDINE: ' + order.order_code, { align: 'center' });
+      doc.fillColor('#192935').font('Helvetica-Bold').fontSize(12).text('CODICE ORDINE: ' + order.order_code, { align: 'center' });
       const barcodeBuffer = await bwipjs.toBuffer({
         bcid: 'code128',
         text: order.order_code,
@@ -286,34 +309,33 @@ async function outboundRoutes(fastify, options) {
       let tableTop = doc.y;
       
       const drawTableHeader = (yPos) => {
-        doc.rect(40, yPos, 510, 25).fill('#f1f5f9');
-        doc.fillColor('#334155').font('Helvetica-Bold').fontSize(9);
+        doc.rect(40, yPos, 510, 25).fill('#192935');
+        doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
         doc.text('POSIZIONE', 50, yPos + 8);
         doc.text('ARTICOLO', 150, yPos + 8);
         doc.text('LOTTO', 315, yPos + 8);
         doc.text('PALETTA', 390, yPos + 8);
         doc.text('Q.TÀ', 495, yPos + 8);
-        doc.moveTo(40, yPos + 25).lineTo(550, yPos + 25).lineWidth(1).strokeColor('#cbd5e1').stroke();
       };
 
       drawTableHeader(tableTop);
       let y = tableTop + 35;
 
-      doc.fillColor('#0f172a').font('Helvetica').fontSize(10);
+      doc.fillColor('#192935').font('Helvetica').fontSize(10);
       for (const item of items) {
         if (y > 750) {
           doc.addPage();
           drawTableHeader(40);
           y = 75;
-          doc.fillColor('#0f172a').font('Helvetica').fontSize(10);
+          doc.fillColor('#192935').font('Helvetica').fontSize(10);
         }
         
         const locStr = item.location ? `${item.zone} | ${item.col} | ${item.pos}` : 'NO POS.';
         
-        doc.font('Helvetica-Bold').text(locStr, 50, y);
-        doc.font('Helvetica').text(item.product_name, 150, y, { width: 155, lineBreak: false });
+        doc.font('Helvetica-Bold').fillColor('#192935').text(locStr, 50, y);
+        doc.font('Helvetica').fillColor('#334155').text(item.product_name, 150, y, { width: 155, lineBreak: false });
         doc.text(item.batch || '-', 315, y);
-        doc.font('Helvetica-Bold').text(item.pallet_code, 390, y);
+        doc.font('Helvetica-Bold').fillColor('#192935').text(item.pallet_code, 390, y);
         
         let qtyText = `${item.quantity_required} ${item.uom}`;
         if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali' && item.uom !== 'Bancali') {
@@ -325,8 +347,7 @@ async function outboundRoutes(fastify, options) {
            qtyText = breakDown.join(' + ');
         }
 
-        doc.fillColor('#0ea5e9').text(qtyText, 495, y, { lineBreak: false });
-        doc.fillColor('#0f172a');
+        doc.fillColor('#192935').font('Helvetica-Bold').text(qtyText, 495, y, { lineBreak: false });
         
         doc.moveTo(40, y + 15).lineTo(550, y + 15).lineWidth(0.5).strokeColor('#e2e8f0').stroke();
         y += 25;
@@ -394,10 +415,10 @@ async function outboundRoutes(fastify, options) {
       if (items.length === 0) return reply.code(404).send({ error: 'Riga ordine non trovata' });
       const item = items[0];
 
-      // Se la paletta ha una posizione, verifica il PIN
-      if (item.loc_pin && item.loc_pin.toLowerCase() !== pin.toLowerCase()) {
-        return reply.code(400).send({ error: 'PIN Scaffale errato' });
-      }
+      // Controllo del PIN rimosso su richiesta
+      // if (item.loc_pin && item.loc_pin.toLowerCase() !== pin.toLowerCase()) {
+      //   return reply.code(400).send({ error: 'PIN Scaffale errato' });
+      // }
 
       // Verifica Barcode Paletta
       if (item.pallet_code.toLowerCase() !== pallet_code.toLowerCase()) {
@@ -502,10 +523,10 @@ async function outboundRoutes(fastify, options) {
       }
 
       if (!order.start_picking_at) {
-        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP, start_picking_at = CURRENT_TIMESTAMP, end_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [request.user?.username || 'SYSTEM', order.id]);
+        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP, start_picking_at = CURRENT_TIMESTAMP, end_picking_at = CURRENT_TIMESTAMP, picking_operator = ?, shipped_by = ? WHERE id = ?', [request.user?.username || 'SYSTEM', request.user?.username || 'SYSTEM', order.id]);
         await connection.query('UPDATE OUTBOUND_ITEMS SET picked_at = CURRENT_TIMESTAMP WHERE order_id = ? AND picked_at IS NULL', [order.id]);
       } else {
-        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP WHERE id = ?', [order.id]);
+        await connection.query('UPDATE OUTBOUND_ORDERS SET status = "SHIPPED", shipped_at = CURRENT_TIMESTAMP, shipped_by = ? WHERE id = ?', [request.user?.username || 'SYSTEM', order.id]);
       }
 
       await connection.commit();
@@ -565,6 +586,36 @@ async function outboundRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Errore ricerca palette' });
     }
   });
-}
+  // GET /api/outbound/history/items
+  fastify.get('/history/items', async (request, reply) => {
+    try {
+      const [rows] = await db.query(`
+        SELECT 
+          i.id,
+          o.order_code,
+          o.shipped_at,
+          o.created_by AS operator_prep,
+          o.shipped_by AS operator_ship,
+          c.business_name AS customer_name,
+          p.name AS product_name,
+          i.pallet_code,
+          pal.batch,
+          i.quantity_picked,
+          COALESCE(i.requested_uom, pal.pallet_uom, p.uom) AS uom
+        FROM OUTBOUND_ITEMS i
+        JOIN OUTBOUND_ORDERS o ON i.order_id = o.id
+        JOIN CUSTOMERS c ON o.customer_id = c.id
+        JOIN PRODUCTS p ON i.product_id = p.id
+        LEFT JOIN PALLETS pal ON i.pallet_code = pal.pallet_code
+        WHERE o.status = 'SHIPPED'
+        ORDER BY o.shipped_at DESC
+      `);
+      return rows;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore nel recupero dello storico uscite' });
+    }
+  });
 
+}
 module.exports = outboundRoutes;

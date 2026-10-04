@@ -1,5 +1,9 @@
 const db = require('../config/db');
 const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
+
+const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
 
 async function locationRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -184,14 +188,27 @@ async function locationRoutes(fastify, options) {
         // Bordo etichetta
         doc.rect(x + 5, y + 5, labelWidth - 10, labelHeight - 10).stroke('#cccccc');
 
+        // Logo
+        if (fs.existsSync(logoPath)) {
+          doc.image(logoPath, x + 10, y + 10, { fit: [60, 20] });
+        }
+
         // Scaffale/Posizione (In alto)
-        doc.font('Helvetica-Bold').fontSize(16).fillColor('#333333').text(String(loc.barcode || ''), x, y + 25, {
+        doc.font('Helvetica-Bold').fontSize(16).fillColor('#333333').text(String(loc.barcode || ''), x, y + 35, {
           width: labelWidth,
           align: 'center'
         });
 
-        // PIN Gigantesco (Centro)
-        doc.font('Helvetica-Bold').fontSize(90).fillColor('#000000').text(String(loc.pin || ''), x, y + 60, {
+        // PIN Gigantesco (Centro) (Auto-shrink text se per assurdo fosse lunghissimo)
+        let pinStr = String(loc.pin || '');
+        let pinSize = 90;
+        doc.font('Helvetica-Bold').fontSize(pinSize);
+        while(doc.widthOfString(pinStr) > (labelWidth - 20) && pinSize > 20) {
+          pinSize -= 5;
+          doc.fontSize(pinSize);
+        }
+        
+        doc.fillColor('#000000').text(pinStr, x, y + 70, {
           width: labelWidth,
           align: 'center'
         });
