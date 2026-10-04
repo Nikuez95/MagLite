@@ -1,9 +1,10 @@
 import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock } from 'lucide-react';
+import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock, Link2 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import CreatableSelect from 'react-select/creatable';
+import Select from 'react-select';
 
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
@@ -98,6 +99,7 @@ const ProductsManagement = () => {
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
+    const [freeLocations, setFreeLocations] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newProduct, setNewProduct] = useState({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '', default_article_number: '', flags: [] });
   const [editProductModal, setEditProductModal] = useState({ show: false, product: null });
@@ -346,19 +348,66 @@ const ProductsManagement = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
 
-      // Se ha inserito una posizione e questa è cambiata o prima non l'aveva
-      if (editModal.newLocation && editModal.newLocation !== editModal.pallet.location) {
-        await axios.post(`http://${window.location.hostname}:3000/api/pallets/stow`, {
-          pallet_code: editModal.pallet.pallet_code,
-          location: editModal.newLocation,
-          source: 'Gestionale'
-        }, {
-          headers: { Authorization: `Bearer ${getToken()}` }
-        });
-      }
-      
-      setEditModal({ show: false, pallet: null, newLocation: '', notes: '', client_pallet_number: '', client_article_number: '', error: null });
-      fetchData();
+      // Se ha inserito una posizione e questa e cambiata o prima non l'aveva
+        if (editModal.newLocation && editModal.newLocation !== editModal.pallet.location) {
+          const locStr = editModal.newLocation.toUpperCase().trim();
+          // Check if valid
+          const isMapped = locations.some(l => l.barcode === locStr);
+          const isFree = freeLocations.some(fl => fl.name.toUpperCase() === locStr);
+          
+          if (!isMapped && !isFree) {
+            throw { response: { data: { error: 'La posizione inserita non esiste nel sistema. Scegli una posizione valida o crea una zona libera dal Magazzino.' } } };
+          }
+
+          // Check if occupied by someone else
+          let occupiedBy = null;
+          if (isMapped) {
+            const locObj = locations.find(l => l.barcode === locStr);
+            if (locObj && locObj.pallet_code && locObj.pallet_code !== editModal.pallet.pallet_code) {
+              occupiedBy = locObj.pallet_code;
+            }
+          } else {
+            const occupyingPallet = pallets.find(p => p.location && p.location.toUpperCase() === locStr && p.pallet_code !== editModal.pallet.pallet_code);
+            if (occupyingPallet) {
+              occupiedBy = occupyingPallet.pallet_code;
+            }
+          }
+
+          if (occupiedBy) {
+            const choice = await appConfirmThreeWay(
+              `La posizione ${locStr} � gi� occupata dalla paletta ${occupiedBy}. Come vuoi procedere?`,
+              'Posizione Occupata',
+              'Frammenta',
+              'Forza comunque',
+              'Annulla'
+            );
+            if (choice === 'CONFIRM') { // Frammenta
+              await axios.post(`http://${window.location.hostname}:3000/api/pallets/merge`, {
+                source_code: editModal.pallet.pallet_code,
+                target_code: occupiedBy
+              }, { headers: { Authorization: `Bearer ${getToken()}` } });
+            } else if (choice === 'DENY') { // Forza comunque
+              await axios.post(`http://${window.location.hostname}:3000/api/pallets/stow`, {
+                pallet_code: editModal.pallet.pallet_code,
+                location: locStr,
+                source: 'Gestionale',
+                force: true
+              }, { headers: { Authorization: `Bearer ${getToken()}` } });
+            } else { // Annulla
+              setIsProcessing(false);
+              return;
+            }
+          } else {
+            await axios.post(`http://${window.location.hostname}:3000/api/pallets/stow`, {
+              pallet_code: editModal.pallet.pallet_code,
+              location: locStr,
+              source: 'Gestionale'
+            }, { headers: { Authorization: `Bearer ${getToken()}` } });
+          }
+        }
+        
+        setEditModal({ show: false, pallet: null, newLocation: '', notes: '', client_pallet_number: '', client_article_number: '', error: null });
+        fetchData();
     } catch (err) {
       setEditModal(prev => ({ ...prev, error: err.response?.data || { error: 'Errore imprevisto' } }));
     } finally {

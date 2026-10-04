@@ -28,7 +28,7 @@ const DesktopLayout = () => {
     },
     { name: 'Clienti', path: '/desktop/customers', icon: Users },
     { name: 'Magazzino', path: '/desktop/locations', icon: Map },
-    { name: 'Documenti (DDT)', path: '/desktop/documents', icon: FileText },
+    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History },
     

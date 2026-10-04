@@ -11,6 +11,7 @@ import ForcePasswordChange from './pages/ForcePasswordChange';
 import Customers from './pages/desktop/Customers';
 import Products from './pages/desktop/Products';
 import Inbound from './pages/desktop/Inbound';
+import InboundDDTs from './pages/desktop/InboundDDTs';
 import Outbound from './pages/desktop/Outbound';
 import Inventory from './pages/desktop/Inventory';
 import Locations from './pages/desktop/Locations';
@@ -77,7 +78,7 @@ function App() {
           <Route path="expenses" element={<ExpensesManager />} />
           <Route path="settings" element={<Settings />} />
           <Route path="billing-rules" element={<BillingRulesManager />} />
-          <Route path="documents" element={<div className="text-3xl font-bold text-brand-white">Fatture e DDT</div>} />
+          <Route path="documents" element={<InboundDDTs />} />
           <Route path="users" element={<UsersManagement />} />
           <Route path="audit" element={<AuditLogs />} />
         </Route>

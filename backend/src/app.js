@@ -33,6 +33,7 @@ fastify.decorate('authenticate', async function (request, reply) {
 // 4. Registrazione Rotte
 fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
 fastify.register(require('./routes/pallets'), { prefix: '/api/pallets' });
+fastify.register(require('./routes/inbound'), { prefix: '/api/inbound' });
 fastify.register(require('./routes/users'), { prefix: '/api/users' });
 fastify.register(require('./routes/customers'), { prefix: '/api/customers' });
 fastify.register(require('./routes/products'), { prefix: '/api/products' });
@@ -79,3 +80,4 @@ const start = async () => {
 };
 
 start();
+

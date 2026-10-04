@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { PackagePlus, ArrowRightLeft, PackageMinus, LogOut, Scan } from 'lucide-react';
+import { PackagePlus, ArrowRightLeft, PackageMinus, LogOut, Scan, Download } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import Stow from './Stow';
+import InboundZebra from './InboundZebra';
 
 const TouchButton = ({ icon: Icon, label, onClick }) => (
   <button 
@@ -57,7 +58,13 @@ const Dashboard = () => {
         <p className="text-brand-blue text-base font-medium mt-1">Seleziona l'azione da eseguire</p>
       </div>
       
-      <div className="grid grid-cols-1 gap-5">
+      
+        <div className="grid grid-cols-1 gap-5">
+          <TouchButton 
+            icon={Download} 
+            label="SPUNTA ENTRATA" 
+            onClick={() => navigate('/zebra/inbound')} 
+          />
         <TouchButton 
           icon={PackagePlus} 
           label="STIVAGGIO (Messa a dimora)" 
@@ -119,7 +126,9 @@ const ZebraApp = () => {
   return (
     <div className="min-h-screen bg-brand-black flex flex-col font-sans text-brand-white antialiased selection:bg-brand-blue selection:text-brand-black">
       <TopBar />
+      
       <Routes>
+        <Route path="/inbound" element={<InboundZebra />} />
         <Route path="/" element={<Dashboard />} />
         <Route path="/stow" element={<Stow />} />
         <Route path="/outbound" element={<OutboundZebra />} />
