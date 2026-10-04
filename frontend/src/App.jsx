@@ -22,6 +22,7 @@ import RoutingManager from './pages/desktop/RoutingManager';
 import BillingRulesManager from './pages/desktop/BillingRulesManager';
 import PreBillingDashboard from './pages/desktop/PreBillingDashboard';
 import FinancesDashboard from './pages/desktop/FinancesDashboard';
+import TMSDashboard from './pages/desktop/TMSDashboard';
 import InvoicesHistory from './pages/desktop/InvoicesHistory';
 import ExpensesManager from './pages/desktop/ExpensesManager';
 import Dashboard from './pages/desktop/Dashboard';
@@ -76,7 +77,10 @@ function App() {
           <Route path="locations" element={<Locations />} />
           <Route path="billing-tariffs" element={<ClientTariffManager />} />
           <Route path="billing-dashboard" element={<PreBillingDashboard />} />
+          
           <Route path="finances" element={<FinancesDashboard />} />
+          <Route path="tms" element={<TMSDashboard />} />
+
           <Route path="invoices-history" element={<InvoicesHistory />} />
           <Route path="expenses" element={<ExpensesManager />} />
           <Route path="settings" element={<Settings />} />
