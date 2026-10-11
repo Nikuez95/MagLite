@@ -28,7 +28,7 @@ async function inboundRoutes(fastify, options) {
       for (const item of cart) {
         await connection.query(
           'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [ddtId, item.product_id, item.sku, item.product_name || item.name, item.uom, item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, item.expiration_date || null, item.uom]
+          [ddtId, item.product_id, item.sku, item.product_name || item.name, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, item.expiration_date || null, item.pallet_uom || item.uom || 'Pezzi']
         );
       }
 
@@ -69,7 +69,14 @@ async function inboundRoutes(fastify, options) {
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
       const ddt = ddts[0];
 
-      const [items] = await db.query('SELECT * FROM INBOUND_DDT_ITEMS WHERE inbound_ddt_id = ?', [ddt.id]);
+      const [items] = await db.query(`
+        SELECT i.*, 
+               COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
+               COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
+        FROM INBOUND_DDT_ITEMS i
+        LEFT JOIN PRODUCTS p ON i.product_id = p.id
+        WHERE i.inbound_ddt_id = ?
+      `, [ddt.id]);
       
       return { ddt, items };
     } catch (err) {

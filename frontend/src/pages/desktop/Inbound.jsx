@@ -349,6 +349,7 @@ const Inbound = () => {
       units_per_box: upb,
       boxes_per_pallet: bpp,
       pallet_uom: pallet_uom,
+      uom: formData.entry_uom === 'Base' ? 'Pezzi' : (formData.entry_uom || 'Pezzi'),
       batch: formData.batch,
       warehouse: formData.warehouse,
       num_pallets: formData.num_pallets,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle, Play, MapPin, Hash } from 'lucide-react';
+import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle, Play, MapPin, Hash, Search, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 
@@ -12,11 +12,13 @@ const InboundZebra = () => {
   const [scannedDdt, setScannedDdt] = useState('');
   const [ddt, setDdt] = useState(null);
   const [items, setItems] = useState([]);
+  const [searchFilter, setSearchFilter] = useState('');
   const [error, setError] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   
   const [selectedItem, setSelectedItem] = useState(null);
   const [qtyInput, setQtyInput] = useState('');
+  const [boxesInput, setBoxesInput] = useState('');
   const [expDateInput, setExpDateInput] = useState('');
   const [locationInput, setLocationInput] = useState('');
     const [locationsList, setLocationsList] = useState([]);
@@ -55,6 +57,8 @@ const InboundZebra = () => {
     if (step === 'SCAN_DDT') {
       setScannedDdt(barcode);
       fetchDdt(barcode);
+    } else if (step === 'LIST_ITEMS') {
+      setSearchFilter(barcode.trim());
     }
   });
 
@@ -71,6 +75,7 @@ const InboundZebra = () => {
       }
       setDdt(res.data.ddt);
       setItems(res.data.items);
+      setSearchFilter('');
       setStep('LIST_ITEMS');
     } catch (err) {
       setError('DDT non trovato o errore server');
@@ -118,6 +123,7 @@ const InboundZebra = () => {
       setItems(items.map(i => i.id === selectedItem.id ? { ...i, actual_quantity: parseFloat(i.actual_quantity) + q } : i));
       setSelectedItem(null);
       setQtyInput('');
+      setBoxesInput('');
       await fetchLocs();
       setStep('LIST_ITEMS');
     } catch (err) {
@@ -185,20 +191,62 @@ const InboundZebra = () => {
       if (parseFloat(i.actual_quantity) !== parseFloat(i.expected_quantity)) hasDiscrepancy = true;
     });
 
+    const filteredItems = items.filter(item => {
+      if (!searchFilter.trim()) return true;
+      const q = searchFilter.toLowerCase().trim();
+      const nameMatch = item.product_name && item.product_name.toLowerCase().includes(q);
+      const batchMatch = item.batch && item.batch.toLowerCase().includes(q);
+      const skuMatch = item.sku && item.sku.toLowerCase().includes(q);
+      const clientArticleMatch = item.client_article_number && item.client_article_number.toLowerCase().includes(q);
+      return nameMatch || batchMatch || skuMatch || clientArticleMatch;
+    });
+
     return (
       <div className="flex-1 p-4 flex flex-col">
-        <div className="flex items-center gap-4 mb-6">
+        <div className="flex items-center gap-4 mb-4">
           <button onClick={() => setStep('SCAN_DDT')} className="p-3 bg-slate-800 rounded-full text-brand-white shrink-0">
             <ChevronLeft size={20} />
           </button>
-          <div>
+          <div className="min-w-0 flex-1">
             <h2 className="text-2xl font-black text-white leading-tight">Spunta DDT</h2>
-            <p className="text-brand-blue font-bold text-sm">{ddt?.ddt_number}</p>
+            <p className="text-brand-blue font-bold text-sm truncate">{ddt?.ddt_number}</p>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto space-y-4">
-          {items.map(item => {
+        {/* Ricerca per Nome o Lotto */}
+        <div className="relative mb-3">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input 
+            type="text" 
+            placeholder="Cerca per nome o lotto..."
+            value={searchFilter}
+            onChange={e => setSearchFilter(e.target.value)}
+            className="w-full bg-slate-900 border-2 border-slate-700 focus:border-brand-blue rounded-xl py-3 pl-11 pr-11 text-brand-white text-base font-bold placeholder-slate-500 focus:outline-none"
+          />
+          {searchFilter && (
+            <button 
+              onClick={() => setSearchFilter('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg active:scale-95"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {searchFilter.trim() && (
+          <div className="flex items-center justify-between text-xs text-slate-400 mb-2 px-1">
+            <span>Trovati: <strong className="text-brand-blue font-bold">{filteredItems.length}</strong> su {items.length}</span>
+            <button 
+              onClick={() => setSearchFilter('')}
+              className="text-brand-blue hover:underline font-bold"
+            >
+              Azzera filtro
+            </button>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto space-y-3">
+          {filteredItems.map(item => {
             const exp = parseFloat(item.expected_quantity);
             const act = parseFloat(item.actual_quantity || 0);
             const isComplete = act >= exp;
@@ -206,21 +254,44 @@ const InboundZebra = () => {
             return (
               <button 
                 key={item.id}
-                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(''); setLocationInput(''); setError(null); }}
-                className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800'}`}
+                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setBoxesInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(''); setError(null); }}
+                className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800 hover:border-brand-blue'}`}
               >
                 <div className="flex justify-between items-start mb-2">
-                  <div className="font-bold text-white text-lg truncate flex-1">{item.product_name}{item.batch && <div className="text-xs text-amber-500 font-mono mt-1">Lotto: {item.batch}</div>}</div>
+                  <div className="font-bold text-white text-lg truncate flex-1">
+                    {item.product_name}
+                    {item.batch && (
+                      <div className="text-xs text-amber-400 font-mono font-bold mt-1 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg w-fit">
+                        Lotto: {item.batch}
+                      </div>
+                    )}
+                  </div>
                   <div className="text-xs font-mono text-slate-500 ml-2 mt-1 shrink-0">{item.sku}</div>
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-slate-400">Attesi: <strong className="text-white">{exp}</strong></span>
                   <span className="text-slate-600">|</span>
                   <span className="text-brand-blue">Fatti: <strong className={`text-lg ${act >= exp ? 'text-emerald-500' : 'text-brand-blue'}`}>{act}</strong></span>
+                  {item.units_per_box > 0 && (item.product_uom?.toLowerCase() === 'pezzi' || item.product_uom?.toLowerCase() === 'pz') && (
+                    <span className="text-xs text-slate-500 font-mono ml-auto">({item.units_per_box} pz/scat.)</span>
+                  )}
                 </div>
               </button>
             );
           })}
+
+          {filteredItems.length === 0 && (
+            <div className="p-6 text-center bg-slate-900/50 border border-slate-800 rounded-2xl my-4">
+              <p className="text-slate-400 text-sm mb-1">Nessun articolo trovato per:</p>
+              <p className="text-brand-blue font-mono font-bold text-base mb-3">"{searchFilter}"</p>
+              <button 
+                onClick={() => setSearchFilter('')}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-xs active:scale-95 transition-all"
+              >
+                Mostra tutti ({items.length})
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mt-4 pt-4 border-t border-slate-800">
@@ -246,6 +317,36 @@ const InboundZebra = () => {
     const act = parseFloat(selectedItem.actual_quantity || 0);
     const remaining = Math.max(0, exp - act);
 
+    const unitsPerBox = parseInt(selectedItem.units_per_box, 10);
+    const rawUom = (selectedItem.product_uom || selectedItem.uom || '').toLowerCase().trim();
+    const isPieces = rawUom === 'pezzi' || rawUom === 'pz' || rawUom === 'pezzo' || rawUom === 'base' || rawUom === '' || (unitsPerBox > 1 && rawUom !== 'scatole' && rawUom !== 'bancali');
+    const hasUnitsPerBox = !isNaN(unitsPerBox) && unitsPerBox > 1;
+
+    const handleBoxesChange = (val) => {
+      setBoxesInput(val);
+      if (val === '' || isNaN(parseFloat(val))) {
+        setQtyInput('');
+        return;
+      }
+      const b = parseFloat(val);
+      if (hasUnitsPerBox) {
+        setQtyInput((b * unitsPerBox).toString());
+      }
+    };
+
+    const handleQtyChange = (val) => {
+      setQtyInput(val);
+      if (val === '' || isNaN(parseFloat(val))) {
+        setBoxesInput('');
+        return;
+      }
+      const q = parseFloat(val);
+      if (hasUnitsPerBox) {
+        const b = q / unitsPerBox;
+        setBoxesInput(Number.isInteger(b) ? b.toString() : parseFloat(b.toFixed(2)).toString());
+      }
+    };
+
     return (
       <div className="flex-1 p-4 flex flex-col">
         <div className="flex items-center gap-4 mb-6">
@@ -261,12 +362,58 @@ const InboundZebra = () => {
         <div className="flex-1 flex flex-col justify-center">
           {error && <div className="bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl text-rose-400 text-center font-bold mb-6 w-full">{error}</div>}
 
-          <div className="text-center mb-8">
-            <p className="text-slate-400 font-bold mb-2">Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp}</p>
+          <div className="text-center mb-6">
+            <p className="text-slate-400 font-bold mb-1">
+              Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp} {selectedItem.product_uom}
+              {isPieces && hasUnitsPerBox && (
+                <span className="block text-xs text-amber-400 font-mono mt-1">
+                  (ca. {Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox) : (remaining / unitsPerBox).toFixed(1)} scatole)
+                </span>
+              )}
+            </p>
             <p className="text-xs text-slate-500">Inserisci i pezzi da mettere su questa paletta.</p>
           </div>
 
-          <div className="flex gap-2 items-center justify-center mb-6">
+          {isPieces && hasUnitsPerBox ? (
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 mb-6 max-w-sm mx-auto w-full shadow-lg">
+              <div className="text-xs text-amber-400 font-mono font-bold text-center mb-4 bg-amber-500/10 border border-amber-500/20 py-1.5 px-3 rounded-lg w-fit mx-auto flex items-center gap-1.5">
+                <span>📦</span>
+                <span>1 Scatola = <strong>{unitsPerBox}</strong> Pezzi</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 items-start">
+                {/* Input Scatole */}
+                <div className="flex flex-col items-center">
+                  <label className="text-xs text-slate-400 uppercase font-bold mb-1.5">Scatole</label>
+                  <input 
+                    type="number"
+                    onWheel={(e) => e.target.blur()}
+                    className="bg-slate-950 border-2 border-slate-700 focus:border-brand-blue text-brand-white text-center text-3xl font-black w-full h-16 rounded-xl"
+                    value={boxesInput}
+                    onChange={e => handleBoxesChange(e.target.value)}
+                    placeholder={hasUnitsPerBox && remaining > 0 ? (Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox).toString() : (remaining / unitsPerBox).toFixed(1)) : '0'}
+                  />
+                  <span className="text-[11px] text-slate-500 font-bold mt-1.5">Colli / Scatole</span>
+                </div>
+
+                {/* Input Pezzi Totali */}
+                <div className="flex flex-col items-center">
+                  <label className="text-xs text-brand-blue uppercase font-bold mb-1.5">Pezzi Totali</label>
+                  <input 
+                    type="number"
+                    onWheel={(e) => e.target.blur()}
+                    autoFocus
+                    className="bg-slate-950 border-2 border-brand-blue text-brand-white text-center text-3xl font-black w-full h-16 rounded-xl"
+                    value={qtyInput}
+                    onChange={e => handleQtyChange(e.target.value)}
+                    placeholder={remaining.toString()}
+                  />
+                  <span className="text-[11px] text-brand-blue/80 font-bold mt-1.5">Pezzi effettivi</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-2 items-center justify-center mb-6">
               <input 
                 type="number" onWheel={(e) => e.target.blur()} 
                 autoFocus
@@ -277,6 +424,7 @@ const InboundZebra = () => {
               />
               <span className="text-slate-400 font-bold text-xl">{selectedItem.product_uom}</span>
             </div>
+          )}
             
             <div className="mb-4 w-full max-w-[250px] mx-auto">
               <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider text-center">Data Scadenza (Opzionale)</label>
