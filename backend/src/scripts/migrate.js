@@ -52,6 +52,7 @@ async function runMigrations() {
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN sku VARCHAR(100) DEFAULT NULL",
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN product_name VARCHAR(255) DEFAULT NULL",
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN product_uom VARCHAR(50) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN location VARCHAR(50) DEFAULT NULL",
 
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN client_ddt VARCHAR(100) DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN start_picking_at DATETIME DEFAULT NULL",
@@ -83,6 +84,80 @@ async function runMigrations() {
           // console.warn(`[ALTER NOTE] ${err.message}`);
         }
       }
+    }
+
+    // 3. Pulizia e sostituzione SKU generati (PROD-XXXX) con il reale Codice Articolo se presente
+    try {
+      const [products] = await connection.query('SELECT * FROM PRODUCTS');
+      for (const prod of products) {
+        let realArticle = (prod.default_article_number || '').trim();
+        if (!realArticle) {
+          const [palRows] = await connection.query(
+            "SELECT client_article_number FROM PALLETS WHERE product_id = ? AND client_article_number IS NOT NULL AND TRIM(client_article_number) != '' ORDER BY id DESC LIMIT 1",
+            [prod.id]
+          );
+          if (palRows.length > 0) {
+            realArticle = palRows[0].client_article_number.trim();
+          }
+        }
+        if (!realArticle) {
+          const [ddtRows] = await connection.query(
+            "SELECT client_article_number FROM INBOUND_DDT_ITEMS WHERE product_id = ? AND client_article_number IS NOT NULL AND TRIM(client_article_number) != '' ORDER BY id DESC LIMIT 1",
+            [prod.id]
+          );
+          if (ddtRows.length > 0) {
+            realArticle = ddtRows[0].client_article_number.trim();
+          }
+        }
+
+        if (realArticle && prod.sku !== realArticle) {
+          const [existingSku] = await connection.query(
+            'SELECT * FROM PRODUCTS WHERE sku = ? AND id != ?',
+            [realArticle, prod.id]
+          );
+          if (existingSku.length > 0) {
+            const targetId = existingSku[0].id;
+            await connection.query('UPDATE PALLETS SET product_id = ? WHERE product_id = ?', [targetId, prod.id]);
+            await connection.query('UPDATE INBOUND_DDT_ITEMS SET product_id = ?, sku = ? WHERE product_id = ?', [targetId, realArticle, prod.id]);
+            await connection.query('UPDATE OUTBOUND_ITEMS SET product_id = ? WHERE product_id = ?', [targetId, prod.id]);
+            await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [prod.id]);
+          } else {
+            await connection.query(
+              'UPDATE PRODUCTS SET sku = ?, default_article_number = ? WHERE id = ?',
+              [realArticle, realArticle, prod.id]
+            );
+            await connection.query(
+              'UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?',
+              [realArticle, prod.id]
+            );
+          }
+        } else {
+          await connection.query(
+            'UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ? AND (sku IS NULL OR sku = "")',
+            [prod.sku, prod.id]
+          );
+        }
+      }
+
+      // Unisci ed elimina eventuali duplicati con stesso nome/cliente di cui uno ha SKU generato PROD-% e l'altro ha un Codice Articolo reale
+      const [remainingProds] = await connection.query('SELECT * FROM PRODUCTS');
+      for (const prod of remainingProds) {
+        if (prod.sku && prod.sku.startsWith('PROD-')) {
+          const [betterMatch] = await connection.query(
+            "SELECT * FROM PRODUCTS WHERE customer_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) AND id != ? AND sku NOT LIKE 'PROD-%' LIMIT 1",
+            [prod.customer_id, prod.name, prod.id]
+          );
+          if (betterMatch.length > 0) {
+            const target = betterMatch[0];
+            await connection.query('UPDATE PALLETS SET product_id = ? WHERE product_id = ?', [target.id, prod.id]);
+            await connection.query('UPDATE INBOUND_DDT_ITEMS SET product_id = ?, sku = ? WHERE product_id = ?', [target.id, target.sku, prod.id]);
+            await connection.query('UPDATE OUTBOUND_ITEMS SET product_id = ? WHERE product_id = ?', [target.id, prod.id]);
+            await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [prod.id]);
+          }
+        }
+      }
+    } catch (skuCleanErr) {
+      console.warn('[MIGRATE SKU CLEANUP WARNING]', skuCleanErr.message);
     }
     
     console.log('🚀 Migrazioni completate. Database allineato al 100%.');

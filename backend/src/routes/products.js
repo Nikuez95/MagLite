@@ -59,65 +59,154 @@ async function productRoutes(fastify, options) {
   fastify.post('/', async (request, reply) => {
     const { sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags } = request.body;
     
-    if (!sku || !name || !customer_id) {
+    const cleanArticle = default_article_number ? String(default_article_number).trim() : '';
+    const rawSku = sku ? String(sku).trim() : '';
+    const cleanSku = (cleanArticle && (!rawSku || rawSku.startsWith('PROD-'))) ? cleanArticle : rawSku;
+    const cleanName = name ? String(name).trim() : '';
+
+    if (!cleanSku || !cleanName || !customer_id) {
       return reply.code(400).send({ error: 'SKU, Nome e Cliente sono obbligatori' });
     }
 
+    const finalDefaultArticle = cleanArticle || (!cleanSku.startsWith('PROD-') ? cleanSku : null);
+    const flagsJson = flags ? JSON.stringify(flags) : null;
+
+    const connection = await db.getConnection();
     try {
-      const flagsJson = flags ? JSON.stringify(flags) : null;
-      
-      const [result] = await db.query(
+      await connection.beginTransaction();
+
+      // Verifica se esiste già un prodotto con questo SKU o con lo stesso nome (ed eventuale vecchio SKU PROD-XXXX)
+      const [bySkuRows] = await connection.query('SELECT * FROM PRODUCTS WHERE sku = ?', [cleanSku]);
+      const [byNameRows] = await connection.query(
+        'SELECT * FROM PRODUCTS WHERE customer_id = ? AND (LOWER(TRIM(name)) = LOWER(?) OR (default_article_number IS NOT NULL AND default_article_number != "" AND LOWER(TRIM(default_article_number)) = LOWER(?)))',
+        [customer_id, cleanName, cleanSku]
+      );
+
+      if (bySkuRows.length > 0) {
+        const target = bySkuRows[0];
+        // Elimina e unisci eventuali vecchi duplicati con SKU generato PROD-XXXX per lo stesso prodotto
+        for (const dup of byNameRows) {
+          if (dup.id !== target.id && dup.sku && dup.sku.startsWith('PROD-')) {
+            await connection.query('UPDATE PALLETS SET product_id = ? WHERE product_id = ?', [target.id, dup.id]);
+            await connection.query('UPDATE INBOUND_DDT_ITEMS SET product_id = ?, sku = ? WHERE product_id = ?', [target.id, cleanSku, dup.id]);
+            await connection.query('UPDATE OUTBOUND_ITEMS SET product_id = ? WHERE product_id = ?', [target.id, dup.id]);
+            await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
+          }
+        }
+        await connection.query(
+          'UPDATE PRODUCTS SET name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet), default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags) WHERE id = ?',
+          [cleanName, uom || null, units_per_box || null, boxes_per_pallet || null, finalDefaultArticle, flagsJson, target.id]
+        );
+        await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [cleanSku, target.id]);
+        await connection.commit();
+        return reply.code(200).send({ success: true, id: target.id, sku: cleanSku });
+      }
+
+      if (byNameRows.length > 0 && (!cleanSku.startsWith('PROD-') || byNameRows.some(r => r.sku && r.sku.startsWith('PROD-')))) {
+        const target = byNameRows[0];
+        const newSkuForTarget = !cleanSku.startsWith('PROD-') ? cleanSku : target.sku;
+        for (const dup of byNameRows) {
+          if (dup.id !== target.id && dup.sku && dup.sku.startsWith('PROD-')) {
+            await connection.query('UPDATE PALLETS SET product_id = ? WHERE product_id = ?', [target.id, dup.id]);
+            await connection.query('UPDATE INBOUND_DDT_ITEMS SET product_id = ?, sku = ? WHERE product_id = ?', [target.id, newSkuForTarget, dup.id]);
+            await connection.query('UPDATE OUTBOUND_ITEMS SET product_id = ? WHERE product_id = ?', [target.id, dup.id]);
+            await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
+          }
+        }
+        await connection.query(
+          'UPDATE PRODUCTS SET sku = ?, name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet), default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags) WHERE id = ?',
+          [newSkuForTarget, cleanName, uom || null, units_per_box || null, boxes_per_pallet || null, finalDefaultArticle, flagsJson, target.id]
+        );
+        await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [newSkuForTarget, target.id]);
+        await connection.commit();
+        return reply.code(200).send({ success: true, id: target.id, sku: newSkuForTarget });
+      }
+
+      const [result] = await connection.query(
         'INSERT INTO PRODUCTS (sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [sku, name, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, default_article_number || null, flagsJson]
+        [cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, finalDefaultArticle, flagsJson]
       );
-      await db.query(
+      await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
-        ['CREATE_PRODUCT', `Creato prodotto ${name} (${sku})`, 'Gestionale', request.user.username]
+        ['CREATE_PRODUCT', `Creato prodotto ${cleanName} (${cleanSku})`, 'Gestionale', request.user.username]
       );
-      return reply.code(201).send({ success: true, id: result.insertId });
+      await connection.commit();
+      return reply.code(201).send({ success: true, id: result.insertId, sku: cleanSku });
     } catch (err) {
+      await connection.rollback();
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Codice Articolo (SKU) già esistente' });
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore interno' });
+    } finally {
+      connection.release();
     }
   });
 
   // PUT /api/products/:id
   fastify.put('/:id', async (request, reply) => {
     const { sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags, updateExistingPallets } = request.body;
+    const targetId = parseInt(request.params.id, 10);
     
-    if (!sku || !name || !customer_id) {
+    const cleanArticle = default_article_number ? String(default_article_number).trim() : '';
+    const rawSku = sku ? String(sku).trim() : '';
+    const cleanSku = (cleanArticle && (!rawSku || rawSku.startsWith('PROD-'))) ? cleanArticle : rawSku;
+    const cleanName = name ? String(name).trim() : '';
+
+    if (!cleanSku || !cleanName || !customer_id) {
       return reply.code(400).send({ error: 'SKU, Nome e Cliente sono obbligatori' });
     }
 
+    const finalDefaultArticle = cleanArticle || (!cleanSku.startsWith('PROD-') ? cleanSku : null);
+    const flagsJson = flags ? JSON.stringify(flags) : null;
+
+    const connection = await db.getConnection();
     try {
-      const flagsJson = flags ? JSON.stringify(flags) : null;
-      
-      await db.query(
-        'UPDATE PRODUCTS SET sku = ?, name = ?, uom = ?, customer_id = ?, notes = ?, units_per_box = ?, boxes_per_pallet = ?, default_article_number = ?, flags = ? WHERE id = ?',
-        [sku, name, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, default_article_number || null, flagsJson, request.params.id]
+      await connection.beginTransaction();
+
+      // Se esiste un altro prodotto con lo stesso SKU o stesso nome e SKU generato PROD-%, uniscilo ed eliminalo
+      const [conflictRows] = await connection.query(
+        'SELECT * FROM PRODUCTS WHERE id != ? AND (sku = ? OR (customer_id = ? AND LOWER(TRIM(name)) = LOWER(?) AND sku LIKE "PROD-%"))',
+        [targetId, cleanSku, customer_id, cleanName]
       );
-      
-      if (updateExistingPallets) {
-        await db.query('UPDATE PALLETS SET flags = ? WHERE product_id = ?', [flagsJson, request.params.id]);
+      for (const dup of conflictRows) {
+        await connection.query('UPDATE PALLETS SET product_id = ? WHERE product_id = ?', [targetId, dup.id]);
+        await connection.query('UPDATE INBOUND_DDT_ITEMS SET product_id = ?, sku = ? WHERE product_id = ?', [targetId, cleanSku, dup.id]);
+        await connection.query('UPDATE OUTBOUND_ITEMS SET product_id = ? WHERE product_id = ?', [targetId, dup.id]);
+        await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
       }
 
-      await db.query(
+      await connection.query(
+        'UPDATE PRODUCTS SET sku = ?, name = ?, uom = ?, customer_id = ?, notes = ?, units_per_box = ?, boxes_per_pallet = ?, default_article_number = ?, flags = ? WHERE id = ?',
+        [cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, finalDefaultArticle, flagsJson, targetId]
+      );
+
+      await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [cleanSku, targetId]);
+      
+      if (updateExistingPallets) {
+        await connection.query('UPDATE PALLETS SET flags = ? WHERE product_id = ?', [flagsJson, targetId]);
+      }
+
+      await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
-        ['UPDATE_PRODUCT', `Aggiornato prodotto ${name} (${sku})`, 'Gestionale', request.user.username]
+        ['UPDATE_PRODUCT', `Aggiornato prodotto ${cleanName} (${cleanSku})`, 'Gestionale', request.user.username]
       );
       
-      return { success: true };
+      await connection.commit();
+      return { success: true, sku: cleanSku };
     } catch (err) {
+      await connection.rollback();
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Codice Articolo (SKU) già esistente' });
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore interno' });
+    } finally {
+      connection.release();
     }
   });
+
   fastify.delete('/:id', async (request, reply) => {
     if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
       return reply.code(403).send({ error: 'Solo developer e backoffice possono eliminare anagrafiche' });

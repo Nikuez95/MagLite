@@ -11,12 +11,22 @@ async function drawLabel(doc, lbl, x, y, w, h) {
   doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
   doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
 
-  // HEADER (Logo & Warehouse)
+  // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
   if (fs.existsSync(logoPath)) {
     doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right' });
+    if (lbl.location) {
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 11, { width: w - 122, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 110, y + 23, { width: w - 122, align: 'right', lineBreak: false });
+    } else {
+      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right', lineBreak: false });
+    }
   } else {
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right' });
+    if (lbl.location) {
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 11, { width: w - 24, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 12, y + 23, { width: w - 24, align: 'right', lineBreak: false });
+    } else {
+      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right', lineBreak: false });
+    }
   }
 
   // Divider
@@ -51,15 +61,16 @@ async function drawLabel(doc, lbl, x, y, w, h) {
     if (exp === 'Invalid Date') exp = lbl.expiration_date;
     batchStr += `   |   Scad: ${exp}`;
   }
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left' });
+  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
   
-  // DATI AGGIUNTIVI OPZIONALI
-  if (lbl.client_pallet_number || lbl.client_article_number) {
+  // DATI AGGIUNTIVI OPZIONALI (+ Posizione in piccolo sopra il barcode)
+  if (lbl.client_pallet_number || lbl.client_article_number || lbl.location) {
     metaY += 14;
     let extras = [];
+    if (lbl.location) extras.push(`Pos: ${lbl.location}`);
     if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number) extras.push(`Art: ${lbl.client_article_number}`);
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left' });
+    if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#475569').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
   }
 
   doc.fillColor('black'); // reset colore testo per sicurezza
@@ -80,6 +91,55 @@ async function drawLabel(doc, lbl, x, y, w, h) {
   
   const barcodeW = w - 40;
   doc.image(pngBuffer, x + 20, barcodeY, { fit: [barcodeW, finalBarcodeHeight], align: 'center', valign: 'top' });
+}
+
+async function ensureLocationExists(connection, locStr, username) {
+  if (!locStr) return;
+  const cleanLoc = locStr.trim().toUpperCase();
+  if (!cleanLoc) return;
+
+  const [[existingLoc]] = await connection.query('SELECT id FROM LOCATIONS WHERE barcode = ?', [cleanLoc]);
+  if (existingLoc) return;
+
+  const [[existingFree]] = await connection.query('SELECT id FROM FREE_LOCATIONS WHERE UPPER(name) = ?', [cleanLoc]);
+  if (existingFree) return;
+
+  const parts = cleanLoc.split('-');
+  const zone = parts[0] || 'Z';
+  const col = parts[1] || '00';
+  const pos = parts[2] || '00';
+  const finalPin = Math.floor(100 + Math.random() * 900).toString();
+
+  await connection.query(
+    'INSERT IGNORE INTO LOCATIONS (zone, col, pos, barcode, pin) VALUES (?, ?, ?, ?, ?)',
+    [zone, col, pos, cleanLoc, finalPin]
+  );
+  await connection.query(
+    'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+    ['CREATE_LOC', `Creata posizione automatica ${cleanLoc}`, 'Gestionale', username || 'Sistema']
+  );
+}
+
+// Generatore progressivo di codici paletta giornalieri (es. PAL-20261020-0001, 0002, ...)
+async function createPalletCodeGenerator(connection, prefix = 'PAL') {
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const basePrefix = `${prefix}-${dateStr}-`;
+  const [rows] = await connection.query(
+    'SELECT DISTINCT pallet_code FROM PALLETS WHERE pallet_code LIKE ?',
+    [`${basePrefix}%`]
+  );
+  let maxSeq = 0;
+  for (const r of rows) {
+    const suffix = String(r.pallet_code || '').slice(basePrefix.length);
+    if (/^\d+$/.test(suffix)) {
+      const num = parseInt(suffix, 10);
+      if (num > maxSeq) maxSeq = num;
+    }
+  }
+  return () => {
+    maxSeq += 1;
+    return `${basePrefix}${String(maxSeq).padStart(4, '0')}`;
+  };
 }
 
 async function palletRoutes(fastify, options) {
@@ -136,14 +196,25 @@ async function palletRoutes(fastify, options) {
       await connection.beginTransaction();
       
       const generatedLabelsData = []; 
-      const finalStatus = noBarcode ? 'STOCKED' : 'PENDING';
-      const finalLocation = noBarcode ? freeLocation : null;
+      const nextPalletCode = await createPalletCodeGenerator(connection, noBarcode ? 'NOBAR' : 'PAL');
       
       if (isMixed || noBarcode) {
         // Generate ONLY ONE pallet code for the whole cart
-        const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
-        const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
-        const code = noBarcode ? `NOBAR-${dateStr}-${randomStr}` : `PAL-${dateStr}-${randomStr}`;
+        const firstCartLoc = cart.map(i => (i.location || '').trim().toUpperCase()).find(Boolean) || '';
+        const finalLocation = noBarcode ? freeLocation.trim().toUpperCase() : (firstCartLoc || null);
+        const finalStatus = (noBarcode || finalLocation) ? 'STOCKED' : 'PENDING';
+
+        if (finalLocation && !noBarcode) {
+          await ensureLocationExists(connection, finalLocation, request.user.username);
+        }
+
+        const code = nextPalletCode();
+        if (finalLocation && !noBarcode) {
+          await connection.query(
+            "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED'",
+            [code, finalLocation]
+          );
+        }
         
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
@@ -163,7 +234,7 @@ async function palletRoutes(fastify, options) {
         
         await connection.query(
           "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-          ['INBOUND', noBarcode ? `Carico libero in ${freeLocation} (${cart.length} art.)` : `Creata paletta frammentata ${code} (${cart.length} articoli)`, 'Gestionale', request.user.username]
+          ['INBOUND', noBarcode ? `Carico libero in ${freeLocation} (${cart.length} art.)` : `Creata paletta frammentata ${code} (${cart.length} articoli)${finalLocation ? ' in ' + finalLocation : ''}`, 'Gestionale', request.user.username]
         );
         
         if (!noBarcode) {
@@ -177,42 +248,92 @@ async function palletRoutes(fastify, options) {
             warehouse: cart[0].warehouse,
             client_pallet_number: cart[0].client_pallet_number,
             client_article_number: '-',
-            expiration_date: cart[0].expiration_date
+            expiration_date: cart[0].expiration_date,
+            location: finalLocation
           });
         }
       } else {
+        // Generazione rigorosamente progressiva e in ordine di riga (1° riga -> 1° barcode, 2° riga -> 2° barcode, ecc.)
+        // Se più righe condividono la stessa identica posizione, si frammentano nel barcode assegnato alla prima riga di quella posizione.
+        const orderedSlots = [];
+        const locSlotMap = new Map();
+
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
+          const itemLoc = (item.location || '').trim().toUpperCase();
           
           const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
-          
-          for (let i = 0; i < num_pallets; i++) {
-            const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
-            const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
-            const code = `PAL-${dateStr}-${randomStr}`;
-            
+
+          if (itemLoc) {
+            let slot = locSlotMap.get(itemLoc);
+            if (!slot) {
+              await ensureLocationExists(connection, itemLoc, request.user.username);
+              const code = nextPalletCode();
+              // Unifica eventuali palette già stivate nella medesima posizione sotto il nuovo codice progressivo
+              await connection.query(
+                "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED'",
+                [code, itemLoc]
+              );
+              slot = { type: 'LOC', loc: itemLoc, code, rows: [] };
+              locSlotMap.set(itemLoc, slot);
+              orderedSlots.push(slot);
+            }
+
+            const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
+            const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
+
             await connection.query(
               'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)',
-              [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
             );
-            
+
             await connection.query(
               "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-              ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)`, 'Gestionale', request.user.username]
+              ['INBOUND', `Creata/stivata paletta ${slot.code} in ${itemLoc} (${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
             );
-            
-            generatedLabelsData.push({
-              code,
+
+            slot.rows.push({
               customer_name: customer.business_name,
               product_name: product.name,
-              quantity,
+              quantity: totalQtyForRow,
               batch,
               warehouse,
               client_pallet_number,
               client_article_number,
               expiration_date
             });
+          } else {
+            const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
+            for (let i = 0; i < countPallets; i++) {
+              const code = nextPalletCode();
+              
+              await connection.query(
+                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)',
+                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
+              );
+              
+              await connection.query(
+                "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+                ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)`, 'Gestionale', request.user.username]
+              );
+              
+              orderedSlots.push({
+                type: 'DIRECT',
+                label: {
+                  code,
+                  customer_name: customer.business_name,
+                  product_name: product.name,
+                  quantity,
+                  batch,
+                  warehouse,
+                  client_pallet_number,
+                  client_article_number,
+                  expiration_date,
+                  location: null
+                }
+              });
+            }
           }
 
           // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI INSERITI IN INBOUND
@@ -221,6 +342,51 @@ async function palletRoutes(fastify, options) {
               'UPDATE PRODUCTS SET units_per_box = ?, boxes_per_pallet = ? WHERE id = ?',
               [item.units_per_box || 1, item.boxes_per_pallet || 1, product_id]
             );
+          }
+        }
+
+        // Compila generatedLabelsData rispettando rigorosamente l'ordine di riga (orderedSlots)
+        for (const slot of orderedSlots) {
+          if (slot.type === 'DIRECT') {
+            generatedLabelsData.push(slot.label);
+          } else if (slot.type === 'LOC' && slot.rows.length > 0) {
+            if (slot.rows.length === 1) {
+              const r = slot.rows[0];
+              generatedLabelsData.push({
+                code: slot.code,
+                customer_name: r.customer_name,
+                product_name: r.product_name,
+                quantity: r.quantity,
+                batch: r.batch,
+                warehouse: r.warehouse,
+                client_pallet_number: r.client_pallet_number,
+                client_article_number: r.client_article_number,
+                expiration_date: r.expiration_date,
+                location: slot.loc
+              });
+            } else {
+              const first = slot.rows[0];
+              const uniqueProdNames = [...new Set(slot.rows.map(r => r.product_name))];
+              const uniqueBatches = [...new Set(slot.rows.map(r => r.batch).filter(Boolean))];
+              const uniqueArticles = [...new Set(slot.rows.map(r => r.client_article_number).filter(Boolean))];
+
+              const labelProdName = uniqueProdNames.length === 1
+                ? `${uniqueProdNames[0]} (${slot.rows.length} LOTTI)`
+                : `PALETTA MISTA (${slot.rows.length} Articoli)`;
+
+              generatedLabelsData.push({
+                code: slot.code,
+                customer_name: first.customer_name,
+                product_name: labelProdName,
+                quantity: '-',
+                batch: uniqueBatches.length > 0 ? uniqueBatches.join(', ') : '-',
+                warehouse: first.warehouse,
+                client_pallet_number: first.client_pallet_number,
+                client_article_number: uniqueArticles.length > 0 ? uniqueArticles.join(', ') : '-',
+                expiration_date: first.expiration_date,
+                location: slot.loc
+              });
+            }
           }
         }
       }
@@ -275,7 +441,10 @@ async function palletRoutes(fastify, options) {
         }
       }
 
-      if (fastify.io) fastify.io.emit('dashboard_update');
+      if (fastify.io) {
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('dashboard_update');
+      }
 
       doc.end();
       return reply;
@@ -325,15 +494,17 @@ async function palletRoutes(fastify, options) {
   fastify.get('/:code/print', async (request, reply) => {
     const { code } = request.params;
     try {
-      const [[pallet]] = await db.query(`
+      const [rows] = await db.query(`
         SELECT p.*, pr.name as product_name, c.business_name as customer_name
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         WHERE p.pallet_code = ?
+        ORDER BY p.id ASC
       `, [code]);
 
-      if (!pallet) return reply.code(404).send({ error: 'Paletta non trovata' });
+      if (rows.length === 0) return reply.code(404).send({ error: 'Paletta non trovata' });
+      const pallet = rows[0];
 
       const paper_format = request.query.format || 'THERMAL';
       const print_mode = request.query.mode || 'GRID';
@@ -351,16 +522,23 @@ async function palletRoutes(fastify, options) {
       reply.header('Content-Disposition', `inline; filename="${code}.pdf"`);
       reply.send(doc);
 
+      const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
+      const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
+      const uniqueArticles = [...new Set(rows.map(r => r.client_article_number).filter(Boolean))];
+
       const lbl = {
         code: pallet.pallet_code,
         customer_name: pallet.customer_name,
-        product_name: pallet.product_name,
-        quantity: pallet.quantity,
-        batch: pallet.batch,
+        product_name: rows.length > 1
+          ? (uniqueProdNames.length === 1 ? `${uniqueProdNames[0]} (${rows.length} LOTTI)` : `PALETTA MISTA (${rows.length} Articoli)`)
+          : pallet.product_name,
+        quantity: rows.length > 1 ? '-' : pallet.quantity,
+        batch: rows.length > 1 ? (uniqueBatches.join(', ') || '-') : pallet.batch,
         warehouse: pallet.warehouse,
         client_pallet_number: pallet.client_pallet_number,
-        client_article_number: pallet.client_article_number,
-        expiration_date: pallet.expiration_date
+        client_article_number: rows.length > 1 ? (uniqueArticles.join(', ') || '-') : pallet.client_article_number,
+        expiration_date: pallet.expiration_date,
+        location: pallet.location || null
       };
 
       const generatedLabelsData = Array(copies).fill(lbl);
@@ -411,7 +589,7 @@ async function palletRoutes(fastify, options) {
     }
 
     try {
-      const [codeRows] = await db.query(`SELECT DISTINCT pallet_code FROM PALLETS WHERE id IN (?)`, [ids]);
+      const [codeRows] = await db.query(`SELECT pallet_code FROM PALLETS WHERE id IN (?) GROUP BY pallet_code ORDER BY MIN(id) ASC`, [ids]);
       const codes = codeRows.map(r => r.pallet_code);
 
       const generatedLabelsData = [];
@@ -423,22 +601,29 @@ async function palletRoutes(fastify, options) {
           JOIN PRODUCTS pr ON p.product_id = pr.id
           JOIN CUSTOMERS c ON p.customer_id = c.id
           WHERE p.pallet_code = ?
+          ORDER BY p.id ASC
         `, [code]);
         
         if (rows.length === 0) continue;
         
         const pallet = rows[0];
+        const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
+        const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
+        const uniqueArticles = [...new Set(rows.map(r => r.client_article_number).filter(Boolean))];
         
         generatedLabelsData.push({
           code: pallet.pallet_code,
           customer_name: pallet.customer_name,
-          product_name: rows.length > 1 ? `PALETTA MISTA (${rows.length} Articoli)` : pallet.product_name,
+          product_name: rows.length > 1
+            ? (uniqueProdNames.length === 1 ? `${uniqueProdNames[0]} (${rows.length} LOTTI)` : `PALETTA MISTA (${rows.length} Articoli)`)
+            : pallet.product_name,
           quantity: rows.length > 1 ? '-' : pallet.quantity,
-          batch: rows.length > 1 ? '-' : pallet.batch,
+          batch: rows.length > 1 ? (uniqueBatches.join(', ') || '-') : pallet.batch,
           warehouse: pallet.warehouse,
           client_pallet_number: pallet.client_pallet_number,
-          client_article_number: rows.length > 1 ? '-' : pallet.client_article_number,
-          expiration_date: pallet.expiration_date
+          client_article_number: rows.length > 1 ? (uniqueArticles.join(', ') || '-') : pallet.client_article_number,
+          expiration_date: pallet.expiration_date,
+          location: pallet.location || null
         });
       }
 
@@ -709,5 +894,3 @@ async function palletRoutes(fastify, options) {
 }
 
 module.exports = palletRoutes;
-
-

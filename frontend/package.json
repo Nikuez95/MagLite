@@ -23,7 +23,8 @@
     "react-select": "^5.10.2",
     "recharts": "^3.10.1",
     "socket.io-client": "^4.8.3",
-    "sweetalert2": "^11.26.25"
+    "sweetalert2": "^11.26.25",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.9",

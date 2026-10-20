@@ -254,7 +254,7 @@ const InboundZebra = () => {
             return (
               <button 
                 key={item.id}
-                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setBoxesInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(''); setError(null); }}
+                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setBoxesInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(item.location || ''); setError(null); }}
                 className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800 hover:border-brand-blue'}`}
               >
                 <div className="flex justify-between items-start mb-2">

@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS INBOUND_DDT_ITEMS (
     client_pallet_number VARCHAR(100),
     client_article_number VARCHAR(100),
     expiration_date DATE,
+    location VARCHAR(50) DEFAULT NULL,
     notes TEXT,
     FOREIGN KEY (inbound_ddt_id) REFERENCES INBOUND_DDTS(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)

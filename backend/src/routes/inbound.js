@@ -26,9 +26,13 @@ async function inboundRoutes(fastify, options) {
       const ddtId = resDdt.insertId;
 
       for (const item of cart) {
+        const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
+        const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
+        const itemName = prodRow?.name || item.product_name || item.name;
+        const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
         await connection.query(
-          'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [ddtId, item.product_id, item.sku, item.product_name || item.name, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, item.expiration_date || null, item.pallet_uom || item.uom || 'Pezzi']
+          'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, item.expiration_date || null, item.pallet_uom || item.uom || 'Pezzi', itemLocation]
         );
       }
 
@@ -71,6 +75,8 @@ async function inboundRoutes(fastify, options) {
 
       const [items] = await db.query(`
         SELECT i.*, 
+               COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+               COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
                COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
                COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
         FROM INBOUND_DDT_ITEMS i
@@ -115,9 +121,21 @@ async function inboundRoutes(fastify, options) {
       }
       
       if (!palletCode) {
-        const randStr = Math.random().toString(36).substring(2,6).toUpperCase();
-        const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-        palletCode = `PAL-${timestamp}-${randStr}`;
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const basePrefix = `PAL-${dateStr}-`;
+        const [seqRows] = await connection.query(
+          'SELECT DISTINCT pallet_code FROM PALLETS WHERE pallet_code LIKE ?',
+          [`${basePrefix}%`]
+        );
+        let maxSeq = 0;
+        for (const r of seqRows) {
+          const suffix = String(r.pallet_code || '').slice(basePrefix.length);
+          if (/^\d+$/.test(suffix)) {
+            const num = parseInt(suffix, 10);
+            if (num > maxSeq) maxSeq = num;
+          }
+        }
+        palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
       }
 
       // Insert Pallet
@@ -293,31 +311,59 @@ async function inboundRoutes(fastify, options) {
 
       if (pallets.length === 0) return reply.code(400).send({ error: 'Nessuna paletta generata per questo DDT' });
 
-      const generatedLabels = pallets.map(p => ({
-        code: p.pallet_code,
-        customer_name: p.business_name,
-        product_name: p.product_name,
-        quantity: p.quantity,
-        uom: p.pallet_uom || p.product_uom || 'Pezzi',
-        batch: p.batch || '-',
-        warehouse: p.warehouse,
-        client_pallet_number: p.client_pallet_number,
-        client_article_number: p.client_article_number,
-        expiration_date: p.expiration_date,
-        flags: p.flags
-      }));
+      const groupedByCode = new Map();
+      for (const p of pallets) {
+        if (!groupedByCode.has(p.pallet_code)) {
+          groupedByCode.set(p.pallet_code, []);
+        }
+        groupedByCode.get(p.pallet_code).push(p);
+      }
+
+      const generatedLabels = [];
+      for (const [code, rows] of groupedByCode.entries()) {
+        const p = rows[0];
+        const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
+        const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
+        const uniqueArticles = [...new Set(rows.map(r => r.client_article_number).filter(Boolean))];
+        generatedLabels.push({
+          code,
+          customer_name: p.business_name,
+          product_name: rows.length > 1
+            ? (uniqueProdNames.length === 1 ? `${uniqueProdNames[0]} (${rows.length} LOTTI)` : `PALETTA MISTA (${rows.length} Articoli)`)
+            : p.product_name,
+          quantity: rows.length > 1 ? '-' : p.quantity,
+          uom: p.pallet_uom || p.product_uom || 'Pezzi',
+          batch: rows.length > 1 ? (uniqueBatches.join(', ') || '-') : (p.batch || '-'),
+          warehouse: p.warehouse,
+          client_pallet_number: p.client_pallet_number,
+          client_article_number: rows.length > 1 ? (uniqueArticles.join(', ') || '-') : p.client_article_number,
+          expiration_date: p.expiration_date,
+          location: p.location || null,
+          flags: p.flags
+        });
+      }
 
       async function drawLabel(doc, lbl, x, y, w, h) {
   // Bordo arrotondato moderno
   doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
   doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
 
-  // HEADER (Logo & Warehouse)
+  // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
   if (fsModule.existsSync(logoPath)) {
     doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right' });
+    if (lbl.location) {
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 11, { width: w - 122, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 110, y + 23, { width: w - 122, align: 'right', lineBreak: false });
+    } else {
+      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right', lineBreak: false });
+    }
   } else {
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right' });
+    if (lbl.location) {
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 11, { width: w - 24, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 12, y + 23, { width: w - 24, align: 'right', lineBreak: false });
+    } else {
+      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right', lineBreak: false });
+    }
   }
 
   // Divider
@@ -352,15 +398,16 @@ async function inboundRoutes(fastify, options) {
     if (exp === 'Invalid Date') exp = lbl.expiration_date;
     batchStr += `   |   Scad: ${exp}`;
   }
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left' });
+  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
   
   // DATI AGGIUNTIVI OPZIONALI
-  if (lbl.client_pallet_number || lbl.client_article_number) {
+  if (lbl.client_pallet_number || lbl.client_article_number || lbl.location) {
     metaY += 14;
     let extras = [];
+    if (lbl.location) extras.push(`Pos: ${lbl.location}`);
     if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number) extras.push(`Art: ${lbl.client_article_number}`);
-    doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left' });
+    if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#475569').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
   }
 
   doc.fillColor('black'); // reset colore testo per sicurezza
