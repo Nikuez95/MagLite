@@ -281,6 +281,7 @@ const Inbound = () => {
       if (val === undefined || val === null || val === '') return null;
       if (val instanceof Date && !isNaN(val)) {
         const y = val.getFullYear();
+        if (y < 1900 || y > 2100) return null;
         const m = String(val.getMonth() + 1).padStart(2, '0');
         const d = String(val.getDate()).padStart(2, '0');
         return `${y}-${m}-${d}`;
@@ -288,27 +289,77 @@ const Inbound = () => {
       if (typeof val === 'number' && val > 20000 && val < 100000 && XLSX.SSF?.parse_date_code) {
         const parsed = XLSX.SSF.parse_date_code(val);
         if (parsed && parsed.y && parsed.m && parsed.d) {
+          if (parsed.y < 1900 || parsed.y > 2100) return null;
           return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
         }
       }
       const s = String(val).trim();
       if (!s) return null;
-      if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(s)) {
-        const [y, m, d] = s.slice(0, 10).split(/[-/]/);
-        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+      let yNum = null;
+      let mNum = null;
+      let dNum = null;
+
+      const ymd = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+      if (ymd) {
+        yNum = parseInt(ymd[1], 10);
+        mNum = parseInt(ymd[2], 10);
+        dNum = parseInt(ymd[3], 10);
       }
-      const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
-      if (dmy) {
-        const d = String(dmy[1]).padStart(2, '0');
-        const m = String(dmy[2]).padStart(2, '0');
-        const y = dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3];
-        return `${y}-${m}-${d}`;
+
+      if (yNum === null) {
+        const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+        if (dmy) {
+          dNum = parseInt(dmy[1], 10);
+          mNum = parseInt(dmy[2], 10);
+          yNum = dmy[3].length === 2 ? 2000 + parseInt(dmy[3], 10) : parseInt(dmy[3], 10);
+        }
       }
-      const my = s.match(/^(\d{1,2})[\/\-.](\d{4})$/);
-      if (my) {
-        return `${my[2]}-${String(my[1]).padStart(2, '0')}-01`;
+
+      if (yNum === null) {
+        const my = s.match(/^(\d{1,2})[\/\-.](\d{4})$/);
+        if (my) {
+          mNum = parseInt(my[1], 10);
+          yNum = parseInt(my[2], 10);
+          dNum = 1;
+        }
       }
-      return s;
+
+      if (yNum === null) {
+        const ym = s.match(/^(\d{4})[\/\-.](\d{1,2})$/);
+        if (ym) {
+          yNum = parseInt(ym[1], 10);
+          mNum = parseInt(ym[2], 10);
+          dNum = 1;
+        }
+      }
+
+      if (yNum === null) {
+        const shortMy = s.match(/^(\d{1,2})[\/\-.](\d{2})$/);
+        if (shortMy) {
+          const a = parseInt(shortMy[1], 10);
+          const b = parseInt(shortMy[2], 10);
+          if (a >= 1 && a <= 12) {
+            mNum = a;
+            yNum = 2000 + b;
+            dNum = 1;
+          } else if (b >= 1 && b <= 12 && a >= 20 && a <= 99) {
+            yNum = 2000 + a;
+            mNum = b;
+            dNum = 1;
+          }
+        }
+      }
+
+      if (yNum === null || mNum === null || dNum === null) return null;
+      if (yNum < 1900 || yNum > 2100) return null;
+      if (mNum < 1 || mNum > 12) return null;
+      if (dNum < 1 || dNum > 31) return null;
+
+      const maxDay = new Date(yNum, mNum, 0).getDate();
+      const safeDay = Math.min(dNum, maxDay);
+
+      return `${String(yNum).padStart(4, '0')}-${String(mNum).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
     };
 
     const parseNum = (val, fallback = 0) => {

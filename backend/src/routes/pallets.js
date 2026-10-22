@@ -1,101 +1,9 @@
 const db = require('../config/db');
-const PDFDocument = require('pdfkit');
-const bwipjs = require('bwip-js');
-const fs = require('fs');
-const path = require('path');
-
-const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
-
-async function drawLabel(doc, lbl, x, y, w, h) {
-  // Bordo arrotondato moderno
-  doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
-
-  // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
-  if (fs.existsSync(logoPath)) {
-    doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 11, { width: w - 122, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 110, y + 23, { width: w - 122, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right', lineBreak: false });
-    }
-  } else {
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 11, { width: w - 24, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 12, y + 23, { width: w - 24, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right', lineBreak: false });
-    }
-  }
-
-  // Divider
-  doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
-
-  // CLIENTE (Auto-shrink text per evitare a capo)
-  let cName = (lbl.customer_name || '').toUpperCase();
-  let maxFontSizeC = 11;
-  doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
-  while(doc.widthOfString(cName) > (w - 24) && maxFontSizeC > 6) {
-    maxFontSizeC -= 0.5;
-    doc.fontSize(maxFontSizeC);
-  }
-  doc.fillColor('#334155').text(cName, x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
-
-  // PRODOTTO (Auto-shrink text per evitare a capo)
-  let pName = (lbl.product_name || '').toUpperCase();
-  let maxFontSize = 18;
-  doc.fontSize(maxFontSize).font('Helvetica-Bold');
-  while(doc.widthOfString(pName) > (w - 24) && maxFontSize > 8) {
-    maxFontSize -= 0.5;
-    doc.fontSize(maxFontSize);
-  }
-  doc.fillColor('black').text(pName, x + 12, y + 68, { width: w - 24, align: 'left', lineBreak: false });
-
-  // LOTTO & SCADENZA (Niente Q.tà stampata!)
-  let metaY = y + 70 + maxFontSize + 8; // posiziona sotto al prodotto
-  let batchStr = `Lotto: ${lbl.batch || '-'}`;
-  if (lbl.expiration_date) {
-    let exp = lbl.expiration_date instanceof Date ? lbl.expiration_date.toLocaleDateString('it-IT') : new Date(lbl.expiration_date).toLocaleDateString('it-IT');
-    if (exp === 'Invalid Date') exp = lbl.expiration_date;
-    batchStr += `   |   Scad: ${exp}`;
-  }
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
-  
-  // DATI AGGIUNTIVI OPZIONALI (+ Posizione in piccolo sopra il barcode)
-  if (lbl.client_pallet_number || lbl.client_article_number || lbl.location) {
-    metaY += 14;
-    let extras = [];
-    if (lbl.location) extras.push(`Pos: ${lbl.location}`);
-    if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#475569').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
-  }
-
-  doc.fillColor('black'); // reset colore testo per sicurezza
-
-  // BARCODE (Ridimensiona per stare nel blocco rimanente senza sovrapporsi)
-  const barcodeY = metaY + 18;
-  const remainingHeight = h - (barcodeY - y) - 10; 
-  const finalBarcodeHeight = Math.max(25, remainingHeight);
-  
-  const pngBuffer = await bwipjs.toBuffer({
-    bcid: 'code128',
-    text: lbl.code,
-    scale: 3,
-    height: 12,
-    includetext: true,
-    textxalign: 'center',
-  });
-  
-  const barcodeW = w - 40;
-  doc.image(pngBuffer, x + 20, barcodeY, { fit: [barcodeW, finalBarcodeHeight], align: 'center', valign: 'top' });
-}
+const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 
 async function ensureLocationExists(connection, locStr, username) {
   if (!locStr) return;
-  const cleanLoc = locStr.trim().toUpperCase();
+  const cleanLoc = locStr.trim().toUpperCase().slice(0, 50);
   if (!cleanLoc) return;
 
   const [[existingLoc]] = await connection.query('SELECT id FROM LOCATIONS WHERE barcode = ?', [cleanLoc]);
@@ -105,9 +13,9 @@ async function ensureLocationExists(connection, locStr, username) {
   if (existingFree) return;
 
   const parts = cleanLoc.split('-');
-  const zone = parts[0] || 'Z';
-  const col = parts[1] || '00';
-  const pos = parts[2] || '00';
+  const zone = (parts[0] || 'Z').slice(0, 10);
+  const col = (parts[1] || '00').slice(0, 10);
+  const pos = (parts[2] || '00').slice(0, 10);
   const finalPin = Math.floor(100 + Math.random() * 900).toString();
 
   await connection.query(
@@ -191,7 +99,7 @@ async function palletRoutes(fastify, options) {
 
     const { paper_format = 'A4', print_mode = 'GRID', isMixed = false, noBarcode = false, freeLocation = '' } = printOptions || {};
 
-    const connection = await db.getConnection();
+    let connection = await db.getConnection();
     try {
       await connection.beginTransaction();
       
@@ -218,10 +126,11 @@ async function palletRoutes(fastify, options) {
         
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
+          const cleanExpDate = sanitizeExpirationDate(expiration_date);
           
           await connection.query(
             'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)',
-            [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
+            [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
           );
           
           if (item.units_per_box || item.boxes_per_pallet) {
@@ -248,7 +157,7 @@ async function palletRoutes(fastify, options) {
             warehouse: cart[0].warehouse,
             client_pallet_number: cart[0].client_pallet_number,
             client_article_number: '-',
-            expiration_date: cart[0].expiration_date,
+            expiration_date: sanitizeExpirationDate(cart[0].expiration_date),
             location: finalLocation
           });
         }
@@ -261,6 +170,7 @@ async function palletRoutes(fastify, options) {
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
           const itemLoc = (item.location || '').trim().toUpperCase();
+          const cleanExpDate = sanitizeExpirationDate(expiration_date);
           
           const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
@@ -285,7 +195,7 @@ async function palletRoutes(fastify, options) {
 
             await connection.query(
               'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
             );
 
             await connection.query(
@@ -301,7 +211,7 @@ async function palletRoutes(fastify, options) {
               warehouse,
               client_pallet_number,
               client_article_number,
-              expiration_date
+              expiration_date: cleanExpDate
             });
           } else {
             const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
@@ -310,7 +220,7 @@ async function palletRoutes(fastify, options) {
               
               await connection.query(
                 'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)',
-                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
+                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null]
               );
               
               await connection.query(
@@ -329,7 +239,7 @@ async function palletRoutes(fastify, options) {
                   warehouse,
                   client_pallet_number,
                   client_article_number,
-                  expiration_date,
+                  expiration_date: cleanExpDate,
                   location: null
                 }
               });
@@ -392,69 +302,30 @@ async function palletRoutes(fastify, options) {
       }
       await connection.commit();
       connection.release();
+      connection = null;
 
       if (noBarcode) {
         if (fastify.io) fastify.io.emit('dashboard_update');
         return reply.send({ success: true, message: 'Stock libero salvato senza barcode' });
       }
 
-      const docOptions = { margin: 20 };
-      if (paper_format === 'THERMAL') {
-        docOptions.size = [283, 425];
-      } else {
-        docOptions.size = 'A4';
-      }
-
-      const doc = new PDFDocument(docOptions);
-      reply.header('Content-Type', 'application/pdf');
-      reply.header('Content-Disposition', 'inline; filename="etichette.pdf"');
-      reply.send(doc);
-
-      if (paper_format === 'THERMAL' || print_mode === 'SINGLE_PAGE') {
-        for (let i = 0; i < generatedLabelsData.length; i++) {
-          if (i > 0) doc.addPage();
-          const lbl = generatedLabelsData[i];
-          const w = doc.page.width - 40;
-          const h = doc.page.height - 40;
-          await drawLabel(doc, lbl, 20, 20, w, h);
-        }
-      } else {
-        const labelsPerRow = 2;
-        const labelWidth = 265;
-        const labelHeight = 180;
-        const startX = 25;
-        let startY = 25;
-
-        for (let i = 0; i < generatedLabelsData.length; i++) {
-          const lbl = generatedLabelsData[i];
-          const col = i % labelsPerRow;
-          const row = Math.floor((i % 8) / labelsPerRow);
-          
-          if (i > 0 && i % 8 === 0) {
-            doc.addPage();
-            startY = 25;
-          }
-
-          const x = startX + (col * (labelWidth + 15));
-          const y = startY + (row * (labelHeight + 15));
-          await drawLabel(doc, lbl, x, y, labelWidth, labelHeight);
-        }
-      }
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode });
 
       if (fastify.io) {
         fastify.io.emit('stow_updated');
         fastify.io.emit('dashboard_update');
       }
 
-      doc.end();
-      return reply;
+      reply.header('Content-Type', 'application/pdf');
+      reply.header('Content-Disposition', 'inline; filename="etichette.pdf"');
+      return reply.send(pdfBuffer);
     } catch (err) {
       if (connection) {
         await connection.rollback();
         connection.release();
       }
       fastify.log.error(err);
-      return reply.code(500).send({ error: 'Errore durante la generazione' });
+      return reply.code(500).send({ error: err.message || 'Errore durante la generazione' });
     }
   });
 
@@ -510,18 +381,6 @@ async function palletRoutes(fastify, options) {
       const print_mode = request.query.mode || 'GRID';
       const copies = parseInt(request.query.copies, 10) || 1;
 
-      const docOptions = { margin: 20 };
-      if (paper_format === 'THERMAL') {
-        docOptions.size = [283, 425];
-      } else {
-        docOptions.size = 'A4';
-      }
-
-      const doc = new PDFDocument(docOptions);
-      reply.header('Content-Type', 'application/pdf');
-      reply.header('Content-Disposition', `inline; filename="${code}.pdf"`);
-      reply.send(doc);
-
       const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
       const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
       const uniqueArticles = [...new Set(rows.map(r => r.client_article_number).filter(Boolean))];
@@ -542,40 +401,11 @@ async function palletRoutes(fastify, options) {
       };
 
       const generatedLabelsData = Array(copies).fill(lbl);
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode });
 
-      if (paper_format === 'THERMAL' || print_mode === 'SINGLE_PAGE') {
-        for (let i = 0; i < generatedLabelsData.length; i++) {
-          if (i > 0) doc.addPage();
-          const currentLbl = generatedLabelsData[i];
-          const w = doc.page.width - 40;
-          const h = doc.page.height - 40;
-          await drawLabel(doc, currentLbl, 20, 20, w, h);
-        }
-      } else {
-        const labelsPerRow = 2;
-        const labelWidth = 265;
-        const labelHeight = 180;
-        const startX = 25;
-        let startY = 25;
-
-        for (let i = 0; i < generatedLabelsData.length; i++) {
-          const currentLbl = generatedLabelsData[i];
-          const col = i % labelsPerRow;
-          const row = Math.floor((i % 8) / labelsPerRow);
-          
-          if (i > 0 && i % 8 === 0) {
-            doc.addPage();
-            startY = 25;
-          }
-
-          const x = startX + (col * (labelWidth + 15));
-          const y = startY + (row * (labelHeight + 15));
-          await drawLabel(doc, currentLbl, x, y, labelWidth, labelHeight);
-        }
-      }
-
-      doc.end();
-      return reply;
+      reply.header('Content-Type', 'application/pdf');
+      reply.header('Content-Disposition', `inline; filename="${code}.pdf"`);
+      return reply.send(pdfBuffer);
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore stampa' });
@@ -634,51 +464,11 @@ async function palletRoutes(fastify, options) {
         }
       }
 
-      const docOptions = { margin: 20 };
-      if (paper_format === 'THERMAL') {
-        docOptions.size = [283, 425];
-      } else {
-        docOptions.size = 'A4';
-      }
+      const pdfBuffer = await generateLabelsPdfBuffer(finalLabels, { paper_format, print_mode });
 
-      const doc = new PDFDocument(docOptions);
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', 'inline; filename="etichette_bulk.pdf"');
-      reply.send(doc);
-
-      if (paper_format === 'THERMAL' || print_mode === 'SINGLE_PAGE') {
-        for (let i = 0; i < finalLabels.length; i++) {
-          if (i > 0) doc.addPage();
-          const currentLbl = finalLabels[i];
-          const w = doc.page.width - 40;
-          const h = doc.page.height - 40;
-          await drawLabel(doc, currentLbl, 20, 20, w, h);
-        }
-      } else {
-        const labelsPerRow = 2;
-        const labelWidth = 265;
-        const labelHeight = 180;
-        const startX = 25;
-        let startY = 25;
-
-        for (let i = 0; i < finalLabels.length; i++) {
-          const currentLbl = finalLabels[i];
-          const col = i % labelsPerRow;
-          const row = Math.floor((i % 8) / labelsPerRow);
-          
-          if (i > 0 && i % 8 === 0) {
-            doc.addPage();
-            startY = 25;
-          }
-
-          const x = startX + (col * (labelWidth + 15));
-          const y = startY + (row * (labelHeight + 15));
-          await drawLabel(doc, currentLbl, x, y, labelWidth, labelHeight);
-        }
-      }
-
-      doc.end();
-      return reply;
+      return reply.send(pdfBuffer);
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore stampa bulk' });
@@ -726,7 +516,7 @@ async function palletRoutes(fastify, options) {
     try {
       await db.query(
         'UPDATE PALLETS SET notes = ?, client_pallet_number = ?, client_article_number = ?, expiration_date = ? WHERE pallet_code = ?',
-        [notes || null, client_pallet_number || null, client_article_number || null, expiration_date || null, code]
+        [notes || null, client_pallet_number || null, client_article_number || null, sanitizeExpirationDate(expiration_date), code]
       );
       
       await db.query(

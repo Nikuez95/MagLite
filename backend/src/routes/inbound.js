@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -32,7 +33,7 @@ async function inboundRoutes(fastify, options) {
         const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
         await connection.query(
           'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, item.expiration_date || null, item.pallet_uom || item.uom || 'Pezzi', itemLocation]
+          [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemLocation]
         );
       }
 
@@ -146,7 +147,7 @@ async function inboundRoutes(fastify, options) {
       `, [
         palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
         warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
-        expiration_date || item.expiration_date, item.pallet_uom, ddt_id
+        sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id
       ]);
       
       await connection.query(
@@ -289,12 +290,6 @@ async function inboundRoutes(fastify, options) {
   fastify.get('/ddt/:identifier/barcodes', async (request, reply) => {
     const { identifier } = request.params;
     try {
-      const PDFDocument = require('pdfkit');
-      const bwipjs = require('bwip-js');
-      const path = require('path');
-      const fsModule = require('fs');
-      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
-      
       const isId = !isNaN(identifier);
       const queryStr = isId ? 'SELECT d.id FROM INBOUND_DDTS d WHERE d.id = ?' : 'SELECT d.id FROM INBOUND_DDTS d WHERE d.ddt_number = ?';
       const [ddts] = await db.query(queryStr, [identifier]);
@@ -343,119 +338,10 @@ async function inboundRoutes(fastify, options) {
         });
       }
 
-      async function drawLabel(doc, lbl, x, y, w, h) {
-  // Bordo arrotondato moderno
-  doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
-
-  // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
-  if (fsModule.existsSync(logoPath)) {
-    doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 11, { width: w - 122, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 110, y + 23, { width: w - 122, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right', lineBreak: false });
-    }
-  } else {
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 11, { width: w - 24, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 12, y + 23, { width: w - 24, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right', lineBreak: false });
-    }
-  }
-
-  // Divider
-  doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
-
-  // CLIENTE (Auto-shrink text per evitare a capo)
-  let cName = (lbl.customer_name || '').toUpperCase();
-  let maxFontSizeC = 11;
-  doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
-  while(doc.widthOfString(cName) > (w - 24) && maxFontSizeC > 6) {
-    maxFontSizeC -= 0.5;
-    doc.fontSize(maxFontSizeC);
-  }
-  doc.fillColor('#334155').text(cName, x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
-
-  // PRODOTTO (Auto-shrink text per evitare a capo)
-  let pName = (lbl.product_name || '').toUpperCase();
-  let maxFontSize = 18;
-  doc.fontSize(maxFontSize).font('Helvetica-Bold');
-  while(doc.widthOfString(pName) > (w - 24) && maxFontSize > 8) {
-    maxFontSize -= 0.5;
-    doc.fontSize(maxFontSize);
-  }
-  doc.fillColor('black').text(pName, x + 12, y + 68, { width: w - 24, align: 'left', lineBreak: false });
-
-  // LOTTO & SCADENZA (Niente Q.tà stampata!)
-  let metaY = y + 70 + maxFontSize + 8; // posiziona sotto al prodotto
-  let batchStr = `Lotto: ${lbl.batch || '-'}`;
-  if (lbl.expiration_date) {
-    let exp = lbl.expiration_date instanceof Date ? lbl.expiration_date.toLocaleDateString('it-IT') : new Date(lbl.expiration_date).toLocaleDateString('it-IT');
-    if (exp === 'Invalid Date') exp = lbl.expiration_date;
-    batchStr += `   |   Scad: ${exp}`;
-  }
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
-  
-  // DATI AGGIUNTIVI OPZIONALI
-  if (lbl.client_pallet_number || lbl.client_article_number || lbl.location) {
-    metaY += 14;
-    let extras = [];
-    if (lbl.location) extras.push(`Pos: ${lbl.location}`);
-    if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#475569').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
-  }
-
-  doc.fillColor('black'); // reset colore testo per sicurezza
-
-  // BARCODE (Ridimensiona per stare nel blocco rimanente senza sovrapporsi)
-  const barcodeY = metaY + 18;
-  const remainingHeight = h - (barcodeY - y) - 10; 
-  const finalBarcodeHeight = Math.max(25, remainingHeight);
-  
-  const pngBuffer = await bwipjs.toBuffer({
-    bcid: 'code128',
-    text: lbl.code,
-    scale: 3,
-    height: 12,
-    includetext: true,
-    textxalign: 'center',
-  });
-  
-  const barcodeW = w - 40;
-  doc.image(pngBuffer, x + 20, barcodeY, { fit: [barcodeW, finalBarcodeHeight], align: 'center', valign: 'top' });
-}
-
-
-
-      const doc = new PDFDocument({ size: 'A4', margin: 20 });
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabels, { paper_format: 'A4', print_mode: 'GRID' });
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', 'inline; filename="barcodes.pdf"');
-      reply.send(doc);
-
-      const margin = 20;
-      const spacingX = 15;
-      const spacingY = 15;
-      const w = (595.28 - margin * 2 - spacingX) / 2;
-      const h = (841.89 - margin * 2 - spacingY * 3) / 4;
-
-      for (let i = 0; i < generatedLabels.length; i++) {
-        if (i > 0 && i % 8 === 0) doc.addPage();
-        const posOnPage = i % 8;
-        const col = posOnPage % 2;
-        const row = Math.floor(posOnPage / 2);
-
-        const x = margin + col * (w + spacingX);
-        const y = margin + row * (h + spacingY);
-
-        await drawLabel(doc, generatedLabels[i], x, y, w, h);
-      }
-      doc.end();
-      return reply;
+      return reply.send(pdfBuffer);
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore generazione barcodes' });
