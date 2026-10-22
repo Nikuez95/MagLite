@@ -1,7 +1,7 @@
 import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock, Link2 } from 'lucide-react';
+import { Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity, User, Monitor, Loader2, Trash2, Edit3, Printer, Clock, Link2, AlertTriangle, Calendar, ArrowUpDown, ShieldCheck, RotateCcw, Flame } from 'lucide-react';
 import { io } from 'socket.io-client';
 import CreatableSelect from 'react-select/creatable';
 import Select from 'react-select';
@@ -34,19 +34,116 @@ const formatPalletCode = (code) => {
   return code;
 };
 
-const getExpirationStatus = (expDate, warningDays) => {
-  if (!expDate) return null;
+const formatDurationText = (days, unit = 'days') => {
+  const absDays = Math.abs(days);
+  if (unit === 'months') {
+    if (absDays < 30) {
+      return `${absDays} gg`;
+    }
+    const months = Math.floor(absDays / 30);
+    const remDays = absDays % 30;
+    const mLabel = months === 1 ? 'mese' : 'mesi';
+    return remDays > 0 ? `${months} ${mLabel} e ${remDays} gg` : `${months} ${mLabel}`;
+  }
+  return `${absDays} gg`;
+};
+
+const getWarningThresholdDays = (val, unit = 'days') => {
+  const num = Math.max(0, parseFloat(val) || 0);
+  if (unit === 'months') {
+    if (num === 12) return 365;
+    return Math.round(num * 30);
+  }
+  return Math.round(num);
+};
+
+const getExpirationStatus = (expDate, warningValue, warningUnit = 'days') => {
+  if (!expDate) {
+    return {
+      category: 'NO_EXP',
+      diffDays: null,
+      color: 'text-slate-400',
+      label: 'SENZA SCADENZA',
+      secondaryLabel: '',
+      bg: 'bg-slate-800/40 border-slate-700/50',
+      barColor: 'bg-slate-600',
+      progress: 0
+    };
+  }
   const today = new Date();
-  today.setHours(0,0,0,0);
+  today.setHours(0, 0, 0, 0);
   const exp = new Date(expDate);
-  exp.setHours(0,0,0,0);
-  
+  if (isNaN(exp.getTime())) {
+    return {
+      category: 'NO_EXP',
+      diffDays: null,
+      color: 'text-slate-400',
+      label: 'SENZA SCADENZA',
+      secondaryLabel: '',
+      bg: 'bg-slate-800/40 border-slate-700/50',
+      barColor: 'bg-slate-600',
+      progress: 0
+    };
+  }
+  exp.setHours(0, 0, 0, 0);
+
   const diffTime = exp - today;
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  
-  if (diffDays < 0) return { color: 'text-rose-500', label: 'SCADUTO', bg: 'bg-rose-500/10 border-rose-500/30' };
-  if (diffDays <= warningDays) return { color: 'text-amber-500', label: `SCADE TRA ${diffDays} GG`, bg: 'bg-amber-500/10 border-amber-500/30' };
-  return { color: 'text-emerald-500', label: `Valido (${diffDays} gg)`, bg: 'bg-emerald-500/10 border-emerald-500/30' };
+  const thresholdDays = getWarningThresholdDays(warningValue, warningUnit);
+
+  const primaryDuration = formatDurationText(diffDays, warningUnit);
+  const altDuration = warningUnit === 'months'
+    ? `${Math.abs(diffDays)} gg`
+    : (Math.abs(diffDays) >= 30 ? `~${(Math.abs(diffDays) / 30).toFixed(1).replace('.0', '')} mesi` : '');
+
+  if (diffDays < 0) {
+    return {
+      category: 'EXPIRED',
+      diffDays,
+      color: 'text-rose-400',
+      label: `SCADUTO DA ${primaryDuration.toUpperCase()}`,
+      secondaryLabel: altDuration ? `(${altDuration})` : '',
+      bg: 'bg-rose-500/15 border-rose-500/40 shadow-[0_0_12px_rgba(244,63,94,0.12)]',
+      barColor: 'bg-rose-500',
+      progress: 100
+    };
+  }
+  if (diffDays === 0) {
+    return {
+      category: 'WARNING',
+      diffDays: 0,
+      color: 'text-rose-400',
+      label: 'SCADE OGGI!',
+      secondaryLabel: '',
+      bg: 'bg-rose-500/20 border-rose-500/50 shadow-[0_0_12px_rgba(244,63,94,0.2)]',
+      barColor: 'bg-rose-500',
+      progress: 8
+    };
+  }
+  if (diffDays <= thresholdDays) {
+    const pct = thresholdDays > 0 ? Math.max(10, Math.min(100, Math.round((diffDays / thresholdDays) * 100))) : 15;
+    return {
+      category: 'WARNING',
+      diffDays,
+      color: 'text-amber-400',
+      label: `SCADE TRA ${primaryDuration.toUpperCase()}`,
+      secondaryLabel: altDuration ? `(${altDuration})` : '',
+      bg: 'bg-amber-500/15 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.1)]',
+      barColor: 'bg-amber-500',
+      progress: pct
+    };
+  }
+  const safePct = Math.min(100, Math.max(35, Math.round((diffDays / Math.max(thresholdDays * 3, 365)) * 100)));
+  return {
+    category: 'SAFE',
+    diffDays,
+    color: 'text-emerald-400',
+    label: `Valido (+${primaryDuration})`,
+    secondaryLabel: altDuration ? `(${altDuration})` : '',
+    bg: 'bg-emerald-500/10 border-emerald-500/30',
+    barColor: 'bg-emerald-500',
+    progress: safePct
+  };
 };
 
 
@@ -108,7 +205,23 @@ const ProductsManagement = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterWarehouse, setFilterWarehouse] = useState('ALL');
   const [filterStatus, setFilterStatus] = useState('ALL');
-  const [expirationWarningDays, setExpirationWarningDays] = useState(60);
+  const [expirationWarningValue, setExpirationWarningValue] = useState(60);
+  const [warningUnit, setWarningUnit] = useState('days'); // 'days' | 'months'
+  const [filterExpCategory, setFilterExpCategory] = useState('ALL'); // 'ALL' | 'EXPIRED' | 'WARNING' | 'WARNING_AND_EXPIRED' | 'SAFE' | 'NO_EXP'
+  const [dateFilterMode, setDateFilterMode] = useState('EXPIRATION'); // 'EXPIRATION' | 'ARRIVAL'
+  const [sortBy, setSortBy] = useState('ARRIVAL_DESC'); // 'ARRIVAL_DESC' | 'EXP_ASC' | 'EXP_DESC'
+
+  const handleToggleWarningUnit = (newUnit) => {
+    if (newUnit === warningUnit) return;
+    if (newUnit === 'months') {
+      const converted = Math.max(1, Math.round((parseFloat(expirationWarningValue) || 30) / 30));
+      setExpirationWarningValue(converted);
+    } else {
+      const converted = Math.max(1, Math.round((parseFloat(expirationWarningValue) || 1) * 30));
+      setExpirationWarningValue(converted);
+    }
+    setWarningUnit(newUnit);
+  };
   
   // Modifica Paletta (Posizione e Metadati)
   const [editModal, setEditModal] = useState({ 
@@ -426,41 +539,112 @@ const ProductsManagement = () => {
   useEffect(() => {
     setPalletsCurrentPage(1);
     setProductsCurrentPage(1);
-  }, [searchTerm, filterWarehouse, filterStatus, filterStartDate, filterEndDate]);
+  }, [searchTerm, filterWarehouse, filterStatus, filterStartDate, filterEndDate, filterExpCategory, dateFilterMode, expirationWarningValue, warningUnit, sortBy]);
 
-
-  const filteredPallets = pallets.filter(p => {
-    const searchLower = searchTerm.toLowerCase();
-    const matchSearch = p.product_name.toLowerCase().includes(searchLower) || 
-                        p.pallet_code.toLowerCase().includes(searchLower) ||
-                        p.customer_name.toLowerCase().includes(searchLower) ||
-                        (p.batch && p.batch.toLowerCase().includes(searchLower)) ||
-                        (p.location && p.location.toLowerCase().includes(searchLower)) ||
-                        (p.notes && p.notes.toLowerCase().includes(searchLower)) ||
-                        (p.product_notes && p.product_notes.toLowerCase().includes(searchLower)) ||
-                        (p.client_pallet_number && p.client_pallet_number.toLowerCase().includes(searchLower)) ||
-                        (p.client_article_number && p.client_article_number.toLowerCase().includes(searchLower)) ||
-                        (p.expiration_date && new Date(p.expiration_date).toLocaleDateString('it-IT').includes(searchLower));
-    const matchWarehouse = filterWarehouse === 'ALL' || p.warehouse === filterWarehouse;
-    const matchStatus = filterStatus === 'ALL' || p.status === filterStatus;
-    
-    let matchDate = true;
-    if (filterStartDate || filterEndDate) {
-      const pDate = new Date(p.created_at);
-      if (filterStartDate) {
-        const start = new Date(filterStartDate);
-        start.setHours(0, 0, 0, 0);
-        if (pDate < start) matchDate = false;
+  // Filtro base (ricerca, magazzino, stato, range date) usato sia per i contatori KPI scadenza sia per la tabella
+  const baseFilteredPallets = React.useMemo(() => {
+    return pallets.filter(p => {
+      const searchLower = searchTerm.toLowerCase();
+      const matchSearch = p.product_name.toLowerCase().includes(searchLower) || 
+                          p.pallet_code.toLowerCase().includes(searchLower) ||
+                          p.customer_name.toLowerCase().includes(searchLower) ||
+                          (p.batch && p.batch.toLowerCase().includes(searchLower)) ||
+                          (p.location && p.location.toLowerCase().includes(searchLower)) ||
+                          (p.notes && p.notes.toLowerCase().includes(searchLower)) ||
+                          (p.product_notes && p.product_notes.toLowerCase().includes(searchLower)) ||
+                          (p.client_pallet_number && p.client_pallet_number.toLowerCase().includes(searchLower)) ||
+                          (p.client_article_number && p.client_article_number.toLowerCase().includes(searchLower)) ||
+                          (p.expiration_date && new Date(p.expiration_date).toLocaleDateString('it-IT').includes(searchLower));
+      const matchWarehouse = filterWarehouse === 'ALL' || p.warehouse === filterWarehouse;
+      const matchStatus = filterStatus === 'ALL' || p.status === filterStatus;
+      
+      let matchDate = true;
+      if (filterStartDate || filterEndDate) {
+        const rawTargetDate = dateFilterMode === 'EXPIRATION' ? p.expiration_date : p.created_at;
+        if (!rawTargetDate) {
+          matchDate = false;
+        } else {
+          const pDate = new Date(rawTargetDate);
+          if (isNaN(pDate.getTime())) {
+            matchDate = false;
+          } else {
+            if (filterStartDate) {
+              const start = new Date(filterStartDate);
+              start.setHours(0, 0, 0, 0);
+              if (pDate < start) matchDate = false;
+            }
+            if (filterEndDate) {
+              const end = new Date(filterEndDate);
+              end.setHours(23, 59, 59, 999);
+              if (pDate > end) matchDate = false;
+            }
+          }
+        }
       }
-      if (filterEndDate) {
-        const end = new Date(filterEndDate);
-        end.setHours(23, 59, 59, 999);
-        if (pDate > end) matchDate = false;
-      }
-    }
 
-    return matchSearch && matchWarehouse && matchStatus && matchDate;
-  });
+      return matchSearch && matchWarehouse && matchStatus && matchDate;
+    });
+  }, [pallets, searchTerm, filterWarehouse, filterStatus, filterStartDate, filterEndDate, dateFilterMode]);
+
+  // Statistiche in tempo reale sulle categorie di scadenza (sul set filtrato base)
+  const expStats = React.useMemo(() => {
+    const stats = {
+      ALL: { count: baseFilteredPallets.length, qty: 0 },
+      EXPIRED: { count: 0, qty: 0 },
+      WARNING: { count: 0, qty: 0 },
+      SAFE: { count: 0, qty: 0 },
+      NO_EXP: { count: 0, qty: 0 }
+    };
+    baseFilteredPallets.forEach(p => {
+      const q = parseFloat(p.quantity) || 0;
+      stats.ALL.qty += q;
+      const st = getExpirationStatus(p.expiration_date, expirationWarningValue, warningUnit);
+      if (stats[st.category]) {
+        stats[st.category].count += 1;
+        stats[st.category].qty += q;
+      }
+    });
+    return stats;
+  }, [baseFilteredPallets, expirationWarningValue, warningUnit]);
+
+  const filteredPallets = React.useMemo(() => {
+    const list = baseFilteredPallets.filter(p => {
+      if (filterExpCategory === 'ALL') return true;
+      const st = getExpirationStatus(p.expiration_date, expirationWarningValue, warningUnit);
+      if (filterExpCategory === 'WARNING_AND_EXPIRED') {
+        return st.category === 'WARNING' || st.category === 'EXPIRED';
+      }
+      return st.category === filterExpCategory;
+    });
+
+    return [...list].sort((a, b) => {
+      if (sortBy === 'EXP_ASC') {
+        if (!a.expiration_date && !b.expiration_date) return 0;
+        if (!a.expiration_date) return 1;
+        if (!b.expiration_date) return -1;
+        return new Date(a.expiration_date) - new Date(b.expiration_date);
+      }
+      if (sortBy === 'EXP_DESC') {
+        if (!a.expiration_date && !b.expiration_date) return 0;
+        if (!a.expiration_date) return 1;
+        if (!b.expiration_date) return -1;
+        return new Date(b.expiration_date) - new Date(a.expiration_date);
+      }
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+  }, [baseFilteredPallets, filterExpCategory, expirationWarningValue, warningUnit, sortBy]);
+
+  const hasActiveFilters = searchTerm !== '' || filterWarehouse !== 'ALL' || filterStatus !== 'ALL' || filterStartDate !== '' || filterEndDate !== '' || filterExpCategory !== 'ALL' || sortBy !== 'ARRIVAL_DESC';
+
+  const resetAllFilters = () => {
+    setSearchTerm('');
+    setFilterWarehouse('ALL');
+    setFilterStatus('ALL');
+    setFilterStartDate('');
+    setFilterEndDate('');
+    setFilterExpCategory('ALL');
+    setSortBy('ARRIVAL_DESC');
+  };
 
   const filteredProducts = products.filter(p => {
     const searchLower = searchTerm.toLowerCase();
@@ -520,54 +704,361 @@ const ProductsManagement = () => {
           </button>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex flex-col md:flex-row flex-wrap gap-4 items-start md:items-center">
-            <div className="relative flex-1 w-full">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-              <input type="text" placeholder="Ricerca universale..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl pl-12 pr-4 py-3 focus:ring-brand-blue focus:border-brand-blue transition-all" />
-            </div>
-            
-            {activeTab === 'pallets' && (
-              <>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Filter size={16} className="text-slate-500" />
-                  <span className="text-slate-400">Magazzino:</span>
-                  <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-1">
-                    <button onClick={() => setFilterWarehouse('ALL')} className={`px-3 py-1.5 rounded-md transition-colors ${filterWarehouse === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti</button>
-                    <button onClick={() => setFilterWarehouse('Settala')} className={`px-3 py-1.5 rounded-md transition-colors ${filterWarehouse === 'Settala' ? 'bg-brand-blue text-brand-black font-bold' : 'text-slate-500 hover:text-brand-blue'}`}>Settala</button>
-                    <button onClick={() => setFilterWarehouse('Caleppio')} className={`px-3 py-1.5 rounded-md transition-colors ${filterWarehouse === 'Caleppio' ? 'bg-amber-500 text-brand-black font-bold' : 'text-slate-500 hover:text-amber-500'}`}>Caleppio</button>
-                  </div>
+        {activeTab === 'pallets' && (
+          <div className="mb-6 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {/* Card 1: Tutti */}
+              <button
+                type="button"
+                onClick={() => setFilterExpCategory('ALL')}
+                className={`text-left p-4 rounded-2xl border transition-all relative overflow-hidden ${
+                  filterExpCategory === 'ALL'
+                    ? 'bg-slate-900 border-brand-blue shadow-[0_0_20px_rgba(14,165,233,0.15)]'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Totale Stock</span>
+                  <Package size={16} className="text-brand-blue" />
                 </div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <span className="text-slate-400">Stato:</span>
-                  <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-1">
-                    <button onClick={() => setFilterStatus('ALL')} className={`px-3 py-1.5 rounded-md transition-colors ${filterStatus === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti</button>
-                    <button onClick={() => setFilterStatus('PENDING')} className={`px-3 py-1.5 rounded-md transition-colors ${filterStatus === 'PENDING' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
-                    <button onClick={() => setFilterStatus('STOCKED')} className={`px-3 py-1.5 rounded-md transition-colors ${filterStatus === 'STOCKED' ? 'bg-green-500/20 text-green-400 font-bold' : 'text-slate-500 hover:text-green-400'}`}>Stivati</button>
-                  </div>
+                <div className="text-2xl font-black text-brand-white">{expStats.ALL.count}</div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  {expStats.ALL.qty.toLocaleString('it-IT')} unità complessive
                 </div>
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <span className="text-slate-400">Dal:</span>
-                    <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className="w-[120px] bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue [color-scheme:dark]" />
+                {expStats.ALL.count > 0 && (
+                  <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden flex mt-2.5">
+                    <div style={{ width: `${(expStats.EXPIRED.count / expStats.ALL.count) * 100}%` }} className="bg-rose-500 h-full" title={`Scaduti: ${expStats.EXPIRED.count}`} />
+                    <div style={{ width: `${(expStats.WARNING.count / expStats.ALL.count) * 100}%` }} className="bg-amber-500 h-full" title={`In avviso: ${expStats.WARNING.count}`} />
+                    <div style={{ width: `${(expStats.SAFE.count / expStats.ALL.count) * 100}%` }} className="bg-emerald-500 h-full" title={`Lunga scadenza: ${expStats.SAFE.count}`} />
+                    <div style={{ width: `${(expStats.NO_EXP.count / expStats.ALL.count) * 100}%` }} className="bg-slate-600 h-full" title={`Senza scadenza: ${expStats.NO_EXP.count}`} />
                   </div>
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <span className="text-slate-400">Al:</span>
-                    <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className="w-[120px] bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue [color-scheme:dark]" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Clock size={16} className="text-amber-500" />
-                  <span className="text-slate-400">Avviso (gg):</span>
-                  <input type="number" onWheel={(e) => e.target.blur()} value={expirationWarningDays} onChange={e => setExpirationWarningDays(parseInt(e.target.value) || 0)} className="w-16 bg-slate-950 border border-slate-800 text-brand-white rounded-md px-2 py-1 focus:ring-brand-blue" />
-                </div>
-              </>
-            )}
-            
-            {activeTab === 'pallets' && selectedPallets.length > 0 && (
-              <button onClick={handlePrintBulk} className="flex-1 md:flex-none justify-center flex items-center gap-2 px-5 py-3 bg-brand-blue/20 text-brand-blue border border-brand-blue font-bold rounded-xl hover:bg-brand-blue hover:text-brand-black transition-all shadow-[0_0_20px_rgba(14,165,233,0.1)] active:scale-95">
-                <Printer size={18} /> Stampa {selectedPallets.length} Selezionate (Griglia)
+                )}
               </button>
+
+              {/* Card 2: Scaduti */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = filterExpCategory === 'EXPIRED' ? 'ALL' : 'EXPIRED';
+                  setFilterExpCategory(next);
+                  if (next === 'EXPIRED') setSortBy('EXP_ASC');
+                }}
+                className={`text-left p-4 rounded-2xl border transition-all relative overflow-hidden ${
+                  filterExpCategory === 'EXPIRED'
+                    ? 'bg-rose-950/40 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.25)]'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-rose-500/50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-1.5">
+                    {expStats.EXPIRED.count > 0 && <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />}
+                    Scaduti
+                  </span>
+                  <Flame size={16} className="text-rose-500" />
+                </div>
+                <div className="text-2xl font-black text-rose-400">{expStats.EXPIRED.count}</div>
+                <div className="text-[11px] text-rose-300/70 mt-1">
+                  {expStats.EXPIRED.count > 0 ? `${expStats.EXPIRED.qty.toLocaleString('it-IT')} u. già scadute` : 'Nessun prodotto scaduto'}
+                </div>
+              </button>
+
+              {/* Card 3: In Avviso (Sotto soglia GG o MESI) */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = (filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED') ? 'ALL' : 'WARNING';
+                  setFilterExpCategory(next);
+                  if (next === 'WARNING') setSortBy('EXP_ASC');
+                }}
+                className={`text-left p-4 rounded-2xl border transition-all relative overflow-hidden ${
+                  filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED'
+                    ? 'bg-amber-950/40 border-amber-500 shadow-[0_0_25px_rgba(245,158,11,0.2)]'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-amber-500/50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
+                    In Scadenza (≤ {expirationWarningValue} {warningUnit === 'months' ? (expirationWarningValue == 1 ? 'mese' : 'mesi') : 'gg'})
+                  </span>
+                  <AlertTriangle size={16} className="text-amber-500" />
+                </div>
+                <div className="text-2xl font-black text-amber-400">{expStats.WARNING.count}</div>
+                <div className="text-[11px] text-amber-300/70 mt-1">
+                  {expStats.WARNING.count > 0 ? `${expStats.WARNING.qty.toLocaleString('it-IT')} u. in preavviso` : 'Nessuno in preavviso'}
+                </div>
+              </button>
+
+              {/* Card 4: Lunga Scadenza / Validi */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = filterExpCategory === 'SAFE' ? 'ALL' : 'SAFE';
+                  setFilterExpCategory(next);
+                }}
+                className={`text-left p-4 rounded-2xl border transition-all relative overflow-hidden ${
+                  filterExpCategory === 'SAFE'
+                    ? 'bg-emerald-950/30 border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)]'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-emerald-500/50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                    Lunga Scadenza (&gt; {expirationWarningValue} {warningUnit === 'months' ? 'm' : 'gg'})
+                  </span>
+                  <ShieldCheck size={16} className="text-emerald-500" />
+                </div>
+                <div className="text-2xl font-black text-emerald-400">{expStats.SAFE.count}</div>
+                <div className="text-[11px] text-emerald-300/70 mt-1">
+                  {expStats.SAFE.qty.toLocaleString('it-IT')} u. con ampio margine
+                </div>
+              </button>
+
+              {/* Card 5: Senza Scadenza */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = filterExpCategory === 'NO_EXP' ? 'ALL' : 'NO_EXP';
+                  setFilterExpCategory(next);
+                }}
+                className={`text-left p-4 rounded-2xl border transition-all relative overflow-hidden ${
+                  filterExpCategory === 'NO_EXP'
+                    ? 'bg-slate-800 border-slate-400 shadow-lg'
+                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-600'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Senza Scadenza</span>
+                  <Calendar size={16} className="text-slate-500" />
+                </div>
+                <div className="text-2xl font-black text-slate-300">{expStats.NO_EXP.count}</div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {expStats.NO_EXP.qty.toLocaleString('it-IT')} u. non deperibili
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+          <div className="p-4 border-b border-slate-800 space-y-4">
+            {/* Riga 1: Ricerca, Magazzino, Stato, Ordinamento, Stampa Bulk */}
+            <div className="flex flex-col md:flex-row flex-wrap gap-3 items-stretch md:items-center">
+              <div className="relative flex-1 min-w-[240px]">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                <input type="text" placeholder="Ricerca universale (Prodotto, SKU, Lotto, Scaffale, Cliente, Scadenza)..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl pl-12 pr-4 py-2.5 focus:ring-brand-blue focus:border-brand-blue transition-all text-sm" />
+              </div>
+
+              {activeTab === 'pallets' && (
+                <>
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <Filter size={15} className="text-slate-500" />
+                    <span className="text-slate-400">Magazzino:</span>
+                    <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-1">
+                      <button onClick={() => setFilterWarehouse('ALL')} className={`px-2.5 py-1 rounded-md transition-colors ${filterWarehouse === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti</button>
+                      <button onClick={() => setFilterWarehouse('Settala')} className={`px-2.5 py-1 rounded-md transition-colors ${filterWarehouse === 'Settala' ? 'bg-brand-blue text-brand-black font-bold' : 'text-slate-500 hover:text-brand-blue'}`}>Settala</button>
+                      <button onClick={() => setFilterWarehouse('Caleppio')} className={`px-2.5 py-1 rounded-md transition-colors ${filterWarehouse === 'Caleppio' ? 'bg-amber-500 text-brand-black font-bold' : 'text-slate-500 hover:text-amber-500'}`}>Caleppio</button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <span className="text-slate-400">Stato:</span>
+                    <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-1">
+                      <button onClick={() => setFilterStatus('ALL')} className={`px-2.5 py-1 rounded-md transition-colors ${filterStatus === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti</button>
+                      <button onClick={() => setFilterStatus('PENDING')} className={`px-2.5 py-1 rounded-md transition-colors ${filterStatus === 'PENDING' ? 'bg-slate-700 text-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
+                      <button onClick={() => setFilterStatus('STOCKED')} className={`px-2.5 py-1 rounded-md transition-colors ${filterStatus === 'STOCKED' ? 'bg-green-500/20 text-green-400 font-bold' : 'text-slate-500 hover:text-green-400'}`}>Stivati</button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <ArrowUpDown size={15} className="text-brand-blue" />
+                    <select
+                      value={sortBy}
+                      onChange={e => setSortBy(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 text-brand-white rounded-lg px-2.5 py-1.5 font-semibold focus:border-brand-blue"
+                    >
+                      <option value="ARRIVAL_DESC">Ordina: Arrivo (Più recenti)</option>
+                      <option value="EXP_ASC">Ordina: Scadenza ↑ (FEFO - Più urgenti)</option>
+                      <option value="EXP_DESC">Ordina: Scadenza ↓ (Più lontane)</option>
+                    </select>
+                  </div>
+
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={resetAllFilters}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-colors"
+                      title="Azzera tutti i filtri"
+                    >
+                      <RotateCcw size={13} /> Reset
+                    </button>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'pallets' && selectedPallets.length > 0 && (
+                <button onClick={handlePrintBulk} className="flex-1 md:flex-none justify-center flex items-center gap-2 px-4 py-2 bg-brand-blue/20 text-brand-blue border border-brand-blue font-bold rounded-xl hover:bg-brand-blue hover:text-brand-black transition-all shadow-[0_0_20px_rgba(14,165,233,0.1)] active:scale-95 text-sm">
+                  <Printer size={16} /> Stampa {selectedPallets.length} Selezionate
+                </button>
+              )}
+            </div>
+
+            {/* Riga 2 (solo Stock Palette): Controllo Scadenze Avanzato (Range Date Scadenza/Arrivo + Avviso GG/MESI + Spunta Filtra Avviso) */}
+            {activeTab === 'pallets' && (
+              <div className="pt-3 border-t border-slate-800/80 flex flex-col lg:flex-row flex-wrap items-start lg:items-center justify-between gap-4 bg-slate-950/40 -mx-4 -mb-4 px-4 py-3">
+                {/* Blocco Filtro Intervallo Date (Scadenza o Arrivo) */}
+                <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
+                  <Calendar size={15} className="text-brand-blue" />
+                  <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setDateFilterMode('EXPIRATION')}
+                      className={`px-2.5 py-1 rounded-md transition-colors font-bold ${
+                        dateFilterMode === 'EXPIRATION' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Data Scadenza
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDateFilterMode('ARRIVAL')}
+                      className={`px-2.5 py-1 rounded-md transition-colors font-bold ${
+                        dateFilterMode === 'ARRIVAL' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Data Arrivo
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400">Dal:</span>
+                    <input
+                      type="date"
+                      value={filterStartDate}
+                      onChange={e => setFilterStartDate(e.target.value)}
+                      className="w-[125px] bg-slate-950 border border-slate-800 text-brand-white rounded-lg px-2 py-1 focus:ring-brand-blue [color-scheme:dark]"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400">Al:</span>
+                    <input
+                      type="date"
+                      value={filterEndDate}
+                      onChange={e => setFilterEndDate(e.target.value)}
+                      className="w-[125px] bg-slate-950 border border-slate-800 text-brand-white rounded-lg px-2 py-1 focus:ring-brand-blue [color-scheme:dark]"
+                    />
+                  </div>
+                  {(filterStartDate || filterEndDate) && (
+                    <button
+                      type="button"
+                      onClick={() => { setFilterStartDate(''); setFilterEndDate(''); }}
+                      className="text-rose-400 hover:text-rose-300 font-bold px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20"
+                    >
+                      ✕ Pulisci date
+                    </button>
+                  )}
+                </div>
+
+                {/* Blocco Soglia Avviso (Switch GG / MESI + Preset + Spunta "Mostra solo in avviso") */}
+                <div className="flex flex-wrap items-center gap-3 text-xs font-medium">
+                  <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5">
+                    <Clock size={15} className="text-amber-500 shrink-0" />
+                    <span className="text-slate-300 font-bold">Preavviso Scadenza:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      onWheel={(e) => e.target.blur()}
+                      value={expirationWarningValue}
+                      onChange={e => setExpirationWarningValue(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                      className="w-16 bg-slate-900 border border-slate-700 text-amber-400 font-bold text-center rounded-lg px-2 py-1 focus:ring-amber-500 focus:border-amber-500"
+                    />
+
+                    {/* Switch GG / MESI */}
+                    <div className="flex bg-slate-900 rounded-lg border border-slate-800 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleWarningUnit('days')}
+                        className={`px-2.5 py-1 rounded-md font-bold transition-all ${
+                          warningUnit === 'days'
+                            ? 'bg-amber-500 text-brand-black shadow'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        GG
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleWarningUnit('months')}
+                        className={`px-2.5 py-1 rounded-md font-bold transition-all ${
+                          warningUnit === 'months'
+                            ? 'bg-amber-500 text-brand-black shadow'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        MESI
+                      </button>
+                    </div>
+
+                    {/* Preset rapidi in base a GG o MESI */}
+                    <div className="hidden xl:flex items-center gap-1 pl-1 border-l border-slate-800">
+                      {(warningUnit === 'days' ? [15, 30, 60, 90, 180] : [1, 2, 3, 6, 12]).map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setExpirationWarningValue(preset)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                            Number(expirationWarningValue) === preset
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                              : 'bg-slate-900 text-slate-500 hover:text-slate-300'
+                          }`}
+                        >
+                          {preset}{warningUnit === 'days' ? 'g' : 'm'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Spunta per filtrare istantaneamente solo i prodotti interessati dall'avviso */}
+                  <label
+                    onClick={() => {
+                      const isCurrentlyWarningFilter = filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED';
+                      const next = isCurrentlyWarningFilter ? 'ALL' : 'WARNING';
+                      setFilterExpCategory(next);
+                      if (next === 'WARNING') setSortBy('EXP_ASC');
+                    }}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer select-none transition-all font-bold ${
+                      filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.15)]'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-amber-500/50 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
+                      filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED'
+                        ? 'bg-amber-500 border-amber-500 text-brand-black'
+                        : 'bg-slate-900 border-slate-700'
+                    }`}>
+                      {(filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED') && (
+                        <CheckCircle size={12} strokeWidth={3} />
+                      )}
+                    </div>
+                    <span>Mostra solo in avviso ({expStats.WARNING.count})</span>
+                  </label>
+
+                  {/* Opzione rapida per includere anche gli scaduti quando la spunta avviso è attiva */}
+                  {(filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED') && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterExpCategory(filterExpCategory === 'WARNING_AND_EXPIRED' ? 'WARNING' : 'WARNING_AND_EXPIRED')}
+                      className={`px-2.5 py-2 rounded-xl border text-xs font-bold transition-all ${
+                        filterExpCategory === 'WARNING_AND_EXPIRED'
+                          ? 'bg-rose-500/20 border-rose-500 text-rose-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-rose-400'
+                      }`}
+                    >
+                      {filterExpCategory === 'WARNING_AND_EXPIRED' ? '✓ Scaduti inclusi' : `+ Includi Scaduti (${expStats.EXPIRED.count})`}
+                    </button>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 
@@ -583,8 +1074,25 @@ const ProductsManagement = () => {
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Paletta</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
-                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Arrivo</th>
-                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Lotto/Scad</th>
+                      <th
+                        onClick={() => setSortBy('ARRIVAL_DESC')}
+                        className="px-3 py-3 font-semibold uppercase tracking-wider text-xs cursor-pointer hover:text-brand-blue transition-colors"
+                        title="Clicca per ordinare per data di arrivo"
+                      >
+                        Arrivo {sortBy === 'ARRIVAL_DESC' && '↓'}
+                      </th>
+                      <th
+                        onClick={() => setSortBy(sortBy === 'EXP_ASC' ? 'EXP_DESC' : 'EXP_ASC')}
+                        className="px-3 py-3 font-semibold uppercase tracking-wider text-xs cursor-pointer hover:text-brand-blue transition-colors select-none"
+                        title="Clicca per ordinare per Data di Scadenza (FEFO)"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Lotto / Scad
+                          <ArrowUpDown size={12} className={sortBy.startsWith('EXP_') ? 'text-brand-blue' : 'text-slate-600'} />
+                          {sortBy === 'EXP_ASC' && <span className="text-brand-blue">↑</span>}
+                          {sortBy === 'EXP_DESC' && <span className="text-brand-blue">↓</span>}
+                        </span>
+                      </th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Note / Flag</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Posizione</th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-right">Azioni</th>
@@ -592,9 +1100,13 @@ const ProductsManagement = () => {
                   </thead>
                   <tbody className="text-brand-white">
                     {currentPallets.length === 0 ? (
-                      <tr><td colSpan="9" className="p-12 text-center text-slate-500 italic font-medium">Nessuna paletta trovata.</td></tr>
-                    ) : currentPallets.map(p => (
-                      <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                      <tr><td colSpan="9" className="p-12 text-center text-slate-500 italic font-medium">Nessuna paletta trovata con i filtri selezionati.</td></tr>
+                    ) : currentPallets.map(p => {
+                      const expStatus = getExpirationStatus(p.expiration_date, expirationWarningValue, warningUnit);
+                      const isExpiredRow = expStatus.category === 'EXPIRED';
+                      const isWarningRow = expStatus.category === 'WARNING';
+                      return (
+                      <tr key={p.id} className={`border-b border-slate-800/50 transition-colors ${isExpiredRow ? 'bg-rose-950/15 hover:bg-rose-950/25' : isWarningRow ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'hover:bg-slate-800/30'}`}>
                         <td className="p-4 text-center">
                           <div onClick={() => toggleSelect(p.id)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.includes(p.id) ? 'bg-brand-blue border-brand-blue shadow-[0_0_10px_rgba(14,165,233,0.3)]' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.includes(p.id) && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
                         </td>
@@ -638,15 +1150,27 @@ const ProductsManagement = () => {
                           {new Date(p.created_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                         </td>
                         <td className="px-3 py-3 text-slate-400 text-sm">
-                          <div>{p.batch || '-'}</div>
-                          {p.expiration_date && (() => {
-                            const status = getExpirationStatus(p.expiration_date, expirationWarningDays);
-                            return (
-                              <div className={`mt-1 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${status.color} ${status.bg}`}>
-                                Scad: {new Date(p.expiration_date).toLocaleDateString('it-IT')} ({status.label})
+                          <div className="font-mono text-xs text-slate-300">Lotto: <span className="font-bold text-brand-white">{p.batch || '-'}</span></div>
+                          {p.expiration_date ? (
+                            <div className="mt-1.5 inline-flex flex-col gap-1 min-w-[170px]">
+                              <div className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border ${expStatus.color} ${expStatus.bg}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span>Scad: {new Date(p.expiration_date).toLocaleDateString('it-IT')}</span>
+                                  {expStatus.secondaryLabel && <span className="opacity-75 font-normal lowercase">{expStatus.secondaryLabel}</span>}
+                                </div>
+                                <div className="mt-0.5 text-[10.5px] font-black tracking-wide">
+                                  {expStatus.label}
+                                </div>
                               </div>
-                            );
-                          })()}
+                              <div className="w-full h-1 bg-slate-950 rounded-full overflow-hidden">
+                                <div className={`h-full ${expStatus.barColor} transition-all`} style={{ width: `${expStatus.progress}%` }} />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-1 inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-slate-950 text-slate-500 border border-slate-800">
+                              Senza Scadenza
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-3">
                           {p.notes || p.product_notes ? (
@@ -683,7 +1207,7 @@ const ProductsManagement = () => {
                             <button onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica">
                               <Edit3 size={18} />
                             </button>
-                            {isDeveloper && (
+                            {canManageProducts && (
                               <button onClick={() => handleDeletePallet(p.pallet_code)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Paletta">
                                 <Trash2 size={18} />
                               </button>
@@ -691,7 +1215,8 @@ const ProductsManagement = () => {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </>
               ) : (

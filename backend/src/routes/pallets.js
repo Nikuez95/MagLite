@@ -534,7 +534,9 @@ async function palletRoutes(fastify, options) {
   });
 
   fastify.delete('/:code', async (request, reply) => {
-    if (request.user.role !== 'developer') return reply.code(403).send({ error: 'Solo per developer' });
+    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
+      return reply.code(403).send({ error: 'Solo per developer o backoffice' });
+    }
     const { code } = request.params;
     try {
       await db.query('DELETE FROM PALLETS WHERE pallet_code = ?', [code]);
