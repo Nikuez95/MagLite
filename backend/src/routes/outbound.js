@@ -51,19 +51,75 @@ function sortPalletsByRouting(pallets, zonePriority, posPriority) {
   });
 }
 
-async function allocateOutboundItems(items, connection) {
+async function allocateOutboundItems(items, connection, excludeOrderId = null) {
   const allocatedPallets = [];
   const { zonePriority, posPriority } = await getRoutingSettings(connection);
+  const inMemoryUsedByPalletId = new Map();
+
+  let excludeCondition = '';
+  if (excludeOrderId) {
+    excludeCondition = `AND oo.id != ${connection.escape(excludeOrderId)}`;
+  }
 
   for (const req of items) {
-    // Se c'è già il pallet_code (vecchio sistema), lo passiamo senza toccarlo
+    const normalizedUom = req.requested_uom === 'Palette' ? 'Bancali' : (req.requested_uom || 'Pezzi');
+
+    // Se è già indicato pallet_code (es. in modifica ordine su riga già allocata)
     if (req.pallet_code) {
-      allocatedPallets.push(req);
+      let resolvedPalletId = req.pallet_id || null;
+      let resolvedBatch = (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') ? req.batch : null;
+
+      if (!resolvedPalletId) {
+        let findSql = 'SELECT id, batch FROM PALLETS WHERE pallet_code = ? AND product_id = ?';
+        const findParams = [req.pallet_code, req.product_id];
+        if (resolvedBatch) {
+          findSql += ' AND TRIM(batch) = TRIM(?)';
+          findParams.push(resolvedBatch);
+        } else if (req.batch === 'Nessun lotto') {
+          findSql += " AND (batch IS NULL OR TRIM(batch) = '')";
+        }
+        findSql += ' ORDER BY id ASC LIMIT 1';
+        const [foundRows] = await connection.query(findSql, findParams);
+        if (foundRows.length > 0) {
+          resolvedPalletId = foundRows[0].id;
+          resolvedBatch = foundRows[0].batch || null;
+        }
+      }
+
+      allocatedPallets.push({
+        ...req,
+        pallet_id: resolvedPalletId,
+        batch: resolvedBatch,
+        requested_uom: normalizedUom
+      });
       continue;
     }
 
     let query = `
-      SELECT pal.*, loc.zone, loc.col, loc.pos, p.units_per_box 
+      SELECT pal.*, loc.zone, loc.col, loc.pos,
+             COALESCE(pal.units_per_box, p.units_per_box, 1) as effective_units_per_box,
+             COALESCE(p.boxes_per_pallet, 1) as effective_boxes_per_pallet,
+             (pal.quantity - COALESCE((
+               SELECT SUM(
+                 CASE 
+                   WHEN oi.requested_uom IN ('Bancali', 'Palette') THEN 
+                     CASE WHEN COALESCE(p.boxes_per_pallet, 1) > 1 AND pal.quantity >= 2 * (COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                          THEN (oi.quantity_required * COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                          ELSE pal.quantity 
+                     END
+                   WHEN oi.requested_uom IN ('Scatole', 'Cartoni') THEN (oi.quantity_required * COALESCE(pal.units_per_box, p.units_per_box, 1))
+                   ELSE oi.quantity_required 
+                 END
+               )
+               FROM OUTBOUND_ITEMS oi
+               JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+               WHERE (
+                 (oi.pallet_id IS NOT NULL AND oi.pallet_id = pal.id)
+                 OR (oi.pallet_id IS NULL AND oi.pallet_code = pal.pallet_code AND oi.product_id = pal.product_id AND (oi.batch IS NULL OR oi.batch = pal.batch))
+               )
+               AND oo.status != 'SHIPPED'
+               ${excludeCondition}
+             ), 0)) as available_quantity
       FROM PALLETS pal 
       JOIN PRODUCTS p ON pal.product_id = p.id 
       LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode 
@@ -71,45 +127,73 @@ async function allocateOutboundItems(items, connection) {
     `;
     const params = [req.product_id];
     if (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') {
-       query += ` AND pal.batch = ?`;
-       params.push(req.batch);
+      query += ` AND TRIM(pal.batch) = TRIM(?)`;
+      params.push(req.batch);
     } else if (req.batch === 'Nessun lotto') {
-       query += ` AND (pal.batch IS NULL OR pal.batch = '')`;
+      query += ` AND (pal.batch IS NULL OR TRIM(pal.batch) = '')`;
     }
     
-    const [available] = await connection.query(query, params);
+    const [rawAvailable] = await connection.query(query, params);
+    const available = rawAvailable.filter(pal => {
+      const alreadyUsedBase = inMemoryUsedByPalletId.get(pal.id) || 0;
+      return (parseFloat(pal.available_quantity) - alreadyUsedBase) > 0;
+    });
     sortPalletsByRouting(available, zonePriority, posPriority);
 
     let remainingToAllocate = parseFloat(req.quantity_required);
-    let allocatedForThisReq = [];
+    const allocatedForThisReq = [];
 
     for (const pal of available) {
-       if (remainingToAllocate <= 0) break;
+      if (remainingToAllocate <= 0) break;
 
-       let palletQtyInRequestedUom = parseFloat(pal.quantity);
-       if (req.requested_uom === 'Scatole' || req.requested_uom === 'Cartoni') {
-          palletQtyInRequestedUom = palletQtyInRequestedUom / (pal.units_per_box || 1);
-       } else if (req.requested_uom === 'Bancali') {
+      const alreadyUsedBase = inMemoryUsedByPalletId.get(pal.id) || 0;
+      const availBaseQty = Math.max(0, parseFloat(pal.available_quantity) - alreadyUsedBase);
+      if (availBaseQty <= 0) continue;
+
+      const upb = parseFloat(pal.effective_units_per_box) || 1;
+      const bpp = parseFloat(pal.effective_boxes_per_pallet) || 1;
+      const unitsPerPallet = upb * bpp;
+
+      let palletQtyInRequestedUom = availBaseQty;
+      if (normalizedUom === 'Scatole' || normalizedUom === 'Cartoni') {
+        palletQtyInRequestedUom = availBaseQty / upb;
+      } else if (normalizedUom === 'Bancali') {
+        // Se la riga paletta rappresenta più bancali accorpati (es. carico multi-paletta su stessa posizione)
+        // e non ci sono abbastanza righe distinte per coprire la richiesta, calcola i bancali contenuti nella riga
+        if (available.length < remainingToAllocate && unitsPerPallet > 1 && availBaseQty >= unitsPerPallet * 2) {
+          palletQtyInRequestedUom = Math.max(1, Math.floor(availBaseQty / unitsPerPallet));
+        } else {
           palletQtyInRequestedUom = 1;
-       }
+        }
+      }
 
-       if (palletQtyInRequestedUom <= 0) continue;
+      if (palletQtyInRequestedUom <= 0) continue;
 
-       let take = Math.min(remainingToAllocate, palletQtyInRequestedUom);
-       
-       allocatedForThisReq.push({
-          pallet_code: pal.pallet_code,
-          product_id: req.product_id,
-          quantity_required: take,
-          requested_uom: req.requested_uom
-       });
-       
-       remainingToAllocate -= take;
-       if (req.requested_uom === 'Bancali' && take >= 1) remainingToAllocate = 0;
+      const take = Math.min(remainingToAllocate, palletQtyInRequestedUom);
+      
+      allocatedForThisReq.push({
+        pallet_id: pal.id,
+        pallet_code: pal.pallet_code,
+        product_id: req.product_id,
+        batch: pal.batch || null,
+        quantity_required: take,
+        requested_uom: normalizedUom
+      });
+
+      let usedBaseForTake = take;
+      if (normalizedUom === 'Scatole' || normalizedUom === 'Cartoni') {
+        usedBaseForTake = take * upb;
+      } else if (normalizedUom === 'Bancali') {
+        usedBaseForTake = (palletQtyInRequestedUom > 1 && unitsPerPallet > 1) ? (take * unitsPerPallet) : availBaseQty;
+      }
+      inMemoryUsedByPalletId.set(pal.id, alreadyUsedBase + usedBaseForTake);
+      
+      remainingToAllocate -= take;
     }
 
     if (remainingToAllocate > 0) {
-       throw new Error(`Quantità insufficiente in magazzino per l'articolo ID ${req.product_id}`);
+      const batchLabel = (req.batch && req.batch !== 'TUTTI') ? ` (Lotto: ${req.batch})` : '';
+      throw new Error(`Quantità insufficiente in magazzino per l'articolo richiesto${batchLabel}`);
     }
     
     allocatedPallets.push(...allocatedForThisReq);
@@ -124,7 +208,18 @@ async function outboundRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [orders] = await db.query(`
-        SELECT o.*, c.business_name as customer_name
+        SELECT o.*, c.business_name as customer_name,
+               (SELECT GROUP_CONCAT(DISTINCT COALESCE(oi.batch, pal.batch) SEPARATOR ', ')
+                FROM OUTBOUND_ITEMS oi
+                LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
+                WHERE oi.order_id = o.id) as batches,
+               (SELECT GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ')
+                FROM OUTBOUND_ITEMS oi
+                JOIN PRODUCTS p ON p.id = oi.product_id
+                WHERE oi.order_id = o.id) as products,
+               (SELECT GROUP_CONCAT(DISTINCT oi.pallet_code SEPARATOR ', ')
+                FROM OUTBOUND_ITEMS oi
+                WHERE oi.order_id = o.id) as pallets
         FROM OUTBOUND_ORDERS o
         JOIN CUSTOMERS c ON o.customer_id = c.id
         ORDER BY o.created_at DESC
@@ -138,7 +233,7 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound - Create new order
   fastify.post('/', async (request, reply) => {
-    const { customer_id, exit_date, items, client_ddt } = request.body; // items = [{ pallet_code, product_id, quantity_required }]
+    const { customer_id, exit_date, items, client_ddt } = request.body;
     const connection = await db.getConnection();
     
     try {
@@ -157,8 +252,8 @@ async function outboundRoutes(fastify, options) {
       const allocatedItemsPOST = await allocateOutboundItems(items, connection);
       for (const item of allocatedItemsPOST) {
         await connection.query(
-          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
-          [orderId, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
+          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [orderId, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
         );
       }
       
@@ -203,7 +298,7 @@ async function outboundRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
       
-      const [orders] = await connection.query('SELECT status FROM OUTBOUND_ORDERS WHERE id = ?', [id]);
+      const [orders] = await connection.query('SELECT status, order_code FROM OUTBOUND_ORDERS WHERE id = ?', [id]);
       if (orders.length === 0) throw new Error('Ordine non trovato');
       if (orders[0].status === 'SHIPPED') throw new Error('Impossibile modificare un ordine già spedito.');
 
@@ -214,11 +309,11 @@ async function outboundRoutes(fastify, options) {
 
       await connection.query('DELETE FROM OUTBOUND_ITEMS WHERE order_id = ?', [id]);
 
-      const allocatedItemsPUT = await allocateOutboundItems(items, connection);
+      const allocatedItemsPUT = await allocateOutboundItems(items, connection, id);
       for (const item of allocatedItemsPUT) {
         await connection.query(
-          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_code, product_id, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?)',
-          [id, item.pallet_code ?? null, item.product_id ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
+          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
         );
       }
       
@@ -260,10 +355,17 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, p.uom as base_uom, pal.batch, pal.location
+        SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 
+           WHERE p2.pallet_code = i.pallet_code 
+             AND p2.product_id = i.product_id 
+             AND (i.batch IS NULL OR p2.batch = i.batch)
+           ORDER BY p2.id ASC LIMIT 1)
+        )
         WHERE i.order_id = ?
       `, [id]);
       
@@ -334,10 +436,17 @@ async function outboundRoutes(fastify, options) {
       const order = orders[0];
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, p.units_per_box, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin
+        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, pal.location, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 
+           WHERE p2.pallet_code = i.pallet_code 
+             AND p2.product_id = i.product_id 
+             AND (i.batch IS NULL OR p2.batch = i.batch)
+           ORDER BY p2.id ASC LIMIT 1)
+        )
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [order.id]);
@@ -467,17 +576,17 @@ async function outboundRoutes(fastify, options) {
         doc.font('Helvetica').fontSize(9).fillColor('#334155').text(item.product_name, 135, y, { width: 120 });
         doc.text(item.batch || '-', 265, y, { width: 75 });
         
-        const displayPallet = item.pallet_code.startsWith('NOBAR-') ? '-' : item.pallet_code;
+        const displayPallet = (item.pallet_code || '').startsWith('NOBAR-') ? '-' : item.pallet_code;
         doc.font('Helvetica-Bold').fontSize(8).fillColor('#192935').text(displayPallet, 345, y, { width: 135 });
         
-        let qtyText = `${item.quantity_required} ${item.uom}`;
-        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali') {
+        let qtyText = `${parseFloat(item.quantity_required)} ${item.uom}`;
+        if (item.units_per_box > 1 && item.uom !== 'Scatole' && item.uom !== 'Bancali' && item.uom !== 'Palette') {
            const scatole = Math.floor(item.quantity_required / item.units_per_box);
            const sfusi = item.quantity_required % item.units_per_box;
            let breakDown = [];
            if (scatole > 0) breakDown.push(`${scatole} SCAT.`);
            if (sfusi > 0) breakDown.push(`${sfusi} SFUSI`);
-           qtyText = breakDown.join(' + ');
+           if (breakDown.length > 0) qtyText = breakDown.join(' + ');
         }
 
         doc.fillColor('#192935').font('Helvetica-Bold').fontSize(9).text(qtyText, 485, y, { width: 70 });
@@ -507,10 +616,17 @@ async function outboundRoutes(fastify, options) {
       }
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, p.units_per_box, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom, pal.location, pal.batch, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
+        SELECT i.*, p.name as product_name, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom, pal.location, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 
+           WHERE p2.pallet_code = i.pallet_code 
+             AND p2.product_id = i.product_id 
+             AND (i.batch IS NULL OR p2.batch = i.batch)
+           ORDER BY p2.id ASC LIMIT 1)
+        )
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [order.id]);
@@ -543,7 +659,14 @@ async function outboundRoutes(fastify, options) {
       const [items] = await db.query(`
         SELECT i.*, pal.location, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
-        JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 
+           WHERE p2.pallet_code = i.pallet_code 
+             AND p2.product_id = i.product_id 
+             AND (i.batch IS NULL OR p2.batch = i.batch)
+           ORDER BY p2.id ASC LIMIT 1)
+        )
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         JOIN PRODUCTS pr ON i.product_id = pr.id
         WHERE i.id = ? AND i.order_id = ?
@@ -551,11 +674,6 @@ async function outboundRoutes(fastify, options) {
 
       if (items.length === 0) return reply.code(404).send({ error: 'Riga ordine non trovata' });
       const item = items[0];
-
-      // Controllo del PIN rimosso su richiesta
-      // if (item.loc_pin && item.loc_pin.toLowerCase() !== pin.toLowerCase()) {
-      //   return reply.code(400).send({ error: 'PIN Scaffale errato' });
-      // }
 
       // Verifica Barcode Paletta
       if (item.pallet_code.toLowerCase() !== pallet_code.toLowerCase()) {
@@ -622,28 +740,58 @@ async function outboundRoutes(fastify, options) {
         // Usa quantity_picked se > 0 (Zebra usato), altrimenti assumi che dal PC si forzi quantity_required
         const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
 
-        // Scarica la giacenza
-        const [pallets] = await connection.query('SELECT pal.*, p.units_per_box FROM PALLETS pal JOIN PRODUCTS p ON pal.product_id = p.id WHERE pal.pallet_code = ? AND pal.product_id = ?', [item.pallet_code, item.product_id]);
+        // Scarica la giacenza esattamente dalla riga PALLETS del lotto selezionato
+        let palletsQuery = `
+          SELECT pal.*, COALESCE(pal.units_per_box, p.units_per_box, 1) as effective_units_per_box, COALESCE(p.boxes_per_pallet, 1) as effective_boxes_per_pallet
+          FROM PALLETS pal
+          JOIN PRODUCTS p ON pal.product_id = p.id
+          WHERE 
+        `;
+        let palletsParams = [];
+        if (item.pallet_id) {
+          palletsQuery += `pal.id = ?`;
+          palletsParams = [item.pallet_id];
+        } else if (item.batch) {
+          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND TRIM(pal.batch) = TRIM(?) ORDER BY pal.id ASC LIMIT 1`;
+          palletsParams = [item.pallet_code, item.product_id, item.batch];
+        } else {
+          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? ORDER BY pal.id ASC LIMIT 1`;
+          palletsParams = [item.pallet_code, item.product_id];
+        }
+
+        const [pallets] = await connection.query(palletsQuery, palletsParams);
         if (pallets.length > 0) {
           const pallet = pallets[0];
+          const upb = parseFloat(pallet.effective_units_per_box) || 1;
+          const bpp = parseFloat(pallet.effective_boxes_per_pallet) || 1;
+          const unitsPerPallet = upb * bpp;
           let newQty;
 
-          if (item.requested_uom === 'Bancali' && actualPicked >= 1) {
-            newQty = 0;
+          if ((item.requested_uom === 'Bancali' || item.requested_uom === 'Palette') && actualPicked >= 1) {
+            if (unitsPerPallet > 1 && parseFloat(pallet.quantity) > actualPicked * unitsPerPallet) {
+              newQty = parseFloat(pallet.quantity) - (actualPicked * unitsPerPallet);
+            } else {
+              newQty = 0;
+            }
           } else {
             let deduction = actualPicked;
             if (item.requested_uom === 'Scatole' || item.requested_uom === 'Cartoni') {
-              deduction *= (pallet.units_per_box || 1);
+              deduction *= upb;
             }
             newQty = parseFloat(pallet.quantity) - deduction;
           }
           
           if (newQty <= 0) {
-            // Paletta esaurita, svuota la posizione e marca SHIPPED
-            await connection.query('UPDATE PALLETS SET quantity = 0, status = "SHIPPED", location = NULL WHERE id = ?', [pallet.id]);
+            newQty = 0;
+            // Paletta esaurita, svuota la posizione, marca SHIPPED e registra shipped_at
+            await connection.query('UPDATE PALLETS SET quantity = 0, status = "SHIPPED", location = NULL, shipped_at = CURRENT_TIMESTAMP WHERE id = ?', [pallet.id]);
           } else {
             // Paletta parziale
             await connection.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [newQty, pallet.id]);
+          }
+
+          if (!parseFloat(item.quantity_picked) || parseFloat(item.quantity_picked) <= 0) {
+            await connection.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED" WHERE id = ?', [actualPicked, item.id]);
           }
 
           // Audit Log
@@ -651,7 +799,7 @@ async function outboundRoutes(fastify, options) {
             'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
             [
               'OUTBOUND_PICK', 
-              `Prelevato ${actualPicked} da paletta ${pallet.pallet_code} (rimanenza: ${newQty})`,
+              `Prelevato ${actualPicked} ${item.requested_uom || ''} da paletta ${pallet.pallet_code}${pallet.batch ? ` (Lotto: ${pallet.batch})` : ''} (rimanenza: ${newQty})`,
               'BACKOFFICE',
               request.user?.username || 'SYSTEM'
             ]
@@ -694,20 +842,27 @@ async function outboundRoutes(fastify, options) {
       const statusCondition = include_pending === 'true' ? "IN ('STOCKED', 'PENDING')" : "= 'STOCKED'";
 
       const [pallets] = await db.query(`
-        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, COALESCE(pal.pallet_uom, p.uom) as uom, p.units_per_box, p.boxes_per_pallet,
+        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.sku as product_sku, COALESCE(pal.pallet_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
                (pal.quantity - COALESCE((
                  SELECT SUM(
                    CASE 
-                     WHEN oi.requested_uom = 'Bancali' THEN pal.quantity 
-                     WHEN oi.requested_uom = 'Scatole' THEN (oi.quantity_required * p.units_per_box)
+                     WHEN oi.requested_uom IN ('Bancali', 'Palette') THEN 
+                       CASE WHEN COALESCE(p.boxes_per_pallet, 1) > 1 AND pal.quantity >= 2 * (COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                            THEN (oi.quantity_required * COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                            ELSE pal.quantity 
+                       END
+                     WHEN oi.requested_uom IN ('Scatole', 'Cartoni') THEN (oi.quantity_required * COALESCE(pal.units_per_box, p.units_per_box, 1))
                      ELSE oi.quantity_required 
                    END
                  )
                  FROM OUTBOUND_ITEMS oi
                  JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
-                 WHERE oi.pallet_code = pal.pallet_code
-                   AND oo.status != 'SHIPPED'
-                   ${excludeCondition}
+                 WHERE (
+                   (oi.pallet_id IS NOT NULL AND oi.pallet_id = pal.id)
+                   OR (oi.pallet_id IS NULL AND oi.pallet_code = pal.pallet_code AND oi.product_id = pal.product_id AND (oi.batch IS NULL OR oi.batch = pal.batch))
+                 )
+                 AND oo.status != 'SHIPPED'
+                 ${excludeCondition}
                ), 0)) as available_quantity
         FROM PALLETS pal
         JOIN PRODUCTS p ON pal.product_id = p.id
@@ -723,6 +878,7 @@ async function outboundRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Errore ricerca palette' });
     }
   });
+
   // GET /api/outbound/history/items
   fastify.get('/history/items', async (request, reply) => {
     try {
@@ -736,14 +892,21 @@ async function outboundRoutes(fastify, options) {
           c.business_name AS customer_name,
           p.name AS product_name,
           i.pallet_code,
-          pal.batch,
-          i.quantity_picked,
+          COALESCE(i.batch, pal.batch) AS batch,
+          CASE WHEN i.quantity_picked > 0 THEN i.quantity_picked ELSE i.quantity_required END AS quantity_picked,
           COALESCE(i.requested_uom, pal.pallet_uom, p.uom) AS uom
         FROM OUTBOUND_ITEMS i
         JOIN OUTBOUND_ORDERS o ON i.order_id = o.id
         JOIN CUSTOMERS c ON o.customer_id = c.id
         JOIN PRODUCTS p ON i.product_id = p.id
-        LEFT JOIN PALLETS pal ON i.pallet_code = pal.pallet_code AND i.product_id = pal.product_id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 
+           WHERE p2.pallet_code = i.pallet_code 
+             AND p2.product_id = i.product_id 
+             AND (i.batch IS NULL OR p2.batch = i.batch)
+           ORDER BY p2.id ASC LIMIT 1)
+        )
         WHERE o.status = 'SHIPPED'
         ORDER BY o.shipped_at DESC
       `);

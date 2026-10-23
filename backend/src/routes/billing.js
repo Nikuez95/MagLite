@@ -168,31 +168,84 @@ async function billingRoutes(fastify, options) {
         total += (qty * price);
       };
 
+      // Raggruppo per pallet_code per evitare sovrafatturazione sulle palette miste (più righe con lo stesso pallet_code)
+      const groupedPalletsMap = new Map();
       pallets.forEach(p => {
-        palletDetails.push({
-          pallet_code: p.pallet_code,
-          product_name: p.product_name,
-          quantity: p.quantity,
-          pallet_uom: p.pallet_uom || 'Pezzi',
-          batch: p.batch,
-          created_at: p.created_at,
-          shipped_at: p.shipped_at,
-          flags: p.flags
+        const code = p.pallet_code;
+        if (!groupedPalletsMap.has(code)) {
+          groupedPalletsMap.set(code, []);
+        }
+        groupedPalletsMap.get(code).push(p);
+      });
+
+      groupedPalletsMap.forEach((rows, code) => {
+        const createdTimes = rows.map(r => new Date(r.created_at).getTime()).filter(t => !isNaN(t));
+        const inDate = createdTimes.length > 0 ? new Date(Math.min(...createdTimes)) : new Date(rows[0].created_at);
+
+        const allShipped = rows.every(r => Boolean(r.shipped_at));
+        const shippedTimes = allShipped ? rows.map(r => new Date(r.shipped_at).getTime()).filter(t => !isNaN(t)) : [];
+        const outDate = (allShipped && shippedTimes.length > 0) ? new Date(Math.max(...shippedTimes)) : null;
+
+        // Unione deduplicata dei flag della paletta
+        const uniqueFlagsSet = new Set();
+        rows.forEach(r => {
+          let parsed = [];
+          try {
+            parsed = r.flags ? (typeof r.flags === 'string' ? JSON.parse(r.flags) : r.flags) : [];
+          } catch (e) {
+            parsed = [];
+          }
+          if (Array.isArray(parsed)) {
+            parsed.forEach(f => {
+              if (f) uniqueFlagsSet.add(String(f).trim());
+            });
+          }
         });
-        const inDate = new Date(p.created_at);
-        const outDate = p.shipped_at ? new Date(p.shipped_at) : null;
-        
-        // 1. INBOUND
+        const uniqueFlags = Array.from(uniqueFlagsSet);
+
+        if (rows.length === 1) {
+          const p = rows[0];
+          palletDetails.push({
+            pallet_code: code,
+            product_name: p.product_name,
+            quantity: p.quantity,
+            pallet_uom: p.pallet_uom || 'Pezzi',
+            batch: p.batch,
+            created_at: inDate,
+            shipped_at: outDate,
+            flags: uniqueFlags.length > 0 ? JSON.stringify(uniqueFlags) : null
+          });
+        } else {
+          const uniqueProducts = [...new Set(rows.map(r => r.product_name).filter(Boolean))];
+          const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
+          const totalQty = rows.reduce((sum, r) => sum + (parseFloat(r.quantity) || 0), 0);
+          const uniqueUoms = [...new Set(rows.map(r => r.pallet_uom || 'Pezzi'))];
+
+          palletDetails.push({
+            pallet_code: code,
+            product_name: uniqueProducts.length > 1
+              ? `Paletta Mista (${uniqueProducts.join(', ')})`
+              : `${uniqueProducts[0] || 'Articolo'} (${rows.length} lotti)`,
+            quantity: totalQty,
+            pallet_uom: uniqueUoms.join('/'),
+            batch: uniqueBatches.join(', ') || '-',
+            created_at: inDate,
+            shipped_at: outDate,
+            flags: uniqueFlags.length > 0 ? JSON.stringify(uniqueFlags) : null
+          });
+        }
+
+        // 1. INBOUND (1 solo addebito per pallet_code)
         if (inDate >= startDate && inDate <= endDate) {
           addCost('EVENTI', 'IN_PALLET', tariffs['IN_PALLET']?.desc, 1);
         }
         
-        // 2. OUTBOUND
+        // 2. OUTBOUND (1 solo addebito per pallet_code)
         if (outDate && outDate >= startDate && outDate <= endDate) {
           addCost('EVENTI', 'OUT_PALLET', tariffs['OUT_PALLET']?.desc, 1);
         }
 
-        // 3. STORAGE (Regola Quindicina)
+        // 3. STORAGE (Regola Quindicina - 1 solo addebito per pallet_code)
         if (inDate <= endDate && (!outDate || outDate >= startDate)) {
           // Se la paletta è entrata PRIMA di questo mese, si conta per intero.
           if (inDate < startDate) {
@@ -209,19 +262,16 @@ async function billingRoutes(fastify, options) {
           }
         }
 
-        // 4. FLAGS (EXTRA)
-        const flags = p.flags ? (typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags) : [];
-        if (Array.isArray(flags)) {
-          flags.forEach(f => {
-            const ruleCode = `FLAG_${f.toUpperCase()}`;
-            // Usa il prezzo da tariffe se esiste
-            if (tariffs[ruleCode]) {
-              // I flag vengono addebitati solo per le palette a giacenza o eventi in quel mese
-              // Se la paletta è movimentata o stoccata, paga l'extra.
-              addCost('SERVIZI EXTRA', ruleCode, tariffs[ruleCode].desc, 1);
-            }
-          });
-        }
+        // 4. FLAGS (EXTRA - 1 solo addebito per flag unico su ogni pallet_code)
+        uniqueFlags.forEach(f => {
+          const ruleCode = `FLAG_${f.toUpperCase()}`;
+          // Usa il prezzo da tariffe se esiste
+          if (tariffs[ruleCode]) {
+            // I flag vengono addebitati solo per le palette a giacenza o eventi in quel mese
+            // Se la paletta è movimentata o stoccata, paga l'extra.
+            addCost('SERVIZI EXTRA', ruleCode, tariffs[ruleCode].desc, 1);
+          }
+        });
       });
 
       // Raggruppo per risposta

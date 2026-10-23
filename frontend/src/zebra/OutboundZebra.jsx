@@ -62,7 +62,7 @@ const OutboundZebra = () => {
           } else {
             const palletQty = parseFloat(res.data.quantity);
             const reqQty = parseFloat(currentItem.quantity_required);
-            if (palletQty === reqQty) {
+            if (palletQty === reqQty || (currentItem.uom === 'Bancali' && reqQty === 1)) {
                 // Preleva tutto il bancale! Skip INPUT_QTY
                 await processPick(reqQty, barcode);
             } else {
@@ -154,7 +154,7 @@ const OutboundZebra = () => {
   const handleConfirmQty = async () => {
     const q = parseFloat(qtyInput);
     if (isNaN(q) || q !== parseFloat(currentItem.quantity_required)) {
-      setError(`Attenzione: devi prelevare esattamente ${currentItem.quantity_required} pezzi!`);
+      setError(`Attenzione: devi prelevare esattamente ${currentItem.quantity_required} ${currentItem.uom || 'pezzi'}!`);
       return;
     }
     await processPick(q);
@@ -289,7 +289,10 @@ const OutboundZebra = () => {
             </div>
           )}
           
-          <h3 className="text-2xl font-bold text-brand-white mb-2 leading-tight">{currentItem?.product_name}</h3>
+          <h3 className="text-2xl font-bold text-brand-white mb-1 leading-tight">{currentItem?.product_name}</h3>
+          {currentItem?.batch && (
+            <p className="text-amber-400 font-mono font-bold text-sm mb-3">Lotto richiesto: {currentItem.batch}</p>
+          )}
           
           <div className="flex gap-4 mb-4">
             <div className="flex-1 bg-slate-900 p-3 rounded-2xl">
@@ -298,7 +301,7 @@ const OutboundZebra = () => {
             </div>
             <div className="flex-1 bg-slate-900 p-3 rounded-2xl">
               <p className="text-xs text-slate-500 uppercase font-bold mb-1">Da Prelevare</p>
-              <p className="text-emerald-400 font-black text-2xl">{currentItem?.quantity_required} <span className="text-sm font-bold">{currentItem?.uom}</span></p>
+              <p className="text-emerald-400 font-black text-2xl">{parseFloat(currentItem?.quantity_required)} <span className="text-sm font-bold">{currentItem?.uom}</span></p>
               {(() => {
                 const qty = parseFloat(currentItem?.quantity_required);
                 const upb = currentItem?.units_per_box;
@@ -351,18 +354,19 @@ const OutboundZebra = () => {
               <p className="text-amber-500 font-bold text-xl text-center flex items-center justify-center gap-2">
                 Paletta Frammentata!
               </p>
-              <p className="text-brand-white text-center text-sm mb-4">Seleziona quale articolo stai prelevando fisicamente da questa paletta:</p>
+              <p className="text-brand-white text-center text-sm mb-4">Seleziona quale articolo e lotto stai prelevando fisicamente da questa paletta:</p>
               <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto">
                 {mixedPalletItems.map(mItem => (
                   <button 
                     key={mItem.id}
                     onClick={() => {
-                      if (mItem.product_id === currentItem.product_id) {
+                      const batchMatches = !currentItem.batch || (mItem.batch || '') === (currentItem.batch || '');
+                      if (mItem.product_id === currentItem.product_id && batchMatches) {
                         setStep('INPUT_QTY');
-                        setQtyInput(currentItem.quantity_required.toString());
+                        setQtyInput(parseFloat(currentItem.quantity_required).toString());
                         setError(null);
                       } else {
-                        setError(`Hai selezionato l'articolo sbagliato! L'ordine richiede: ${currentItem.product_name}`);
+                        setError(`Selezione errata! L'ordine richiede: ${currentItem.product_name}${currentItem.batch ? ` (Lotto: ${currentItem.batch})` : ''}`);
                       }
                     }}
                     className="bg-slate-900 border border-slate-700 p-4 rounded-2xl text-left hover:border-brand-blue transition-colors"

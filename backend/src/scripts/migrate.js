@@ -61,6 +61,10 @@ async function runMigrations() {
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN picking_operator VARCHAR(100) DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN shipped_by VARCHAR(50) DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ITEMS ADD COLUMN picked_at DATETIME DEFAULT NULL",
+      "ALTER TABLE OUTBOUND_ITEMS ADD COLUMN pallet_id INT DEFAULT NULL",
+      "ALTER TABLE OUTBOUND_ITEMS ADD COLUMN batch VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE OUTBOUND_ITEMS MODIFY COLUMN quantity_required DECIMAL(10,2) NOT NULL",
+      "ALTER TABLE OUTBOUND_ITEMS MODIFY COLUMN quantity_picked DECIMAL(10,2) DEFAULT 0",
       "ALTER TABLE PALLETS ADD COLUMN pallet_uom VARCHAR(50) DEFAULT NULL",
       "ALTER TABLE PRODUCTS MODIFY uom VARCHAR(50) NOT NULL DEFAULT 'Scatole'",
       "ALTER TABLE USERS ADD COLUMN preferences JSON DEFAULT NULL",
@@ -84,6 +88,28 @@ async function runMigrations() {
           // console.warn(`[ALTER NOTE] ${err.message}`);
         }
       }
+    }
+
+    // Allinea OUTBOUND_ITEMS esistenti senza pallet_id o batch per evitare duplicazioni su lotti multipli
+    try {
+      await connection.query(`
+        UPDATE OUTBOUND_ITEMS oi
+        SET 
+          pallet_id = COALESCE(oi.pallet_id, (
+            SELECT p.id FROM PALLETS p 
+            WHERE p.pallet_code = oi.pallet_code AND p.product_id = oi.product_id 
+              AND (oi.batch IS NULL OR p.batch = oi.batch)
+            ORDER BY p.id ASC LIMIT 1
+          )),
+          batch = COALESCE(oi.batch, (
+            SELECT p.batch FROM PALLETS p 
+            WHERE p.pallet_code = oi.pallet_code AND p.product_id = oi.product_id 
+            ORDER BY p.id ASC LIMIT 1
+          ))
+        WHERE oi.pallet_id IS NULL OR oi.batch IS NULL
+      `);
+    } catch (alignErr) {
+      console.warn('[MIGRATE OUTBOUND_ITEMS ALIGN WARNING]', alignErr.message);
     }
 
     // 3. Pulizia e sostituzione SKU generati (PROD-XXXX) con il reale Codice Articolo se presente
