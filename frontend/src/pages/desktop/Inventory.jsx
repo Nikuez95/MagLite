@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { Search, SlidersHorizontal, Filter, Download, Printer, GripVertical, Clock, Calendar, AlertTriangle, ShieldCheck, Flame, RotateCcw, Package, CheckCircle } from 'lucide-react';
+import {
+  Search, SlidersHorizontal, Filter, Download, Printer, GripVertical, Clock,
+  Calendar, AlertTriangle, ShieldCheck, Flame, RotateCcw, Package, CheckCircle,
+  Columns, ChevronDown, ChevronUp, X, Layers, ArrowUpDown
+} from 'lucide-react';
 import Select from 'react-select';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -170,8 +174,11 @@ const Inventory = () => {
   // Filters and sorting state
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCustomers, setSelectedCustomers] = useState([]);
-  const [sortBy, setSortBy] = useState('alphabetical'); // 'alphabetical', 'zone', 'arrival', 'expiration_asc', 'expiration_desc'
+  const [filterWarehouse, setFilterWarehouse] = useState('ALL'); // 'ALL' | 'Settala' | 'Caleppio'
+  const [filterLocationState, setFilterLocationState] = useState('ALL'); // 'ALL' | 'SHELF' | 'LOADING_ZONE' | 'PENDING'
+  const [sortBy, setSortBy] = useState('alphabetical'); // 'alphabetical', 'customer', 'zone', 'arrival', 'qty_desc', 'expiration_asc', 'expiration_desc'
   const [groupByBatch, setGroupByBatch] = useState(false);
+  const [showColumnManager, setShowColumnManager] = useState(false);
 
   // Filtri Scadenza & Preavviso (GG / MESI)
   const [expirationWarningValue, setExpirationWarningValue] = useState(60);
@@ -253,23 +260,41 @@ const Inventory = () => {
   const selectStyles = {
     control: (base, state) => ({
       ...base,
-      backgroundColor: '#101c25',
-      borderColor: state.isFocused ? '#a9daff' : '#233746',
+      backgroundColor: '#020617',
+      borderColor: state.isFocused ? '#38bdf8' : '#1e293b',
       borderRadius: '0.75rem',
-      padding: '0.25rem',
+      padding: '0.1rem',
+      minHeight: '38px',
       boxShadow: 'none',
-      '&:hover': { borderColor: '#a9daff' }
+      '&:hover': { borderColor: '#38bdf8' }
     }),
-    menu: base => ({ ...base, backgroundColor: '#101c25', zIndex: 50, border: '1px solid #233746' }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#192935' : 'transparent', color: '#F8FAFC', cursor: 'pointer' }),
-    multiValue: base => ({ ...base, backgroundColor: '#192935', borderRadius: '0.5rem' }),
-    multiValueLabel: base => ({ ...base, color: '#a9daff', fontWeight: 'bold' }),
-    multiValueRemove: base => ({ ...base, color: '#a9daff', ':hover': { backgroundColor: '#a9daff', color: '#101c25' } }),
-    input: base => ({ ...base, color: '#F8FAFC' }),
+    menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #1e293b' }),
+    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#F8FAFC', cursor: 'pointer', fontSize: '0.8rem' }),
+    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.4rem' }),
+    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.75rem' }),
+    multiValueRemove: base => ({ ...base, color: '#38bdf8', ':hover': { backgroundColor: '#38bdf8', color: '#020617' } }),
+    input: base => ({ ...base, color: '#F8FAFC', fontSize: '0.8rem' }),
+    placeholder: base => ({ ...base, color: '#64748b', fontSize: '0.8rem' })
   };
 
   const toggleColumn = (key) => {
     const newCols = columns.map(c => c.key === key ? { ...c, visible: !c.visible } : c);
+    setColumns(newCols);
+    savePreferences(newCols);
+  };
+
+  const applyColumnPreset = (preset) => {
+    let visibleKeys = [];
+    if (preset === 'COMPACT') {
+      visibleKeys = ['customer', 'product', 'quantity', 'location', 'batch', 'expiration'];
+    } else if (preset === 'FEFO') {
+      visibleKeys = ['code', 'customer', 'product', 'batch', 'expiration', 'quantity', 'location'];
+    } else if (preset === 'ALL') {
+      visibleKeys = columns.map(c => c.key);
+    } else {
+      visibleKeys = defaultColumns.filter(c => c.visible).map(c => c.key);
+    }
+    const newCols = columns.map(c => ({ ...c, visible: visibleKeys.includes(c.key) }));
     setColumns(newCols);
     savePreferences(newCols);
   };
@@ -289,13 +314,27 @@ const Inventory = () => {
     setDraggedColumnIndex(null);
   };
 
-  // Filtro base (ricerca, clienti, range date) prima del filtro categoria scadenza
+  // Filtro base (ricerca, clienti, magazzino, ubicazione, range date)
   const baseFilteredData = useMemo(() => {
     let data = pallets;
 
     if (selectedCustomers.length > 0) {
       const customerIds = selectedCustomers.map(c => c.value);
       data = data.filter(p => customerIds.includes(p.customer_id));
+    }
+
+    if (filterWarehouse !== 'ALL') {
+      data = data.filter(p => p.warehouse === filterWarehouse);
+    }
+
+    if (filterLocationState !== 'ALL') {
+      data = data.filter(p => {
+        const loc = String(p.location || '');
+        if (filterLocationState === 'LOADING_ZONE') return loc.startsWith('ZONA CARICO');
+        if (filterLocationState === 'PENDING') return !p.location || p.status === 'PENDING';
+        if (filterLocationState === 'SHELF') return p.location && !loc.startsWith('ZONA CARICO');
+        return true;
+      });
     }
 
     if (searchTerm.trim() !== '') {
@@ -334,7 +373,7 @@ const Inventory = () => {
     }
 
     return data;
-  }, [pallets, selectedCustomers, searchTerm, filterStartDate, filterEndDate, dateFilterMode]);
+  }, [pallets, selectedCustomers, filterWarehouse, filterLocationState, searchTerm, filterStartDate, filterEndDate, dateFilterMode]);
 
   // Statistiche KPI scadenze in tempo reale
   const expStats = useMemo(() => {
@@ -386,7 +425,6 @@ const Inventory = () => {
         } else {
           groups[key].quantity += (parseFloat(p.quantity) || 0);
           groups[key].palletCount += 1;
-          // Mantieni la scadenza più ravvicinata del lotto raggruppato
           if (p.expiration_date) {
             if (!groups[key].expiration_date || new Date(p.expiration_date) < new Date(groups[key].expiration_date)) {
               groups[key].expiration_date = p.expiration_date;
@@ -403,6 +441,12 @@ const Inventory = () => {
     data = [...data].sort((a, b) => {
       if (sortBy === 'alphabetical') {
         return (a.product_name || '').localeCompare(b.product_name || '');
+      }
+      if (sortBy === 'customer') {
+        return (a.customer_name || '').localeCompare(b.customer_name || '');
+      }
+      if (sortBy === 'qty_desc') {
+        return (parseFloat(b.quantity) || 0) - (parseFloat(a.quantity) || 0);
       }
       if (sortBy === 'zone') {
         const zoneA = a.zone || 'ZZZ';
@@ -435,11 +479,33 @@ const Inventory = () => {
     return data;
   }, [baseFilteredData, filterExpCategory, expirationWarningValue, warningUnit, sortBy, groupByBatch]);
 
-  const hasActiveFilters = searchTerm !== '' || selectedCustomers.length > 0 || filterStartDate !== '' || filterEndDate !== '' || filterExpCategory !== 'ALL';
+  // Riepilogo live dei totali della vista corrente
+  const summaryMetrics = useMemo(() => {
+    let totalUnits = 0;
+    let totalBoxes = 0;
+    const customerSet = new Set();
+    processedData.forEach(r => {
+      const q = parseFloat(r.quantity) || 0;
+      const upb = parseInt(r.units_per_box) || 1;
+      totalUnits += q;
+      if (upb > 1) totalBoxes += Math.floor(q / upb);
+      if (r.customer_id) customerSet.add(r.customer_id);
+    });
+    return {
+      rows: processedData.length,
+      totalUnits,
+      totalBoxes,
+      customersCount: customerSet.size
+    };
+  }, [processedData]);
+
+  const hasActiveFilters = searchTerm !== '' || selectedCustomers.length > 0 || filterWarehouse !== 'ALL' || filterLocationState !== 'ALL' || filterStartDate !== '' || filterEndDate !== '' || filterExpCategory !== 'ALL';
 
   const resetAllFilters = () => {
     setSearchTerm('');
     setSelectedCustomers([]);
+    setFilterWarehouse('ALL');
+    setFilterLocationState('ALL');
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterExpCategory('ALL');
@@ -628,10 +694,15 @@ const Inventory = () => {
 
     let filterText = 'Ord: ';
     if (sortBy === 'alphabetical') filterText += 'Alfabetico';
+    if (sortBy === 'customer') filterText += 'Cliente';
+    if (sortBy === 'qty_desc') filterText += 'Quantità';
     if (sortBy === 'zone') filterText += 'Zone';
     if (sortBy === 'arrival') filterText += 'Data Arrivo';
     if (sortBy === 'expiration_asc') filterText += 'Scadenza (FEFO - Più urgenti)';
     if (sortBy === 'expiration_desc') filterText += 'Scadenza (Più lontane)';
+    if (filterWarehouse !== 'ALL') {
+      filterText += ` | Magazzino: ${filterWarehouse}`;
+    }
     if (filterExpCategory !== 'ALL') {
       filterText += ` | Scadenza: ${getActiveExpFilterLabel()}`;
     }
@@ -647,7 +718,7 @@ const Inventory = () => {
       doc.text(title, textX, 18);
       
       doc.setFontSize(10);
-      doc.text(`Data: ${new Date().toLocaleDateString('it-IT')} | Elementi stampati: ${processedData.length}`, textX, 26);
+      doc.text(`Data: ${new Date().toLocaleDateString('it-IT')} | Elementi stampati: ${processedData.length} | Totale Unità: ${summaryMetrics.totalUnits.toLocaleString('it-IT')}`, textX, 26);
       doc.text(filterText, textX, 32);
 
       autoTable(doc, {
@@ -686,25 +757,42 @@ const Inventory = () => {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+      {/* Header + Export */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-5">
         <div>
-          <h2 className="text-3xl font-extrabold text-brand-white tracking-tight">Inventario Globale</h2>
-          <p className="text-slate-400 mt-1">
-            Esplora, filtra per scadenza e stampa solo ciò che ti serve ({processedData.length} {groupByBatch ? 'lotti raggruppati' : 'palette'} visibili).
+          <h2 className="text-3xl font-black text-brand-white tracking-tight flex items-center gap-3">
+            <Layers className="text-brand-blue" size={32} />
+            Inventario Globale
+          </h2>
+          <p className="text-slate-400 text-sm mt-1">
+            Esplora, filtra per scadenza o magazzino e stampa solo ciò che ti serve.
           </p>
         </div>
-        <div className="flex gap-3">
-          <button onClick={exportCSV} className="flex items-center gap-2 px-5 py-3 bg-slate-900 border border-slate-700 text-brand-white rounded-xl hover:bg-slate-800 transition-colors shadow-lg font-bold">
-            <Download size={20} className="text-brand-blue" /> CSV ({processedData.length})
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            onClick={() => setShowColumnManager(!showColumnManager)}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border font-bold text-sm transition-all ${
+              showColumnManager
+                ? 'bg-brand-blue/15 border-brand-blue text-brand-blue'
+                : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <Columns size={17} />
+            Colonne ({visibleCols.length}/{columns.length})
+            {showColumnManager ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
           </button>
-          <button onClick={exportPDF} className="flex items-center gap-2 px-5 py-3 bg-brand-blue text-brand-black rounded-xl hover:bg-sky-400 transition-colors shadow-lg font-bold">
-            <Printer size={20} /> Stampa PDF ({processedData.length})
+          <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 border border-slate-700 text-brand-white rounded-xl hover:bg-slate-800 transition-colors shadow-lg font-bold text-sm">
+            <Download size={18} className="text-brand-blue" /> CSV ({processedData.length})
+          </button>
+          <button onClick={exportPDF} className="flex items-center gap-2 px-5 py-2.5 bg-brand-blue text-brand-black rounded-xl hover:bg-sky-400 transition-colors shadow-[0_0_20px_rgba(14,165,233,0.25)] font-black text-sm">
+            <Printer size={18} /> Stampa PDF ({processedData.length})
           </button>
         </div>
       </div>
 
       {/* Cruscotto Scadenze Interattivo (5 Card KPI) */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
         <button
           type="button"
           onClick={() => setFilterExpCategory('ALL')}
@@ -830,90 +918,96 @@ const Inventory = () => {
         </button>
       </div>
 
-      {/* Pannello Controlli */}
-      <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-6 mb-8 shadow-xl space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 border-b border-slate-800 pb-6">
-          <div>
-            <label className="flex items-center gap-2 text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
-              <Search size={16} /> Ricerca Rapida
-            </label>
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
-              <input
-                type="text"
-                placeholder="Prodotto, lotto, posizione, scadenza..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="w-full bg-[#101c25] border border-[#233746] text-brand-white rounded-xl pl-10 pr-3 py-3 text-sm focus:ring-brand-blue"
-              />
-            </div>
+      {/* Pannello Controlli Compatto */}
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 mb-5 shadow-xl space-y-3">
+        
+        {/* Riga 1: Ricerca, Multi-Cliente, Magazzino, Ubicazione, Ordine, Raggruppa per Lotto */}
+        <div className="flex flex-col xl:flex-row flex-wrap items-stretch xl:items-center gap-3">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+            <input
+              type="text"
+              placeholder="Cerca prodotto, codice paletta, lotto, posizione, cliente..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl pl-10 pr-8 py-2 text-sm focus:ring-brand-blue"
+            />
+            {searchTerm && (
+              <button onClick={() => setSearchTerm('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">
+                <X size={14} />
+              </button>
+            )}
           </div>
 
-          <div>
-            <label className="flex items-center gap-2 text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
-              <Filter size={16} /> Filtra per Clienti
-            </label>
+          <div className="min-w-[220px] flex-1 max-w-sm">
             <Select 
               isMulti
               styles={selectStyles}
               options={customers}
               value={selectedCustomers}
               onChange={setSelectedCustomers}
-              placeholder="Tutti i clienti..."
+              placeholder="Filtra per uno o più clienti..."
             />
           </div>
 
-          <div>
-            <label className="flex items-center gap-2 text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
-              <SlidersHorizontal size={16} /> Ordina Per
-            </label>
+          {/* Switch Magazzino */}
+          <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
+            <button onClick={() => setFilterWarehouse('ALL')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterWarehouse === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti Mag.</button>
+            <button onClick={() => setFilterWarehouse('Settala')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterWarehouse === 'Settala' ? 'bg-brand-blue text-brand-black' : 'text-slate-500 hover:text-brand-blue'}`}>Settala</button>
+            <button onClick={() => setFilterWarehouse('Caleppio')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterWarehouse === 'Caleppio' ? 'bg-amber-500 text-brand-black' : 'text-slate-500 hover:text-amber-500'}`}>Caleppio</button>
+          </div>
+
+          {/* Switch Stato Ubicazione */}
+          <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
+            <button onClick={() => setFilterLocationState('ALL')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutte Pos.</button>
+            <button onClick={() => setFilterLocationState('SHELF')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'SHELF' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>Scaffale</button>
+            <button onClick={() => setFilterLocationState('LOADING_ZONE')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'LOADING_ZONE' ? 'bg-amber-500/20 text-amber-400' : 'text-slate-500 hover:text-amber-400'}`}>Zona Carico</button>
+            <button onClick={() => setFilterLocationState('PENDING')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'PENDING' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
+          </div>
+
+          <div className="flex items-center gap-2">
             <select 
               value={sortBy} 
               onChange={e => setSortBy(e.target.value)} 
-              className="w-full bg-[#101c25] border border-[#233746] text-brand-white rounded-xl p-3 focus:ring-brand-blue text-sm font-semibold"
+              className="bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 focus:ring-brand-blue text-xs font-bold"
             >
-              <option value="alphabetical">Ordine Alfabetico (Prodotto)</option>
-              <option value="zone">Ordine per Zone (Magazzino)</option>
-              <option value="arrival">Ordine di Arrivo (Data)</option>
-              <option value="expiration_asc">Scadenza ↑ (FEFO - Più urgenti prima)</option>
-              <option value="expiration_desc">Scadenza ↓ (Più lontane prima)</option>
+              <option value="alphabetical">Ordina: Prodotto (A-Z)</option>
+              <option value="customer">Ordina: Cliente (A-Z)</option>
+              <option value="zone">Ordina: Zona / Posizione</option>
+              <option value="qty_desc">Ordina: Quantità (↓)</option>
+              <option value="arrival">Ordina: Data Arrivo</option>
+              <option value="expiration_asc">Ordina: Scadenza ↑ (FEFO)</option>
+              <option value="expiration_desc">Ordina: Scadenza ↓</option>
             </select>
-          </div>
 
-          <div>
-            <label className="flex items-center justify-between text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider">
-              <span>Vista Inventario</span>
-              {hasActiveFilters && (
-                <button
-                  type="button"
-                  onClick={resetAllFilters}
-                  className="text-brand-blue hover:underline flex items-center gap-1 text-[11px]"
-                >
-                  <RotateCcw size={12} /> Reset Filtri
-                </button>
-              )}
+            <label className="flex items-center gap-2 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer select-none hover:border-brand-blue transition-colors">
+              <input type="checkbox" className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-brand-blue focus:ring-0" checked={groupByBatch} onChange={() => setGroupByBatch(!groupByBatch)} />
+              <span className="text-xs font-bold text-brand-white whitespace-nowrap">
+                Raggruppa per Lotto
+              </span>
             </label>
-            <div className="flex items-center gap-3 h-[44px]">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" className="sr-only peer" checked={groupByBatch} onChange={() => setGroupByBatch(!groupByBatch)} />
-                <div className="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-brand-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-blue"></div>
-                <span className="ml-3 text-sm font-bold text-brand-white">
-                  {groupByBatch ? 'Totali per Lotto' : 'Spaccato per Posizioni'}
-                </span>
-              </label>
-            </div>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="flex items-center gap-1 px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors"
+              >
+                <RotateCcw size={13} /> Reset
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Barra Controllo Scadenze (Range Date + Switch GG/MESI + Spunta Filtra solo in avviso) */}
-        <div className="flex flex-col lg:flex-row flex-wrap items-start lg:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+        {/* Riga 2: Barra Controllo Scadenze (Range Date + Switch GG/MESI + Spunta Filtra solo in avviso) */}
+        <div className="pt-3 border-t border-slate-800/80 flex flex-col lg:flex-row flex-wrap items-start lg:items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
             <Calendar size={15} className="text-brand-blue" />
-            <div className="flex bg-[#101c25] rounded-lg border border-[#233746] p-0.5">
+            <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-0.5">
               <button
                 type="button"
                 onClick={() => setDateFilterMode('EXPIRATION')}
-                className={`px-2.5 py-1.5 rounded-md transition-colors font-bold ${
+                className={`px-2.5 py-1 rounded-md transition-colors font-bold ${
                   dateFilterMode === 'EXPIRATION' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'
                 }`}
               >
@@ -922,7 +1016,7 @@ const Inventory = () => {
               <button
                 type="button"
                 onClick={() => setDateFilterMode('ARRIVAL')}
-                className={`px-2.5 py-1.5 rounded-md transition-colors font-bold ${
+                className={`px-2.5 py-1 rounded-md transition-colors font-bold ${
                   dateFilterMode === 'ARRIVAL' ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'
                 }`}
               >
@@ -936,7 +1030,7 @@ const Inventory = () => {
                 type="date"
                 value={filterStartDate}
                 onChange={e => setFilterStartDate(e.target.value)}
-                className="w-[130px] bg-[#101c25] border border-[#233746] text-brand-white rounded-lg px-2 py-1.5 focus:ring-brand-blue [color-scheme:dark]"
+                className="w-[125px] bg-slate-950 border border-slate-800 text-brand-white rounded-lg px-2 py-1 focus:ring-brand-blue [color-scheme:dark]"
               />
             </div>
             <div className="flex items-center gap-1.5">
@@ -945,14 +1039,14 @@ const Inventory = () => {
                 type="date"
                 value={filterEndDate}
                 onChange={e => setFilterEndDate(e.target.value)}
-                className="w-[130px] bg-[#101c25] border border-[#233746] text-brand-white rounded-lg px-2 py-1.5 focus:ring-brand-blue [color-scheme:dark]"
+                className="w-[125px] bg-slate-950 border border-slate-800 text-brand-white rounded-lg px-2 py-1 focus:ring-brand-blue [color-scheme:dark]"
               />
             </div>
             {(filterStartDate || filterEndDate) && (
               <button
                 type="button"
                 onClick={() => { setFilterStartDate(''); setFilterEndDate(''); }}
-                className="text-rose-400 hover:text-rose-300 font-bold px-2 py-1 rounded bg-rose-500/10 border border-rose-500/20"
+                className="text-rose-400 hover:text-rose-300 font-bold px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20"
               >
                 ✕ Pulisci date
               </button>
@@ -960,7 +1054,7 @@ const Inventory = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-xs font-medium">
-            <div className="flex items-center gap-2 bg-[#101c25] border border-[#233746] rounded-xl px-3 py-1.5">
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5">
               <Clock size={15} className="text-amber-500 shrink-0" />
               <span className="text-slate-300 font-bold">Preavviso Scadenza:</span>
               <input
@@ -1028,7 +1122,7 @@ const Inventory = () => {
               className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer select-none transition-all font-bold ${
                 filterExpCategory === 'WARNING' || filterExpCategory === 'WARNING_AND_EXPIRED'
                   ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.15)]'
-                  : 'bg-[#101c25] border-[#233746] text-slate-400 hover:border-amber-500/50 hover:text-slate-200'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-amber-500/50 hover:text-slate-200'
               }`}
             >
               <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
@@ -1050,7 +1144,7 @@ const Inventory = () => {
                 className={`px-2.5 py-2 rounded-xl border text-xs font-bold transition-all ${
                   filterExpCategory === 'WARNING_AND_EXPIRED'
                     ? 'bg-rose-500/20 border-rose-500 text-rose-300'
-                    : 'bg-[#101c25] border-[#233746] text-slate-400 hover:text-rose-400'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-rose-400'
                 }`}
               >
                 {filterExpCategory === 'WARNING_AND_EXPIRED' ? '✓ Scaduti inclusi' : `+ Includi Scaduti (${expStats.EXPIRED.count})`}
@@ -1059,25 +1153,67 @@ const Inventory = () => {
           </div>
         </div>
 
-        <div>
-          <label className="block text-slate-400 font-bold mb-4 text-xs uppercase tracking-wider">Trascina per Riordinare o Clicca per Attivare/Disattivare le Colonne (anche in Stampa PDF/CSV)</label>
-          <div className="flex flex-wrap gap-3">
-            {columns.map((col, idx) => (
-              <div 
-                key={col.key}
-                draggable
-                onDragStart={() => handleDragStart(idx)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => handleDrop(idx)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-colors border cursor-grab active:cursor-grabbing ${col.visible ? 'bg-brand-blue/20 text-brand-blue border-brand-blue' : 'bg-[#101c25] text-slate-500 border-[#233746] hover:bg-slate-800'}`}
-              >
-                <GripVertical size={14} className={col.visible ? 'text-brand-blue/50' : 'text-slate-600'} />
-                <button onClick={() => toggleColumn(col.key)} className="focus:outline-none">
-                  {col.label}
-                </button>
+        {/* Cassetto Collassabile Gestione Colonne */}
+        {showColumnManager && (
+          <div className="pt-3 border-t border-slate-800 animate-fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <span className="text-slate-400 font-bold text-xs uppercase tracking-wider">
+                Trascina per Riordinare o Clicca per Attivare/Disattivare le Colonne (anche in Stampa PDF/CSV)
+              </span>
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-500">Preset:</span>
+                <button type="button" onClick={() => applyColumnPreset('DEFAULT')} className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg font-bold">Standard</button>
+                <button type="button" onClick={() => applyColumnPreset('COMPACT')} className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-brand-blue border border-slate-800 rounded-lg font-bold">Compatta Stampa</button>
+                <button type="button" onClick={() => applyColumnPreset('FEFO')} className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-amber-400 border border-slate-800 rounded-lg font-bold">Focus Scadenze</button>
+                <button type="button" onClick={() => applyColumnPreset('ALL')} className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 rounded-lg font-bold">Tutte (12)</button>
               </div>
-            ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {columns.map((col, idx) => (
+                <div 
+                  key={col.key}
+                  draggable
+                  onDragStart={() => handleDragStart(idx)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => handleDrop(idx)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors border cursor-grab active:cursor-grabbing ${col.visible ? 'bg-brand-blue/20 text-brand-blue border-brand-blue' : 'bg-slate-950 text-slate-500 border-slate-800 hover:bg-slate-800'}`}
+                >
+                  <GripVertical size={13} className={col.visible ? 'text-brand-blue/60' : 'text-slate-600'} />
+                  <button onClick={() => toggleColumn(col.key)} className="focus:outline-none">
+                    {col.label}
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
+        )}
+      </div>
+
+      {/* Barra Riepilogo Totali Live */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 mb-3 bg-slate-900/80 border border-slate-800 rounded-2xl text-xs">
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="text-slate-400">
+            Elementi visibili: <strong className="text-brand-white font-black">{summaryMetrics.rows}</strong> {groupByBatch ? 'lotti raggruppati' : 'palette'}
+          </span>
+          <span className="text-slate-700">•</span>
+          <span className="text-slate-400">
+            Totale Unità: <strong className="text-brand-blue font-black">{summaryMetrics.totalUnits.toLocaleString('it-IT')}</strong>
+          </span>
+          {summaryMetrics.totalBoxes > 0 && (
+            <>
+              <span className="text-slate-700">•</span>
+              <span className="text-slate-400">
+                Scatole stimate: <strong className="text-emerald-400 font-black">{summaryMetrics.totalBoxes.toLocaleString('it-IT')}</strong>
+              </span>
+            </>
+          )}
+          <span className="text-slate-700">•</span>
+          <span className="text-slate-400">
+            Clienti: <strong className="text-slate-200 font-bold">{summaryMetrics.customersCount}</strong>
+          </span>
+        </div>
+        <div className="text-slate-500 italic hidden md:block">
+          Clicca sulle intestazioni di colonna per ordinare rapidamente
         </div>
       </div>
 
@@ -1087,29 +1223,42 @@ const Inventory = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-950 border-b border-slate-800">
-                {visibleCols.map(col => (
-                  <th
-                    key={col.key}
-                    onClick={() => {
-                      if (col.key === 'expiration') {
-                        setSortBy(sortBy === 'expiration_asc' ? 'expiration_desc' : 'expiration_asc');
-                      }
-                    }}
-                    className={`p-4 text-xs font-bold text-slate-400 uppercase tracking-wider ${
-                      col.key === 'quantity' ? 'text-right' : col.key === 'location' ? 'text-center' : ''
-                    } ${col.key === 'expiration' ? 'cursor-pointer hover:text-brand-blue select-none' : ''}`}
-                  >
-                    {col.label}
-                    {col.key === 'expiration' && sortBy === 'expiration_asc' && ' ↑'}
-                    {col.key === 'expiration' && sortBy === 'expiration_desc' && ' ↓'}
-                  </th>
-                ))}
+                {visibleCols.map(col => {
+                  const isSortable = ['expiration', 'product', 'customer', 'location', 'arrival', 'quantity'].includes(col.key);
+                  return (
+                    <th
+                      key={col.key}
+                      onClick={() => {
+                        if (col.key === 'expiration') setSortBy(sortBy === 'expiration_asc' ? 'expiration_desc' : 'expiration_asc');
+                        else if (col.key === 'product') setSortBy('alphabetical');
+                        else if (col.key === 'customer') setSortBy('customer');
+                        else if (col.key === 'location') setSortBy('zone');
+                        else if (col.key === 'arrival') setSortBy('arrival');
+                        else if (col.key === 'quantity') setSortBy('qty_desc');
+                      }}
+                      className={`p-3.5 text-xs font-bold text-slate-400 uppercase tracking-wider ${
+                        col.key === 'quantity' ? 'text-right' : col.key === 'location' ? 'text-center' : ''
+                      } ${isSortable ? 'cursor-pointer hover:text-brand-blue select-none transition-colors' : ''}`}
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        {col.label}
+                        {col.key === 'expiration' && sortBy === 'expiration_asc' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'expiration' && sortBy === 'expiration_desc' && <span className="text-brand-blue">↓</span>}
+                        {col.key === 'product' && sortBy === 'alphabetical' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'customer' && sortBy === 'customer' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'location' && sortBy === 'zone' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'arrival' && sortBy === 'arrival' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'quantity' && sortBy === 'qty_desc' && <span className="text-brand-blue">↓</span>}
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
               {processedData.length === 0 ? (
                 <tr>
-                  <td colSpan={visibleCols.length} className="p-8 text-center text-slate-500 font-medium">Nessuna paletta trovata con i filtri selezionati.</td>
+                  <td colSpan={visibleCols.length} className="p-10 text-center text-slate-500 font-medium">Nessuna paletta trovata con i filtri selezionati.</td>
                 </tr>
               ) : (
                 processedData.map((row, i) => {
@@ -1126,11 +1275,11 @@ const Inventory = () => {
                           ? 'bg-amber-950/10 hover:bg-amber-950/20'
                           : i % 2 === 0
                           ? 'bg-transparent hover:bg-slate-800/50'
-                          : 'bg-[#101c25]/30 hover:bg-slate-800/50'
+                          : 'bg-slate-950/30 hover:bg-slate-800/50'
                       }`}
                     >
                       {visibleCols.map(col => (
-                        <td key={col.key} className="p-4">
+                        <td key={col.key} className="p-3.5">
                           {renderCellHtml(row, col.key)}
                         </td>
                       ))}

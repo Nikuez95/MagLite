@@ -303,6 +303,8 @@ async function outboundRoutes(fastify, options) {
     try {
       const [orders] = await db.query(`
         SELECT o.*, c.business_name as customer_name,
+               (SELECT COUNT(*) FROM OUTBOUND_ITEMS oi WHERE oi.order_id = o.id) as total_items,
+               (SELECT COUNT(*) FROM OUTBOUND_ITEMS oi WHERE oi.order_id = o.id AND oi.status = 'PICKED') as picked_items,
                (SELECT GROUP_CONCAT(DISTINCT COALESCE(oi.batch, pal.batch) SEPARATOR ', ')
                 FROM OUTBOUND_ITEMS oi
                 LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
@@ -749,7 +751,17 @@ async function outboundRoutes(fastify, options) {
 
       // Imposta in PICKING se era PENDING
       if (order.status === 'PENDING') {
-        await db.query('UPDATE OUTBOUND_ORDERS SET status = "PICKING" WHERE id = ?', [order.id]);
+        const operator = request.user?.username || 'ZEBRA';
+        await db.query(
+          'UPDATE OUTBOUND_ORDERS SET status = "PICKING", picking_operator = COALESCE(picking_operator, ?) WHERE id = ?',
+          [operator, order.id]
+        );
+        order.status = 'PICKING';
+        order.picking_operator = order.picking_operator || operator;
+        if (fastify.io) {
+          fastify.io.emit('outbound_updated');
+          fastify.io.emit('dashboard_update');
+        }
       }
 
       return { order, items };
@@ -812,6 +824,8 @@ async function outboundRoutes(fastify, options) {
       const orderCode = order[0]?.order_code || `ID-${order_id}`;
       if (order.length > 0 && !order[0].start_picking_at) {
         await db.query('UPDATE OUTBOUND_ORDERS SET start_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [operator, order_id]);
+      } else {
+        await db.query('UPDATE OUTBOUND_ORDERS SET picking_operator = COALESCE(picking_operator, ?) WHERE id = ?', [operator, order_id]);
       }
 
       // Se la paletta (o la specifica riga paletta) va a 0 scorta residua a scaffale dopo il prelievo,
@@ -873,7 +887,10 @@ async function outboundRoutes(fastify, options) {
         await db.query('UPDATE OUTBOUND_ORDERS SET status = "READY", end_picking_at = CURRENT_TIMESTAMP WHERE id = ?', [order_id]);
       }
 
-      if (fastify.io) fastify.io.emit('dashboard_update');
+      if (fastify.io) {
+        fastify.io.emit('outbound_updated');
+        fastify.io.emit('dashboard_update');
+      }
 
       return { success: true, all_picked: allPicked };
     } catch (err) {
