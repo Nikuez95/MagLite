@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search } from 'lucide-react';
+import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard } from 'lucide-react';
+import useBarcodeScanner from '../hooks/useBarcodeScanner';
 
 const Stow = () => {
   const [pallet, setPallet] = useState(null);
@@ -18,6 +19,8 @@ const Stow = () => {
 
   const [zoneSearch, setZoneSearch] = useState('');
   const [manualScanInput, setManualScanInput] = useState('');
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const scanDebounceRef = useRef(null);
   
   const [requirePins, setRequirePins] = useState(true);
 
@@ -79,12 +82,19 @@ const Stow = () => {
     }
   };
 
-  const inputRef = React.useRef(null);
+  const inputRef = useRef(null);
   useEffect(() => {
+    setKeyboardOpen(false);
     if (status === 'WAITING_PALLET' && inputRef.current) {
-      inputRef.current.focus();
+      setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 50);
     }
   }, [status]);
+
+  useBarcodeScanner((barcode) => {
+    if (status === 'WAITING_PALLET' || status === 'SUCCESS' || status === 'ERROR') {
+      handleScan(barcode);
+    }
+  });
 
   const handleNumpad = async (num) => {
     if (pinInput.length < 3) {
@@ -207,54 +217,101 @@ const Stow = () => {
       
       {status === 'WAITING_PALLET' && (
         <div className="animate-fade-in-up w-full flex flex-col items-center">
-          <div className="relative mb-8 flex justify-center w-full">
-            <Scan size={96} className="text-brand-blue opacity-80" />
+          <div className="relative mb-6 flex justify-center w-full">
+            <Scan size={84} className="text-brand-blue opacity-80" />
             <div className="absolute inset-0 bg-brand-blue opacity-20 blur-2xl rounded-full animate-pulse"></div>
           </div>
-          <h2 className="text-4xl font-extrabold text-brand-white mb-4 uppercase">Stivaggio</h2>
-          <p className="text-slate-400 mb-6 max-w-[280px] text-lg leading-relaxed mx-auto">
+          <h2 className="text-3xl font-extrabold text-brand-white mb-2 uppercase">Stivaggio</h2>
+          <p className="text-slate-400 mb-6 max-w-[280px] text-base leading-relaxed mx-auto">
             Spara il codice a barre della <b>Paletta</b> che stai trasportando.
           </p>
           
-          <div className="flex gap-2 w-full max-w-xs">
-            <input 
-              ref={inputRef}
-              type="text"
-              placeholder="Scrivi o Scansiona..."
-              className="bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-lg font-bold uppercase focus:border-brand-blue focus:ring-0 text-brand-white w-full"
-              value={manualScanInput}
-              onBlur={(e) => { if(status === 'WAITING_PALLET') setTimeout(() => e.target.focus(), 500); }}
-              onChange={(e) => setManualScanInput(e.target.value.toUpperCase())}
-              onKeyDown={(e) => {
-                 if(e.key === 'Enter' && manualScanInput.trim() !== '') {
-                    handleScan(manualScanInput);
+          <div className="w-full max-w-xs bg-slate-900 border-2 border-slate-800 rounded-3xl p-3.5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold uppercase text-brand-blue">Laser Pronto</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !keyboardOpen;
+                  setKeyboardOpen(next);
+                  setTimeout(() => next && inputRef.current?.focus(), 40);
+                }}
+                className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 ${
+                  keyboardOpen ? 'bg-brand-blue text-brand-black' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                }`}
+              >
+                <Keyboard size={14} />
+                {keyboardOpen ? 'Chiudi Tastiera' : 'Tastiera'}
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input 
+                ref={inputRef}
+                type="text"
+                inputMode={keyboardOpen ? 'text' : 'none'}
+                placeholder={keyboardOpen ? "Scrivi PAL-..." : "Attendo scansione..."}
+                className="bg-slate-950 border-2 border-slate-700 p-3.5 rounded-xl text-base font-mono font-bold uppercase focus:border-brand-blue focus:outline-none text-brand-white w-full"
+                value={manualScanInput}
+                onBlur={() => setKeyboardOpen(false)}
+                onChange={(e) => {
+                  const val = e.target.value.toUpperCase();
+                  setManualScanInput(val);
+                  if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
+                  const trimmed = val.trim();
+                  if (!keyboardOpen && trimmed.startsWith('PAL-') && trimmed.length >= 12) {
+                    scanDebounceRef.current = setTimeout(() => {
+                      setManualScanInput('');
+                      handleScan(trimmed);
+                    }, 220);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && manualScanInput.trim() !== '') {
+                    if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
+                    const toScan = manualScanInput.trim();
                     setManualScanInput('');
-                 }
-              }}
-            />
-            <button 
-              onClick={() => {
-                if(manualScanInput.trim() !== '') {
-                  handleScan(manualScanInput);
-                  setManualScanInput('');
-                }
-              }}
-              className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold px-4 rounded-xl transition-colors shrink-0"
-            >
-              Vai
-            </button>
+                    handleScan(toScan);
+                  }
+                }}
+              />
+              <button 
+                onClick={() => {
+                  if (manualScanInput.trim() !== '') {
+                    if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
+                    const toScan = manualScanInput.trim();
+                    setManualScanInput('');
+                    handleScan(toScan);
+                  }
+                }}
+                className="bg-brand-blue hover:bg-sky-400 text-brand-black font-bold px-4 rounded-xl transition-colors shrink-0"
+              >
+                Vai
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {status === 'SELECT_ZONE' && pallet && (
         <div className="w-full max-w-sm animate-fade-in-up text-left flex flex-col h-full py-4">
-          <div className="bg-slate-900 border-2 border-brand-blue rounded-3xl p-5 mb-4 shadow-[0_0_30px_rgba(14,165,233,0.3)]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-mono text-brand-blue font-bold text-sm bg-brand-blue/10 px-2 py-1 rounded">{pallet.pallet_code}</span>
-              <span className="text-brand-white font-bold text-sm">{pallet.quantity}</span>
+          <div className="bg-slate-900 border-2 border-brand-blue rounded-3xl p-4 mb-4 shadow-[0_0_30px_rgba(14,165,233,0.2)]">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-mono text-brand-blue font-bold text-xs bg-brand-blue/10 px-2 py-1 rounded">{pallet.pallet_code}</span>
+              <span className="text-emerald-400 font-black text-base">
+                {(() => {
+                  const q = parseFloat(pallet.quantity) || 0;
+                  const upb = parseInt(pallet.units_per_box, 10) || 1;
+                  if (upb > 1 && q >= upb) {
+                    const b = Math.floor(q / upb);
+                    const rem = q % upb;
+                    return `${b} SCAT.${rem > 0 ? ` + ${rem}` : ''} (${q} pz)`;
+                  }
+                  return `${q || '-'} ${pallet.uom || ''}`;
+                })()}
+              </span>
             </div>
-            <h3 className="text-xl font-bold text-brand-white text-left truncate">{pallet.product_name}</h3>
+            <h3 className="text-lg font-bold text-brand-white text-left truncate">{pallet.product_name}</h3>
+            {pallet.batch && <p className="text-xs font-mono text-amber-400 mt-0.5">Lotto: {pallet.batch}</p>}
           </div>
           
           <h3 className="text-2xl font-black text-brand-white mb-2">In quale ZONA?</h3>
@@ -263,7 +320,7 @@ const Stow = () => {
             <input 
               type="text"
               placeholder={requirePins ? "Cerca zona..." : "O scrivi posizione per intero..."}
-              className="w-full bg-slate-900 border-2 border-slate-700 p-4 rounded-xl text-lg font-bold uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
+              className="w-full bg-slate-900 border-2 border-slate-700 p-3.5 rounded-xl text-base font-bold uppercase focus:border-brand-blue focus:ring-0 text-brand-white"
               value={zoneSearch}
               onChange={(e) => setZoneSearch(e.target.value.toUpperCase())}
               onKeyDown={(e) => {
@@ -273,7 +330,6 @@ const Stow = () => {
                     }
                  }
               }}
-              autoFocus
             />
             {!requirePins && (
               <button 

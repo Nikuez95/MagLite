@@ -5,50 +5,139 @@ const bwipjs = require('bwip-js');
 async function getRoutingSettings(connection) {
   const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
   let zonePriority = [];
-  let posPriority = [];
+  let posPriority = ['01,02,03', '11,12,13', '21,22,23'];
   rows.forEach(r => {
-    if (r.setting_key === 'zone_routing_priority') zonePriority = JSON.parse(r.setting_value);
-    if (r.setting_key === 'position_routing_priority') posPriority = JSON.parse(r.setting_value);
+    try {
+      if (r.setting_key === 'zone_routing_priority' && r.setting_value) {
+        const parsed = JSON.parse(r.setting_value);
+        if (Array.isArray(parsed)) zonePriority = parsed;
+      }
+      if (r.setting_key === 'position_routing_priority' && r.setting_value) {
+        const parsed = JSON.parse(r.setting_value);
+        if (Array.isArray(parsed) && parsed.length > 0) posPriority = parsed;
+      }
+    } catch (e) {
+      // ignore malformed JSON
+    }
   });
   return { zonePriority, posPriority };
 }
 
-function sortPalletsByRouting(pallets, zonePriority, posPriority) {
-  const getZoneIndex = (z) => {
-    if (!z || z === 'null') return 999;
-    const idx = zonePriority.indexOf(z);
-    return idx >= 0 ? idx : 999;
-  };
-  
-  const getPosIndex = (pos) => {
-    if (!pos) return 999;
-    for (let i = 0; i < posPriority.length; i++) {
-        const p = posPriority[i];
-        if (p.split(',').map(s=>s.trim()).includes(pos)) return i;
-    }
-    return 999;
-  };
+function extractLocationCoords(item) {
+  let zone = (item.zone && item.zone !== 'null') ? String(item.zone).trim().toUpperCase() : '';
+  let col = (item.col && item.col !== 'null') ? String(item.col).trim().toUpperCase() : '';
+  let pos = (item.pos && item.pos !== 'null') ? String(item.pos).trim().toUpperCase() : '';
+  const rawLoc = (item.location && item.location !== 'null') ? String(item.location).trim().toUpperCase() : '';
 
+  if (!zone && rawLoc) {
+    const parts = rawLoc.split('-').map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 3) {
+      zone = parts[0];
+      col = parts[1];
+      pos = parts.slice(2).join('-');
+    } else {
+      zone = rawLoc;
+    }
+  }
+  return { zone, col, pos, rawLoc };
+}
+
+function getZoneSortRank(zone, zonePriority) {
+  if (!zone) return 9999;
+  const normZone = zone.trim().toUpperCase();
+  const normPriority = (zonePriority || []).map(z => String(z).trim().toUpperCase());
+  const idx = normPriority.indexOf(normZone);
+  return idx >= 0 ? idx : 999;
+}
+
+function getPosSortRank(pos, posPriority) {
+  if (!pos) return { groupIdx: 999, subIdx: 999 };
+  const normPos = String(pos).trim().toUpperCase();
+  const patterns = Array.isArray(posPriority) ? posPriority : [];
+
+  // 1. Ricerca esatta nel pattern configurato (es. "01,02,03")
+  for (let i = 0; i < patterns.length; i++) {
+    const tokens = String(patterns[i]).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const subIdx = tokens.indexOf(normPos);
+    if (subIdx >= 0) {
+      return { groupIdx: i, subIdx };
+    }
+  }
+
+  // 2. Fallback intelligente per stesso piano (es. pos "04" quando il gruppo 0 ha "01,02,03" -> piano "0")
+  if (normPos.length >= 2 && /^\d+$/.test(normPos)) {
+    const floorPrefix = normPos[0];
+    for (let i = 0; i < patterns.length; i++) {
+      const tokens = String(patterns[i]).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+      if (tokens.length > 0 && tokens.every(t => t.length >= 2 && t[0] === floorPrefix)) {
+        return { groupIdx: i, subIdx: 100 + parseInt(normPos, 10) };
+      }
+    }
+  }
+
+  return { groupIdx: 999, subIdx: 999 };
+}
+
+// Confronto puro per percorso fisico in magazzino (Regole di Prelievo senza avanti-e-indietro)
+function compareByWarehousePath(a, b, zonePriority, posPriority) {
+  const coordsA = extractLocationCoords(a);
+  const coordsB = extractLocationCoords(b);
+
+  // 1. Priorità Zona (ordine impostato in Regole di Prelievo)
+  const zA = getZoneSortRank(coordsA.zone, zonePriority);
+  const zB = getZoneSortRank(coordsB.zone, zonePriority);
+  if (zA !== zB) return zA - zB;
+
+  // Se entrambe le zone non sono nella lista priorità, raggruppa per nome zona
+  if (coordsA.zone !== coordsB.zone) {
+    return coordsA.zone.localeCompare(coordsB.zone, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  // 2. Stessa Zona -> Ordina per Corsia / Scaffale (col: A, B, C... o 01, 02...) per non fare avanti e indietro tra scaffali
+  if (coordsA.col !== coordsB.col) {
+    if (!coordsA.col) return 1;
+    if (!coordsB.col) return -1;
+    return coordsA.col.localeCompare(coordsB.col, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  // 3. Stesso Scaffale -> Priorità Piano / Posizione (es. prima piano terra 01,02,03 in ordine, poi 11,12,13...)
+  const pA = getPosSortRank(coordsA.pos, posPriority);
+  const pB = getPosSortRank(coordsB.pos, posPriority);
+  if (pA.groupIdx !== pB.groupIdx) return pA.groupIdx - pB.groupIdx;
+  if (pA.subIdx !== pB.subIdx) return pA.subIdx - pB.subIdx;
+
+  if (coordsA.pos !== coordsB.pos) {
+    return coordsA.pos.localeCompare(coordsB.pos, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  // 4. Stessa Posizione -> tieni vicine le stesse locazioni e stesse palette
+  if (coordsA.rawLoc !== coordsB.rawLoc) {
+    return coordsA.rawLoc.localeCompare(coordsB.rawLoc, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  const palA = String(a.pallet_code || '');
+  const palB = String(b.pallet_code || '');
+  if (palA !== palB) {
+    return palA.localeCompare(palB, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  return (a.id || 0) - (b.id || 0);
+}
+
+// Ordinamento per allocazione merce (stesso prodotto: FEFO scadenza -> Regole di Prelievo)
+function sortPalletsByRouting(pallets, zonePriority, posPriority) {
   return pallets.sort((a, b) => {
-    // 1. Expiration (FIFO)
     const expA = a.expiration_date ? new Date(a.expiration_date).getTime() : 9999999999999;
     const expB = b.expiration_date ? new Date(b.expiration_date).getTime() : 9999999999999;
     if (expA !== expB) return expA - expB;
-    
-    // 2. Zone Priority
-    const trueZoneA = (a.zone && a.zone !== 'null') ? a.zone : a.location;
-    const trueZoneB = (b.zone && b.zone !== 'null') ? b.zone : b.location;
-    const zA = getZoneIndex(trueZoneA);
-    const zB = getZoneIndex(trueZoneB);
-    if (zA !== zB) return zA - zB;
-    
-    // 3. Pos Priority
-    const pA = getPosIndex(a.pos);
-    const pB = getPosIndex(b.pos);
-    if (pA !== pB) return pA - pB;
-    
-    return 0;
+
+    return compareByWarehousePath(a, b, zonePriority, posPriority);
   });
+}
+
+// Ordinamento percorso di prelievo per Zebra e Picking List PDF (rispetta Regole di Prelievo senza avanti e indietro)
+function sortPickingTour(items, zonePriority, posPriority) {
+  return items.sort((a, b) => compareByWarehousePath(a, b, zonePriority, posPriority));
 }
 
 async function allocateOutboundItems(items, connection, excludeOrderId = null) {
@@ -177,7 +266,11 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
         product_id: req.product_id,
         batch: pal.batch || null,
         quantity_required: take,
-        requested_uom: normalizedUom
+        requested_uom: normalizedUom,
+        location: pal.location || null,
+        zone: pal.zone || null,
+        col: pal.col || null,
+        pos: pal.pos || null
       });
 
       let usedBaseForTake = take;
@@ -198,6 +291,7 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
     
     allocatedPallets.push(...allocatedForThisReq);
   }
+  sortPickingTour(allocatedPallets, zonePriority, posPriority);
   return allocatedPallets;
 }
 
@@ -454,7 +548,7 @@ async function outboundRoutes(fastify, options) {
       const connection = await db.getConnection();
       try {
         const { zonePriority, posPriority } = await getRoutingSettings(connection);
-        sortPalletsByRouting(items, zonePriority, posPriority);
+        sortPickingTour(items, zonePriority, posPriority);
       } finally {
         connection.release();
       }
@@ -586,7 +680,9 @@ async function outboundRoutes(fastify, options) {
            let breakDown = [];
            if (scatole > 0) breakDown.push(`${scatole} SCAT.`);
            if (sfusi > 0) breakDown.push(`${sfusi} SFUSI`);
-           if (breakDown.length > 0) qtyText = breakDown.join(' + ');
+           if (breakDown.length > 0) qtyText = `${breakDown.join(' + ')} (${parseFloat(item.quantity_required)} pz)`;
+        } else if (item.units_per_box > 1 && (item.uom === 'Scatole' || item.uom === 'Cartoni')) {
+           qtyText = `${parseFloat(item.quantity_required)} SCAT. (${parseFloat(item.quantity_required) * item.units_per_box} pz)`;
         }
 
         doc.fillColor('#192935').font('Helvetica-Bold').fontSize(9).text(qtyText, 485, y, { width: 70 });
@@ -607,7 +703,12 @@ async function outboundRoutes(fastify, options) {
   fastify.get('/zebra/:code', async (request, reply) => {
     const { code } = request.params;
     try {
-      const [orders] = await db.query('SELECT * FROM OUTBOUND_ORDERS WHERE order_code = ?', [code]);
+      const [orders] = await db.query(`
+        SELECT o.*, c.business_name as customer_name
+        FROM OUTBOUND_ORDERS o
+        LEFT JOIN CUSTOMERS c ON o.customer_id = c.id
+        WHERE o.order_code = ?
+      `, [code]);
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       const order = orders[0];
 
@@ -616,7 +717,14 @@ async function outboundRoutes(fastify, options) {
       }
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom, pal.location, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin as loc_pin
+        SELECT i.*, p.name as product_name, p.sku, p.uom as base_uom,
+               COALESCE(pal.client_article_number, p.sku) as article_code,
+               COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
+               COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
+               COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
+               pal.location, pal.quantity as pallet_quantity,
+               COALESCE(i.batch, pal.batch) as batch, pal.expiration_date,
+               loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -634,7 +742,7 @@ async function outboundRoutes(fastify, options) {
       const connection = await db.getConnection();
       try {
         const { zonePriority, posPriority } = await getRoutingSettings(connection);
-        sortPalletsByRouting(items, zonePriority, posPriority);
+        sortPickingTour(items, zonePriority, posPriority);
       } finally {
         connection.release();
       }

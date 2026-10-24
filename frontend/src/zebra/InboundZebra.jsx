@@ -363,15 +363,21 @@ const InboundZebra = () => {
           {error && <div className="bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl text-rose-400 text-center font-bold mb-6 w-full">{error}</div>}
 
           <div className="text-center mb-6">
-            <p className="text-slate-400 font-bold mb-1">
-              Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp} {selectedItem.product_uom}
-              {isPieces && hasUnitsPerBox && (
-                <span className="block text-xs text-amber-400 font-mono mt-1">
-                  (ca. {Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox) : (remaining / unitsPerBox).toFixed(1)} scatole)
-                </span>
-              )}
-            </p>
-            <p className="text-xs text-slate-500">Inserisci i pezzi da mettere su questa paletta.</p>
+            {isPieces && hasUnitsPerBox && remaining >= unitsPerBox ? (
+              <div>
+                <p className="text-emerald-400 font-black text-3xl">
+                  {Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox) : (remaining / unitsPerBox).toFixed(1)} SCATOLE
+                </p>
+                <p className="text-slate-300 font-bold text-sm mt-1">
+                  Equivalgono a <span className="text-brand-blue font-black">{remaining}</span> / {exp} {selectedItem.product_uom}
+                </p>
+              </div>
+            ) : (
+              <p className="text-slate-400 font-bold mb-1">
+                Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp} {selectedItem.product_uom}
+              </p>
+            )}
+            <p className="text-xs text-slate-500 mt-1">Inserisci scatole o pezzi da mettere su questa paletta.</p>
           </div>
 
           {isPieces && hasUnitsPerBox ? (
@@ -382,33 +388,32 @@ const InboundZebra = () => {
               </div>
 
               <div className="grid grid-cols-2 gap-3 items-start">
-                {/* Input Scatole */}
+                {/* Input Scatole (Primario) */}
                 <div className="flex flex-col items-center">
-                  <label className="text-xs text-slate-400 uppercase font-bold mb-1.5">Scatole</label>
+                  <label className="text-xs text-emerald-400 uppercase font-black mb-1.5">Scatole</label>
                   <input 
                     type="number"
                     onWheel={(e) => e.target.blur()}
-                    className="bg-slate-950 border-2 border-slate-700 focus:border-brand-blue text-brand-white text-center text-3xl font-black w-full h-16 rounded-xl"
+                    className="bg-slate-950 border-2 border-emerald-500 focus:border-emerald-400 text-emerald-400 text-center text-3xl font-black w-full h-16 rounded-xl"
                     value={boxesInput}
                     onChange={e => handleBoxesChange(e.target.value)}
                     placeholder={hasUnitsPerBox && remaining > 0 ? (Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox).toString() : (remaining / unitsPerBox).toFixed(1)) : '0'}
                   />
-                  <span className="text-[11px] text-slate-500 font-bold mt-1.5">Colli / Scatole</span>
+                  <span className="text-[11px] text-emerald-400/80 font-bold mt-1.5">Colli / Scatole</span>
                 </div>
 
                 {/* Input Pezzi Totali */}
                 <div className="flex flex-col items-center">
-                  <label className="text-xs text-brand-blue uppercase font-bold mb-1.5">Pezzi Totali</label>
+                  <label className="text-xs text-slate-400 uppercase font-bold mb-1.5">Pezzi Equivalenti</label>
                   <input 
                     type="number"
                     onWheel={(e) => e.target.blur()}
-                    autoFocus
-                    className="bg-slate-950 border-2 border-brand-blue text-brand-white text-center text-3xl font-black w-full h-16 rounded-xl"
+                    className="bg-slate-950 border-2 border-slate-700 focus:border-brand-blue text-brand-white text-center text-3xl font-black w-full h-16 rounded-xl"
                     value={qtyInput}
                     onChange={e => handleQtyChange(e.target.value)}
                     placeholder={remaining.toString()}
                   />
-                  <span className="text-[11px] text-brand-blue/80 font-bold mt-1.5">Pezzi effettivi</span>
+                  <span className="text-[11px] text-slate-500 font-bold mt-1.5">Pezzi effettivi</span>
                 </div>
               </div>
             </div>
@@ -416,7 +421,6 @@ const InboundZebra = () => {
             <div className="flex gap-2 items-center justify-center mb-6">
               <input 
                 type="number" onWheel={(e) => e.target.blur()} 
-                autoFocus
                 className="bg-slate-900 border-2 border-brand-blue text-brand-white text-center text-4xl font-black w-32 h-20 rounded-2xl"
                 value={qtyInput}
                 onChange={e => setQtyInput(e.target.value)}

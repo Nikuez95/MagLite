@@ -332,17 +332,22 @@ async function palletRoutes(fastify, options) {
   fastify.get('/:code', async (request, reply) => {
     const { code } = request.params;
     try {
-      const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
+      const [allRows] = await db.query(`
+        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
+               COALESCE(p.units_per_box, pr.units_per_box, 1) as units_per_box,
+               c.business_name as customer_name
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         WHERE p.pallet_code = ?
       `, [code]);
       
-      if (rows.length === 0) {
+      if (allRows.length === 0) {
         return reply.code(404).send({ error: 'Paletta non trovata' });
       }
+
+      const activeRows = allRows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);
+      const rows = activeRows.length > 0 ? activeRows : allRows;
 
       if (rows.length > 1) {
         // Paletta mista
