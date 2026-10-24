@@ -115,7 +115,10 @@ async function inboundRoutes(fastify, options) {
       let locStr = null;
       if (location) {
         locStr = location.toUpperCase().trim();
-        const [existing] = await connection.query('SELECT pallet_code FROM PALLETS WHERE location = ? LIMIT 1', [locStr]);
+        const [existing] = await connection.query(
+          "SELECT pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 LIMIT 1",
+          [locStr]
+        );
         if (existing.length > 0) {
           palletCode = existing[0].pallet_code;
         }
@@ -224,7 +227,7 @@ async function inboundRoutes(fastify, options) {
 
       const fsModule = require('fs');
       const path = require('path');
-      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
+      const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
       
       if (fsModule.existsSync(logoPath)) {
         doc.image(logoPath, (doc.page.width - 200) / 2, doc.y, { fit: [200, 60], align: 'center' });

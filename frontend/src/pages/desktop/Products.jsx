@@ -1193,6 +1193,14 @@ const ProductsManagement = () => {
                         <td className="px-3 py-3">
                           {p.status === 'PENDING' ? (
                             <span className="text-slate-500 italic text-sm font-medium bg-slate-950 px-2 py-1 rounded border border-slate-800">⏳ IN ATTESA</span>
+                          ) : String(p.location || '').startsWith('ZONA CARICO') ? (
+                            <span
+                              className="text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded border border-amber-500/40 flex items-center gap-1.5 w-max cursor-pointer hover:bg-amber-500/25 text-xs"
+                              onClick={() => openHistory(p.pallet_code)}
+                              title="Merce prelevata in picking e in attesa di conferma spedizione dal backoffice"
+                            >
+                              <Package size={14} /> {p.location}
+                            </span>
                           ) : (
                             <span className="text-green-400 font-bold bg-green-500/10 px-2 py-1 rounded border border-green-500/30 flex items-center gap-1 w-max cursor-pointer hover:bg-green-500/20" onClick={() => openHistory(p.pallet_code)}>
                               <MapPin size={14} /> {p.location}

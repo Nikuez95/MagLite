@@ -4,6 +4,8 @@ import { PackagePlus, ArrowRightLeft, PackageMinus, LogOut, Scan, Download } fro
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import Stow from './Stow';
 import InboundZebra from './InboundZebra';
+import OutboundZebra from './OutboundZebra';
+import Handling from './Handling';
 
 const TouchButton = ({ icon: Icon, label, onClick }) => (
   <button 
@@ -21,13 +23,13 @@ const TopBar = () => {
   const isHome = location.pathname === '/zebra';
 
   return (
-    <header className="bg-brand-black border-b border-slate-800 p-5 flex justify-between items-center sticky top-0 z-10 shadow-lg">
+    <header className="bg-brand-black border-b border-slate-800 px-5 py-4 flex justify-between items-center sticky top-0 z-10 shadow-lg">
       <div 
-        className={`flex items-center gap-4 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
+        className={`flex items-center gap-3.5 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
         onClick={() => !isHome && navigate('/zebra')}
       >
-        <div className="w-12 h-12 flex items-center justify-center">
-          <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
+        <div className="h-11 w-16 flex items-center justify-center shrink-0">
+          <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
         </div>
         <div>
           <h1 className="text-brand-white font-bold text-xl leading-tight tracking-tight">MagLite</h1>
@@ -40,9 +42,9 @@ const TopBar = () => {
           localStorage.removeItem('maglite_user');
           window.location.href = '/login';
         }}
-        className="p-4 rounded-full bg-slate-900 border border-slate-800 text-brand-white active:bg-slate-800 transition-colors"
+        className="p-3.5 rounded-full bg-slate-900 border border-slate-800 text-brand-white active:bg-slate-800 transition-colors"
       >
-        <LogOut size={24} />
+        <LogOut size={22} />
       </button>
     </header>
   );
@@ -58,13 +60,12 @@ const Dashboard = () => {
         <p className="text-brand-blue text-base font-medium mt-1">Seleziona l'azione da eseguire</p>
       </div>
       
-      
-        <div className="grid grid-cols-1 gap-5">
-          <TouchButton 
-            icon={Download} 
-            label="SPUNTA ENTRATA" 
-            onClick={() => navigate('/zebra/inbound')} 
-          />
+      <div className="grid grid-cols-1 gap-5">
+        <TouchButton 
+          icon={Download} 
+          label="SPUNTA ENTRATA" 
+          onClick={() => navigate('/zebra/inbound')} 
+        />
         <TouchButton 
           icon={PackagePlus} 
           label="STIVAGGIO (Messa a dimora)" 
@@ -118,9 +119,6 @@ const ZebraOperationPage = ({ title }) => {
     </div>
   );
 };
-
-import OutboundZebra from './OutboundZebra';
-import Handling from './Handling';
 
 const ZebraApp = () => {
   return (

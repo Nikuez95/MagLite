@@ -3,7 +3,7 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
-const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
+const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
 
 async function locationRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -38,12 +38,12 @@ async function locationRoutes(fastify, options) {
       // Free Locations dalla tabella
       const [freeLocRows] = await db.query('SELECT name FROM FREE_LOCATIONS');
       
-      // Free Locations (nomi location legacy dalle palette che non sono in LOCATIONS)
+      // Free Locations (nomi location legacy dalle palette che non sono in LOCATIONS, escludendo ZONA CARICO temporanea)
       const [legacyFreeLocations] = await db.query(`
         SELECT DISTINCT p.location 
         FROM PALLETS p 
         LEFT JOIN LOCATIONS l ON p.location = l.barcode 
-        WHERE l.barcode IS NULL AND p.location IS NOT NULL AND p.location != ''
+        WHERE l.barcode IS NULL AND p.location IS NOT NULL AND p.location != '' AND p.location NOT LIKE 'ZONA CARICO%'
       `);
       
       const allZones = [...new Set([

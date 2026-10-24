@@ -561,7 +561,7 @@ async function outboundRoutes(fastify, options) {
       // --- BRAND HEADER ---
       const fs = require('fs');
       const path = require('path');
-      const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
+      const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
       
       if (fs.existsSync(logoPath)) {
         doc.image(logoPath, 40, 30, { fit: [150, 50] });
@@ -765,7 +765,7 @@ async function outboundRoutes(fastify, options) {
     try {
       // Verifica item
       const [items] = await db.query(`
-        SELECT i.*, pal.location, loc.pin as loc_pin, pr.name as product_name
+        SELECT i.*, pal.id as resolved_pallet_id, pal.location, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
           i.pallet_id,
@@ -773,6 +773,7 @@ async function outboundRoutes(fastify, options) {
            WHERE p2.pallet_code = i.pallet_code 
              AND p2.product_id = i.product_id 
              AND (i.batch IS NULL OR p2.batch = i.batch)
+             AND p2.status != 'SHIPPED'
            ORDER BY p2.id ASC LIMIT 1)
         )
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
@@ -788,8 +789,11 @@ async function outboundRoutes(fastify, options) {
         return reply.code(400).send({ error: 'Codice Paletta errato (Lotto non corrispondente)' });
       }
 
-      // Aggiorna Riga Ordine
-      await db.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED", picked_at = CURRENT_TIMESTAMP WHERE id = ?', [qty_picked, item_id]);
+      // Aggiorna Riga Ordine (e fissa pallet_id se non era già valorizzato)
+      await db.query(
+        'UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, pallet_id = COALESCE(pallet_id, ?), status = "PICKED", picked_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [qty_picked, item.resolved_pallet_id || null, item_id]
+      );
 
       // Log Audit Zebra
       const operator = request.user?.username || 'ZEBRA';
@@ -803,10 +807,62 @@ async function outboundRoutes(fastify, options) {
         ]
       );
 
-      // Verifica se è il primo pezzo prelevato (per impostare l'inizio della bolla)
-      const [order] = await db.query('SELECT start_picking_at FROM OUTBOUND_ORDERS WHERE id = ?', [order_id]);
+      // Verifica ordine e primo pezzo prelevato
+      const [order] = await db.query('SELECT order_code, start_picking_at FROM OUTBOUND_ORDERS WHERE id = ?', [order_id]);
+      const orderCode = order[0]?.order_code || `ID-${order_id}`;
       if (order.length > 0 && !order[0].start_picking_at) {
         await db.query('UPDATE OUTBOUND_ORDERS SET start_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [operator, order_id]);
+      }
+
+      // Se la paletta (o la specifica riga paletta) va a 0 scorta residua a scaffale dopo il prelievo,
+      // spostiamo la sua posizione in ZONA CARICO (DDT) liberando subito il posto sullo scaffale,
+      // senza però scaricarla dall'inventario finché il backoffice non conferma la spedizione.
+      if (item.resolved_pallet_id) {
+        const [[remRow]] = await db.query(`
+          SELECT pal.id, pal.pallet_code, pal.location,
+                 (pal.quantity - COALESCE((
+                   SELECT SUM(
+                     CASE 
+                       WHEN oi.requested_uom IN ('Bancali', 'Palette') THEN 
+                         CASE WHEN COALESCE(p.boxes_per_pallet, 1) > 1 AND pal.quantity >= 2 * (COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                              THEN (COALESCE(NULLIF(oi.quantity_picked, 0), oi.quantity_required) * COALESCE(pal.units_per_box, p.units_per_box, 1) * p.boxes_per_pallet)
+                              ELSE pal.quantity 
+                         END
+                       WHEN oi.requested_uom IN ('Scatole', 'Cartoni') THEN (COALESCE(NULLIF(oi.quantity_picked, 0), oi.quantity_required) * COALESCE(pal.units_per_box, p.units_per_box, 1))
+                       ELSE COALESCE(NULLIF(oi.quantity_picked, 0), oi.quantity_required)
+                     END
+                   )
+                   FROM OUTBOUND_ITEMS oi
+                   JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+                   WHERE (
+                     (oi.pallet_id IS NOT NULL AND oi.pallet_id = pal.id)
+                     OR (oi.pallet_id IS NULL AND oi.pallet_code = pal.pallet_code AND oi.product_id = pal.product_id AND (oi.batch IS NULL OR oi.batch = pal.batch))
+                   )
+                   AND oi.status = 'PICKED'
+                   AND oo.status != 'SHIPPED'
+                 ), 0)) as remaining_on_shelf
+          FROM PALLETS pal
+          JOIN PRODUCTS p ON pal.product_id = p.id
+          WHERE pal.id = ?
+        `, [item.resolved_pallet_id]);
+
+        if (remRow && parseFloat(remRow.remaining_on_shelf) <= 0) {
+          const loadingLocation = `ZONA CARICO (${orderCode})`;
+          if (remRow.location !== loadingLocation) {
+            const prevLoc = remRow.location || 'NESSUNA';
+            await db.query('UPDATE PALLETS SET location = ? WHERE id = ?', [loadingLocation, remRow.id]);
+            await db.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              [
+                'STOW',
+                `Paletta ${remRow.pallet_code} spostata da ${prevLoc} a ${loadingLocation} (scaffale liberato in picking)`,
+                'ZEBRA',
+                operator
+              ]
+            );
+            if (fastify.io) fastify.io.emit('stow_updated');
+          }
+        }
       }
 
       // Controllo se l'intero ordine è pronto
@@ -860,10 +916,10 @@ async function outboundRoutes(fastify, options) {
           palletsQuery += `pal.id = ?`;
           palletsParams = [item.pallet_id];
         } else if (item.batch) {
-          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND TRIM(pal.batch) = TRIM(?) ORDER BY pal.id ASC LIMIT 1`;
+          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND TRIM(pal.batch) = TRIM(?) AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1`;
           palletsParams = [item.pallet_code, item.product_id, item.batch];
         } else {
-          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? ORDER BY pal.id ASC LIMIT 1`;
+          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1`;
           palletsParams = [item.pallet_code, item.product_id];
         }
 
@@ -925,7 +981,10 @@ async function outboundRoutes(fastify, options) {
       await connection.commit();
       connection.release();
       
-      if (fastify.io) fastify.io.emit('dashboard_update');
+      if (fastify.io) {
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('dashboard_update');
+      }
       
       return { success: true };
     } catch (err) {

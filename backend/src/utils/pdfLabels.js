@@ -3,7 +3,7 @@ const bwipjs = require('bwip-js');
 const fs = require('fs');
 const path = require('path');
 
-const logoPath = path.join(__dirname, '../../../frontend/public/logo.png');
+const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
 
 /**
  * Normalizza e valida una data di scadenza per il salvataggio su MySQL (YYYY-MM-DD) o restituisce null.

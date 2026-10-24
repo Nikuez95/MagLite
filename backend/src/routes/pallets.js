@@ -370,8 +370,8 @@ async function palletRoutes(fastify, options) {
   fastify.get('/:code/print', async (request, reply) => {
     const { code } = request.params;
     try {
-      const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, c.business_name as customer_name
+      const [allRows] = await db.query(`
+        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -379,7 +379,9 @@ async function palletRoutes(fastify, options) {
         ORDER BY p.id ASC
       `, [code]);
 
-      if (rows.length === 0) return reply.code(404).send({ error: 'Paletta non trovata' });
+      if (allRows.length === 0) return reply.code(404).send({ error: 'Paletta non trovata' });
+      const activeRows = allRows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);
+      const rows = activeRows.length > 0 ? activeRows : allRows;
       const pallet = rows[0];
 
       const paper_format = request.query.format || 'THERMAL';
@@ -397,11 +399,13 @@ async function palletRoutes(fastify, options) {
           ? (uniqueProdNames.length === 1 ? `${uniqueProdNames[0]} (${rows.length} LOTTI)` : `PALETTA MISTA (${rows.length} Articoli)`)
           : pallet.product_name,
         quantity: rows.length > 1 ? '-' : pallet.quantity,
+        uom: pallet.uom,
         batch: rows.length > 1 ? (uniqueBatches.join(', ') || '-') : pallet.batch,
         warehouse: pallet.warehouse,
         client_pallet_number: pallet.client_pallet_number,
         client_article_number: rows.length > 1 ? (uniqueArticles.join(', ') || '-') : pallet.client_article_number,
         expiration_date: pallet.expiration_date,
+        flags: pallet.flags,
         location: pallet.location || null
       };
 
@@ -430,8 +434,8 @@ async function palletRoutes(fastify, options) {
       const generatedLabelsData = [];
       
       for (const code of codes) {
-        const [rows] = await db.query(`
-          SELECT p.*, pr.name as product_name, c.business_name as customer_name
+        const [allRows] = await db.query(`
+          SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
           FROM PALLETS p
           JOIN PRODUCTS pr ON p.product_id = pr.id
           JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -439,8 +443,10 @@ async function palletRoutes(fastify, options) {
           ORDER BY p.id ASC
         `, [code]);
         
-        if (rows.length === 0) continue;
+        if (allRows.length === 0) continue;
         
+        const activeRows = allRows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);
+        const rows = activeRows.length > 0 ? activeRows : allRows;
         const pallet = rows[0];
         const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
         const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
@@ -453,11 +459,13 @@ async function palletRoutes(fastify, options) {
             ? (uniqueProdNames.length === 1 ? `${uniqueProdNames[0]} (${rows.length} LOTTI)` : `PALETTA MISTA (${rows.length} Articoli)`)
             : pallet.product_name,
           quantity: rows.length > 1 ? '-' : pallet.quantity,
+          uom: pallet.uom,
           batch: rows.length > 1 ? (uniqueBatches.join(', ') || '-') : pallet.batch,
           warehouse: pallet.warehouse,
           client_pallet_number: pallet.client_pallet_number,
           client_article_number: rows.length > 1 ? (uniqueArticles.join(', ') || '-') : pallet.client_article_number,
           expiration_date: pallet.expiration_date,
+          flags: pallet.flags,
           location: pallet.location || null
         });
       }
@@ -599,7 +607,7 @@ async function palletRoutes(fastify, options) {
     try {
       if (!force) {
         const [occupied] = await db.query(
-          "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND pallet_code != ?", 
+          "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 AND pallet_code != ?", 
           [location, pallet_code]
         );
         
@@ -666,15 +674,32 @@ async function palletRoutes(fastify, options) {
   fastify.get('/:code/history', async (request, reply) => {
     const { code } = request.params;
     try {
-      const [[pallet]] = await db.query(`
+      const [allRows] = await db.query(`
         SELECT p.*, pr.name as product_name, pr.notes as product_notes, c.business_name as customer_name
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         WHERE p.pallet_code = ?
+        ORDER BY p.id ASC
       `, [code]);
       
-      if (!pallet) return reply.code(404).send({ error: 'Paletta non trovata' });
+      if (allRows.length === 0) return reply.code(404).send({ error: 'Paletta non trovata' });
+      const activeRows = allRows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);
+      const rows = activeRows.length > 0 ? activeRows : allRows;
+      const uniqueProdNames = [...new Set(rows.map(r => r.product_name))];
+      const uniqueBatches = [...new Set(rows.map(r => r.batch).filter(Boolean))];
+
+      const pallet = rows.length > 1
+        ? {
+            ...rows[0],
+            product_name: uniqueProdNames.length === 1
+              ? `${uniqueProdNames[0]} (${rows.length} LOTTI)`
+              : `PALETTA MISTA (${rows.length} Articoli)`,
+            batch: uniqueBatches.join(', ') || rows[0].batch,
+            isMixed: true,
+            items: rows
+          }
+        : rows[0];
       
       const [history] = await db.query(`
         SELECT * FROM AUDIT_LOGS

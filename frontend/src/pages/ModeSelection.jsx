@@ -30,8 +30,8 @@ const ModeSelection = () => {
       </button>
 
       <div className="text-center mb-12">
-        <div className="w-40 h-24 flex items-center justify-center mx-auto mb-6">
-          <img src="/logo.png" alt="MagLite Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_20px_rgba(169,218,255,0.4)]" />
+        <div className="w-60 h-32 flex items-center justify-center mx-auto mb-5">
+          <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_20px_rgba(169,218,255,0.4)]" />
         </div>
         <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-2">MagLite <span className="text-brand-blue">x Porcelli</span></h1>
         <p className="text-slate-400 text-lg">Seleziona la modalità operativa per continuare</p>

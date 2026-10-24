@@ -515,9 +515,18 @@ const Inventory = () => {
           {groupByBatch ? (
             <span className="text-slate-500 font-bold">-</span>
           ) : row.location ? (
-            <span className="inline-flex items-center gap-1 bg-slate-950 border border-slate-700 px-3 py-1 rounded-lg text-sm font-bold text-brand-white">
-              {row.zone ? `${row.zone} ${row.col} ${row.pos}` : row.location}
-            </span>
+            String(row.location).startsWith('ZONA CARICO') ? (
+              <span
+                className="inline-flex items-center gap-1.5 bg-amber-500/15 border border-amber-500/40 px-3 py-1 rounded-lg text-xs font-bold text-amber-400"
+                title="Merce prelevata in picking e in attesa di conferma spedizione dal backoffice"
+              >
+                <Package size={13} /> {row.location}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 bg-slate-950 border border-slate-700 px-3 py-1 rounded-lg text-sm font-bold text-brand-white">
+                {row.zone ? `${row.zone} ${row.col} ${row.pos}` : row.location}
+              </span>
+            )
           ) : (
             <span className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-500 px-3 py-1 rounded-lg text-xs font-bold border border-amber-500/20">IN ATTESA</span>
           )}
@@ -654,13 +663,13 @@ const Inventory = () => {
     };
 
     try {
-      const response = await fetch('/logo.png');
+      const response = await fetch('/logo_scuro.png');
       const blob = await response.blob();
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64data = reader.result;
-        doc.addImage(base64data, 'PNG', 14, 10, 40, 24);
-        renderRest(60);
+        doc.addImage(base64data, 'PNG', 14, 10, 36, 25);
+        renderRest(56);
       };
       reader.readAsDataURL(blob);
     } catch (e) {

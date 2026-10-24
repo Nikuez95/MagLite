@@ -52,13 +52,16 @@ async function authRoutes(fastify, options) {
   // Endpoint di Supporto: Setup Admin iniziale (Pubblico per MVP)
   // Utilizzato per creare il primissimo utente admin per poter testare il login
   fastify.post('/setup-admin', async (request, reply) => {
-    const { username, password } = request.body;
-    
-    if (!username || !password) {
-      return reply.code(400).send({ error: 'Username e password obbligatori' });
-    }
-
     try {
+      const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM USERS');
+      if (count > 0) return reply.code(403).send({ error: 'Setup già completato' });
+
+      const { username, password } = request.body || {};
+      
+      if (!username || !password) {
+        return reply.code(400).send({ error: 'Username e password obbligatori' });
+      }
+
       // Cifra la password prima di salvarla nel DB
       const hash = await bcrypt.hash(password, 10);
       await db.query('INSERT INTO USERS (username, password_hash, role, requires_password_change) VALUES (?, ?, ?, FALSE)', [username, hash, 'developer']);

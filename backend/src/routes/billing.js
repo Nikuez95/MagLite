@@ -143,12 +143,17 @@ async function billingRoutes(fastify, options) {
       // STORAGE: created_at <= endDate AND (shipped_at IS NULL OR shipped_at >= startDate)
       
       const [pallets] = await db.query(`
-        SELECT p.pallet_code, p.created_at, p.shipped_at, p.flags, p.quantity, p.pallet_uom, p.batch, pr.name as product_name
+        SELECT p.pallet_code, p.created_at,
+               COALESCE(p.shipped_at, IF(p.status = 'SHIPPED', p.created_at, NULL)) as shipped_at,
+               p.flags, p.quantity, p.pallet_uom, p.batch, pr.name as product_name
         FROM PALLETS p
         LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
         WHERE p.customer_id = ? 
         AND p.created_at <= ? 
-        AND (p.shipped_at IS NULL OR p.shipped_at >= ?)
+        AND (
+          COALESCE(p.shipped_at, IF(p.status = 'SHIPPED', p.created_at, NULL)) IS NULL
+          OR COALESCE(p.shipped_at, IF(p.status = 'SHIPPED', p.created_at, NULL)) >= ?
+        )
       `, [clientId, endDate, startDate]);
 
       const items = [];
