@@ -150,39 +150,17 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
     excludeCondition = `AND oo.id != ${connection.escape(excludeOrderId)}`;
   }
 
-  for (const req of items) {
+  // Alloca prima le righe che richiedono un bancale specifico (per ID, Rif. Paletta Cliente o Codice Paletta)
+  // così la selezione automatica FEFO di eventuali altre righe dello stesso lotto non sottrae il bancale scelto.
+  const prioritizedItems = [...items].sort((a, b) => {
+    const aSpecific = Boolean(a.pallet_id || a.client_pallet_number || a.pallet_code);
+    const bSpecific = Boolean(b.pallet_id || b.client_pallet_number || b.pallet_code);
+    if (aSpecific === bSpecific) return 0;
+    return aSpecific ? -1 : 1;
+  });
+
+  for (const req of prioritizedItems) {
     const normalizedUom = req.requested_uom === 'Palette' ? 'Bancali' : (req.requested_uom || 'Pezzi');
-
-    // Se è già indicato pallet_code (es. in modifica ordine su riga già allocata)
-    if (req.pallet_code) {
-      let resolvedPalletId = req.pallet_id || null;
-      let resolvedBatch = (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') ? req.batch : null;
-
-      if (!resolvedPalletId) {
-        let findSql = 'SELECT id, batch FROM PALLETS WHERE pallet_code = ? AND product_id = ?';
-        const findParams = [req.pallet_code, req.product_id];
-        if (resolvedBatch) {
-          findSql += ' AND TRIM(batch) = TRIM(?)';
-          findParams.push(resolvedBatch);
-        } else if (req.batch === 'Nessun lotto') {
-          findSql += " AND (batch IS NULL OR TRIM(batch) = '')";
-        }
-        findSql += ' ORDER BY id ASC LIMIT 1';
-        const [foundRows] = await connection.query(findSql, findParams);
-        if (foundRows.length > 0) {
-          resolvedPalletId = foundRows[0].id;
-          resolvedBatch = foundRows[0].batch || null;
-        }
-      }
-
-      allocatedPallets.push({
-        ...req,
-        pallet_id: resolvedPalletId,
-        batch: resolvedBatch,
-        requested_uom: normalizedUom
-      });
-      continue;
-    }
 
     let query = `
       SELECT pal.*, loc.zone, loc.col, loc.pos,
@@ -215,11 +193,25 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       WHERE pal.product_id = ? AND pal.status != 'SHIPPED' AND pal.quantity > 0
     `;
     const params = [req.product_id];
-    if (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') {
-      query += ` AND TRIM(pal.batch) = TRIM(?)`;
-      params.push(req.batch);
-    } else if (req.batch === 'Nessun lotto') {
-      query += ` AND (pal.batch IS NULL OR TRIM(pal.batch) = '')`;
+
+    if (req.pallet_id) {
+      query += ` AND pal.id = ?`;
+      params.push(req.pallet_id);
+    } else {
+      if (req.client_pallet_number && String(req.client_pallet_number).trim() !== '') {
+        query += ` AND TRIM(pal.client_pallet_number) = TRIM(?)`;
+        params.push(String(req.client_pallet_number).trim());
+      }
+      if (req.pallet_code && String(req.pallet_code).trim() !== '') {
+        query += ` AND pal.pallet_code = ?`;
+        params.push(String(req.pallet_code).trim());
+      }
+      if (req.batch && req.batch !== 'TUTTI' && req.batch !== 'Nessun lotto') {
+        query += ` AND TRIM(pal.batch) = TRIM(?)`;
+        params.push(req.batch);
+      } else if (req.batch === 'Nessun lotto') {
+        query += ` AND (pal.batch IS NULL OR TRIM(pal.batch) = '')`;
+      }
     }
     
     const [rawAvailable] = await connection.query(query, params);
@@ -263,6 +255,7 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       allocatedForThisReq.push({
         pallet_id: pal.id,
         pallet_code: pal.pallet_code,
+        client_pallet_number: pal.client_pallet_number || null,
         product_id: req.product_id,
         batch: pal.batch || null,
         quantity_required: take,
@@ -285,8 +278,9 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
     }
 
     if (remainingToAllocate > 0) {
+      const clientPalLabel = req.client_pallet_number ? ` (Rif. Paletta Cliente: ${req.client_pallet_number})` : '';
       const batchLabel = (req.batch && req.batch !== 'TUTTI') ? ` (Lotto: ${req.batch})` : '';
-      throw new Error(`Quantità insufficiente in magazzino per l'articolo richiesto${batchLabel}`);
+      throw new Error(`Quantità insufficiente in magazzino per l'articolo richiesto${clientPalLabel}${batchLabel}`);
     }
     
     allocatedPallets.push(...allocatedForThisReq);
@@ -315,7 +309,11 @@ async function outboundRoutes(fastify, options) {
                 WHERE oi.order_id = o.id) as products,
                (SELECT GROUP_CONCAT(DISTINCT oi.pallet_code SEPARATOR ', ')
                 FROM OUTBOUND_ITEMS oi
-                WHERE oi.order_id = o.id) as pallets
+                WHERE oi.order_id = o.id) as pallets,
+               (SELECT GROUP_CONCAT(DISTINCT pal.client_pallet_number SEPARATOR ', ')
+                FROM OUTBOUND_ITEMS oi
+                LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
+                WHERE oi.order_id = o.id AND pal.client_pallet_number IS NOT NULL AND pal.client_pallet_number != '') as client_pallets
         FROM OUTBOUND_ORDERS o
         JOIN CUSTOMERS c ON o.customer_id = c.id
         ORDER BY o.created_at DESC
@@ -451,7 +449,7 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location
+        SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location, pal.client_pallet_number
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -532,7 +530,7 @@ async function outboundRoutes(fastify, options) {
       const order = orders[0];
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, pal.location, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin
+        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, pal.location, pal.client_pallet_number, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -672,7 +670,8 @@ async function outboundRoutes(fastify, options) {
         doc.font('Helvetica').fontSize(9).fillColor('#334155').text(item.product_name, 135, y, { width: 120 });
         doc.text(item.batch || '-', 265, y, { width: 75 });
         
-        const displayPallet = (item.pallet_code || '').startsWith('NOBAR-') ? '-' : item.pallet_code;
+        const basePalletStr = (item.pallet_code || '').startsWith('NOBAR-') ? '-' : item.pallet_code;
+        const displayPallet = item.client_pallet_number ? `${basePalletStr} (Rif: ${item.client_pallet_number})` : basePalletStr;
         doc.font('Helvetica-Bold').fontSize(8).fillColor('#192935').text(displayPallet, 345, y, { width: 135 });
         
         let qtyText = `${parseFloat(item.quantity_required)} ${item.uom}`;
@@ -724,7 +723,7 @@ async function outboundRoutes(fastify, options) {
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
-               pal.location, pal.quantity as pallet_quantity,
+               pal.location, pal.client_pallet_number, pal.quantity as pallet_quantity,
                COALESCE(i.batch, pal.batch) as batch, pal.expiration_date,
                loc.zone, loc.col, loc.pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i

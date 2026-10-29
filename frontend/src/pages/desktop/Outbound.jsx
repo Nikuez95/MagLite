@@ -99,6 +99,7 @@ function TimelineModal({ order, onClose, token }) {
                     <p className="text-xs font-bold text-brand-white">{item.product_name}</p>
                     <p className="text-[11px] text-slate-400 font-mono mt-0.5">
                       {item.pallet_code ? `Paletta: ${item.pallet_code} • ` : ''}
+                      {item.client_pallet_number ? `Rif. Pal. Cl: ${item.client_pallet_number} • ` : ''}
                       {item.batch ? `Lotto: ${item.batch} • ` : ''}
                       Q.tà: <strong className="text-brand-white">{parseFloat(item.quantity_required)} {item.requested_uom || item.base_uom || 'Pezzi'}</strong>
                     </p>
@@ -230,7 +231,8 @@ const Outbound = () => {
       setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0], client_ddt: order.client_ddt || '' });
       setCart(items.map(i => ({
         pallet_id: i.pallet_id || null,
-        pallet_code: i.pallet_code,
+        pallet_code: i.pallet_code || null,
+        client_pallet_number: i.client_pallet_number || null,
         product_id: i.product_id,
         quantity_required: parseFloat(i.quantity_required),
         requested_uom: i.requested_uom || 'Pezzi',
@@ -322,6 +324,7 @@ const Outbound = () => {
         items: cart.map(c => ({
           pallet_id: c.pallet_id || null,
           pallet_code: c.pallet_code || null,
+          client_pallet_number: c.client_pallet_number || null,
           product_id: c.product_id,
           quantity_required: parseFloat(c.quantity_required),
           requested_uom: c.requested_uom,
@@ -379,10 +382,27 @@ const Outbound = () => {
     placeholder: base => ({ ...base, color: '#475569', fontSize: '0.875rem' })
   };
 
-  // Raggruppa le palette disponibili per (product_id + lotto)
+  // Raggruppa le palette disponibili per (product_id + lotto) e conserva anche le singole palette (con Rif. Paletta Cliente)
   const groupedLotRows = useMemo(() => {
     const map = new Map();
     const batchesByProduct = new Map();
+    const palletsByProduct = new Map();
+
+    const sortSinglePallets = (list) => {
+      return [...list].sort((a, b) => {
+        const refA = (a.client_pallet_number || '').trim();
+        const refB = (b.client_pallet_number || '').trim();
+        if (refA && !refB) return -1;
+        if (!refA && refB) return 1;
+        if (refA && refB && refA !== refB) {
+          return refA.localeCompare(refB, undefined, { numeric: true, sensitivity: 'base' });
+        }
+        if (!a.expiration_date && !b.expiration_date) return 0;
+        if (!a.expiration_date) return 1;
+        if (!b.expiration_date) return -1;
+        return new Date(a.expiration_date) - new Date(b.expiration_date);
+      });
+    };
 
     availablePallets.forEach(p => {
       const batchNorm = (p.batch && String(p.batch).trim() !== '') ? String(p.batch).trim() : 'Nessun lotto';
@@ -391,10 +411,31 @@ const Outbound = () => {
       const upb = parseFloat(p.units_per_box) || 1;
       const bpp = parseFloat(p.boxes_per_pallet) || 1;
       const unitsPerPallet = upb * bpp;
+      const baseUom = (p.uom === 'Scatole' || p.uom === 'Bancali' || !p.uom) ? 'Pezzi' : p.uom;
+      const clientPalRef = p.client_pallet_number ? String(p.client_pallet_number).trim() : '';
 
       const rowPallets = (unitsPerPallet > 1 && availQty >= unitsPerPallet * 2)
         ? Math.max(1, Math.floor(availQty / unitsPerPallet))
         : 1;
+
+      const singlePalletEntry = {
+        id: p.id,
+        pallet_code: p.pallet_code,
+        client_pallet_number: clientPalRef,
+        batch: batchNorm,
+        available_quantity: availQty,
+        rowPallets,
+        location: p.location || '',
+        expiration_date: p.expiration_date || null,
+        units_per_box: upb,
+        boxes_per_pallet: bpp,
+        base_uom: baseUom
+      };
+
+      if (!palletsByProduct.has(p.product_id)) {
+        palletsByProduct.set(p.product_id, []);
+      }
+      palletsByProduct.get(p.product_id).push(singlePalletEntry);
 
       if (!batchesByProduct.has(p.product_id)) {
         batchesByProduct.set(p.product_id, new Map());
@@ -408,7 +449,6 @@ const Outbound = () => {
       bStat.pallet_count += rowPallets;
 
       if (!map.has(key)) {
-        const baseUom = (p.uom === 'Scatole' || p.uom === 'Bancali' || !p.uom) ? 'Pezzi' : p.uom;
         map.set(key, {
           key,
           product_id: p.product_id,
@@ -422,7 +462,9 @@ const Outbound = () => {
           uom: p.uom || p.pallet_uom || 'Pezzi',
           base_uom: baseUom,
           pallet_codes: new Set(),
+          client_pallet_numbers: new Set(),
           locations: new Set(),
+          pallets: [],
           expiration_date: p.expiration_date || null
         });
       }
@@ -431,18 +473,31 @@ const Outbound = () => {
       g.total_quantity += availQty;
       g.pallet_count += rowPallets;
       if (p.pallet_code) g.pallet_codes.add(p.pallet_code);
+      if (clientPalRef) g.client_pallet_numbers.add(clientPalRef);
       if (p.location) g.locations.add(p.location);
+      g.pallets.push(singlePalletEntry);
       if (p.expiration_date && (!g.expiration_date || new Date(p.expiration_date) < new Date(g.expiration_date))) {
         g.expiration_date = p.expiration_date;
       }
     });
 
-    return Array.from(map.values()).map(g => ({
-      ...g,
-      pallet_codes: Array.from(g.pallet_codes),
-      locations: Array.from(g.locations),
-      productBatches: Array.from((batchesByProduct.get(g.product_id) || new Map()).values())
-    }));
+    return Array.from(map.values()).map(g => {
+      const sortedPallets = sortSinglePallets(g.pallets);
+      const sortedProductPallets = sortSinglePallets(palletsByProduct.get(g.product_id) || []);
+      const clientRefs = Array.from(g.client_pallet_numbers).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+      );
+      return {
+        ...g,
+        pallet_codes: Array.from(g.pallet_codes),
+        client_pallet_numbers: clientRefs,
+        first_client_pallet: clientRefs[0] || '',
+        locations: Array.from(g.locations),
+        pallets: sortedPallets,
+        productPallets: sortedProductPallets,
+        productBatches: Array.from((batchesByProduct.get(g.product_id) || new Map()).values())
+      };
+    });
   }, [availablePallets]);
 
   const filteredLotRows = useMemo(() => {
@@ -454,11 +509,21 @@ const Outbound = () => {
         const skuMatch = (row.sku || '').toLowerCase().includes(term);
         const batchMatch = (row.batch || '').toLowerCase().includes(term);
         const palletMatch = row.pallet_codes.some(c => c.toLowerCase().includes(term));
+        const clientPalMatch = (row.client_pallet_numbers || []).some(cp => cp.toLowerCase().includes(term));
         const locMatch = row.locations.some(l => l.toLowerCase().includes(term));
-        return nameMatch || skuMatch || batchMatch || palletMatch || locMatch;
+        return nameMatch || skuMatch || batchMatch || palletMatch || clientPalMatch || locMatch;
       });
     }
     return [...rows].sort((a, b) => {
+      if (lotSortBy === 'CLIENT_PAL_ASC' || lotSortBy === 'CLIENT_PAL_DESC') {
+        const refA = (a.first_client_pallet || '').trim();
+        const refB = (b.first_client_pallet || '').trim();
+        if (!refA && !refB) return (a.name || '').localeCompare(b.name || '');
+        if (!refA) return 1;
+        if (!refB) return -1;
+        const cmp = refA.localeCompare(refB, undefined, { numeric: true, sensitivity: 'base' });
+        return lotSortBy === 'CLIENT_PAL_ASC' ? cmp : -cmp;
+      }
       if (lotSortBy === 'FEFO') {
         if (!a.expiration_date && !b.expiration_date) return (a.name || '').localeCompare(b.name || '');
         if (!a.expiration_date) return 1;
@@ -534,11 +599,28 @@ const Outbound = () => {
     }
   };
 
-  // Calcola le scorte disponibili per il lotto selezionato nel Pick Modal
+  // Calcola le scorte disponibili per il lotto o bancale specifico selezionato nel Pick Modal
   const selectedBatchStats = useMemo(() => {
-    if (!pickingPallet) return { qty: 0, boxes: 0, pallets: 0 };
+    if (!pickingPallet) return { qty: 0, boxes: 0, pallets: 0, chosenPallet: null, candidatePallets: [] };
     const selBatch = pickingPallet.selectedBatch || pickingPallet.batch;
     const upb = parseFloat(pickingPallet.units_per_box) || 1;
+    const allProductPallets = pickingPallet.productPallets || pickingPallet.pallets || [];
+    const candidatePallets = selBatch === 'TUTTI'
+      ? allProductPallets
+      : allProductPallets.filter(p => p.batch === selBatch);
+
+    if (pickingPallet.selectedPalletId) {
+      const chosen = candidatePallets.find(p => String(p.id) === String(pickingPallet.selectedPalletId));
+      if (chosen) {
+        return {
+          qty: chosen.available_quantity,
+          boxes: Math.floor(chosen.available_quantity / upb),
+          pallets: chosen.rowPallets || 1,
+          chosenPallet: chosen,
+          candidatePallets
+        };
+      }
+    }
 
     if (selBatch === 'TUTTI') {
       const totalQty = (pickingPallet.productBatches || []).reduce((acc, b) => acc + b.total_quantity, 0);
@@ -546,7 +628,9 @@ const Outbound = () => {
       return {
         qty: totalQty,
         boxes: Math.floor(totalQty / upb),
-        pallets: totalPallets
+        pallets: totalPallets,
+        chosenPallet: null,
+        candidatePallets
       };
     }
 
@@ -556,7 +640,9 @@ const Outbound = () => {
     return {
       qty,
       boxes: Math.floor(qty / upb),
-      pallets
+      pallets,
+      chosenPallet: null,
+      candidatePallets
     };
   }, [pickingPallet]);
 
@@ -809,6 +895,11 @@ const Outbound = () => {
                             Lotti: {o.batches}
                           </span>
                         )}
+                        {o.client_pallets && (
+                          <span className="text-[10px] font-mono font-bold bg-sky-500/15 border border-sky-500/30 text-sky-300 px-2 py-0.5 rounded-md truncate max-w-[170px]" title={`Rif. Palette Cliente: ${o.client_pallets}`}>
+                            Rif. Pal: {o.client_pallets}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -1050,6 +1141,8 @@ const Outbound = () => {
                       className="bg-slate-900 border border-slate-800 text-slate-200 rounded-lg px-2 py-1 text-xs font-bold"
                     >
                       <option value="FEFO">Ordina: Scadenza (FEFO ↑)</option>
+                      <option value="CLIENT_PAL_ASC">Ordina: Rif. Paletta Cliente (↑)</option>
+                      <option value="CLIENT_PAL_DESC">Ordina: Rif. Paletta Cliente (↓)</option>
                       <option value="ALPHA">Ordina: Nome Articolo (A-Z)</option>
                       <option value="QTY_DESC">Ordina: Quantità (↓)</option>
                     </select>
@@ -1060,7 +1153,7 @@ const Outbound = () => {
                   <input 
                     type="text" 
                     disabled={!newOrder.customer_id}
-                    placeholder={newOrder.customer_id ? "Cerca per lotto, nome articolo, SKU, posizione o codice paletta..." : "Seleziona prima un cliente..."}
+                    placeholder={newOrder.customer_id ? "Cerca per lotto, Rif. Paletta Cliente, nome articolo, SKU, posizione o codice paletta..." : "Seleziona prima un cliente..."}
                     className="w-full bg-slate-900 border border-slate-800 text-brand-white text-xs rounded-xl focus:ring-brand-blue focus:border-brand-blue block py-2.5 pl-9 pr-8 transition-colors placeholder-slate-500 disabled:opacity-50"
                     value={palletSearchTerm}
                     onChange={e => setPalletSearchTerm(e.target.value)}
@@ -1096,10 +1189,13 @@ const Outbound = () => {
                       </thead>
                       <tbody>
                         {filteredLotRows.map(row => {
-                          const isInCart = cart.some(c =>
+                          const isFullLotInCart = cart.some(c =>
                             c.product_id === row.product_id &&
+                            !c.pallet_id &&
+                            !c.client_pallet_number &&
                             ((c.batch || 'Nessun lotto') === row.batch || c.batch === 'TUTTI')
                           );
+                          const palletsWithClientRef = (row.pallets || []).filter(p => p.client_pallet_number);
                           const expBadge = getLotExpBadge(row.expiration_date);
                           return (
                             <tr key={row.key} className="border-t border-slate-800/60 hover:bg-slate-800/40 transition-colors">
@@ -1113,6 +1209,49 @@ const Outbound = () => {
                                     </span>
                                   )}
                                 </div>
+                                {palletsWithClientRef.length > 0 && (
+                                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-sky-400 mr-0.5">
+                                      Rif. Pal. Cl.:
+                                    </span>
+                                    {palletsWithClientRef.map(pal => {
+                                      const isThisPalletInCart = cart.some(c =>
+                                        (c.pallet_id && String(c.pallet_id) === String(pal.id)) ||
+                                        (!c.pallet_id && c.product_id === row.product_id && c.client_pallet_number === pal.client_pallet_number)
+                                      );
+                                      return (
+                                        <button
+                                          key={pal.id}
+                                          type="button"
+                                          onClick={() => {
+                                            if (isThisPalletInCart) return;
+                                            setPickingPallet({
+                                              ...row,
+                                              selectedBatch: pal.batch,
+                                              selectedPalletId: pal.id
+                                            });
+                                            setPickQty(pal.available_quantity);
+                                            setPickUom(row.base_uom || 'Pezzi');
+                                            setShowPickModal(true);
+                                          }}
+                                          className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border transition-all flex items-center gap-1 ${
+                                            isThisPalletInCart
+                                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 cursor-default'
+                                              : 'bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-slate-950 border-sky-500/40'
+                                          }`}
+                                          title={
+                                            isThisPalletInCart
+                                              ? `Bancale Rif. ${pal.client_pallet_number} già in lista prelievo`
+                                              : `Clicca per selezionare esattamente il bancale Rif. Cliente "${pal.client_pallet_number}" (${pal.available_quantity} ${row.base_uom}${pal.location ? ' • Pos: ' + pal.location : ''})`
+                                          }
+                                        >
+                                          {isThisPalletInCart ? '✓ ' : '+ '}Rif: {pal.client_pallet_number}
+                                          <span className="opacity-75 text-[9px]">({pal.available_quantity})</span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                               </td>
                               <td className="p-2.5">
                                 <span className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-mono font-bold border ${row.batch === 'Nessun lotto' ? 'bg-slate-800 text-slate-400 border-slate-700' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}`}>
@@ -1142,12 +1281,8 @@ const Outbound = () => {
                                 </div>
                               </td>
                               <td className="p-2.5 text-right">
-                                {isInCart ? (
-                                  <span className="text-emerald-400 text-[11px] font-bold uppercase inline-flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                                    <CheckCircle size={13} /> In Lista
-                                  </span>
-                                ) : (
-                                  <div className="flex items-center justify-end gap-1.5">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {!isFullLotInCart && (
                                     <button
                                       type="button"
                                       onClick={() => handleQuickAddFullLot(row)}
@@ -1156,23 +1291,25 @@ const Outbound = () => {
                                     >
                                       Tutto
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setPickingPallet({
-                                          ...row,
-                                          selectedBatch: row.batch
-                                        });
-                                        setPickQty(1);
-                                        setPickUom(row.base_uom || 'Pezzi');
-                                        setShowPickModal(true);
-                                      }}
-                                      className="bg-brand-blue/20 text-brand-blue border border-brand-blue/40 px-2.5 py-1.5 rounded-lg text-[11px] font-bold hover:bg-brand-blue hover:text-brand-black transition-colors"
-                                    >
-                                      + Q.tà
-                                    </button>
-                                  </div>
-                                )}
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPickingPallet({
+                                        ...row,
+                                        selectedBatch: row.batch,
+                                        selectedPalletId: ''
+                                      });
+                                      setPickQty(1);
+                                      setPickUom(row.base_uom || 'Pezzi');
+                                      setShowPickModal(true);
+                                    }}
+                                    className="bg-brand-blue/20 text-brand-blue border border-brand-blue/40 px-2.5 py-1.5 rounded-lg text-[11px] font-bold hover:bg-brand-blue hover:text-brand-black transition-colors"
+                                    title="Scegli quantità o bancale specifico (Rif. Paletta Cliente)"
+                                  >
+                                    + Q.tà / Rif.
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1212,17 +1349,46 @@ const Outbound = () => {
                       <p className="text-[11px] mt-1">Clicca su <strong>Tutto</strong> o <strong>+ Q.tà</strong> accanto ai lotti a sinistra.</p>
                     </div>
                   ) : (
-                    cart.map((c, i) => (
+                    cart.map((c, i) => {
+                      const matchingPalletsForCart = availablePallets.filter(p => {
+                        if (String(p.product_id) !== String(c.product_id)) return false;
+                        if (c.batch && c.batch !== 'TUTTI') {
+                          const pBatch = (p.batch && String(p.batch).trim() !== '') ? String(p.batch).trim() : 'Nessun lotto';
+                          if (pBatch !== c.batch) return false;
+                        }
+                        return true;
+                      }).sort((a, b) => {
+                        const refA = (a.client_pallet_number || '').trim();
+                        const refB = (b.client_pallet_number || '').trim();
+                        if (refA && !refB) return -1;
+                        if (!refA && refB) return 1;
+                        if (refA && refB) return refA.localeCompare(refB, undefined, { numeric: true, sensitivity: 'base' });
+                        return 0;
+                      });
+                      const hasAnyClientRef = matchingPalletsForCart.some(p => p.client_pallet_number && String(p.client_pallet_number).trim() !== '') || Boolean(c.client_pallet_number);
+
+                      return (
                       <div key={i} className="bg-slate-900 border border-slate-800 hover:border-slate-700 p-3 rounded-xl flex flex-col gap-2">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <p className="text-brand-white font-bold text-xs truncate" title={c.product_name}>
                               #{i + 1} • {c.product_name}
                             </p>
-                            <p className="text-[11px] text-amber-300 font-mono mt-0.5">
-                              Lotto: <strong>{c.batch && c.batch !== 'TUTTI' ? c.batch : 'Qualsiasi (FEFO)'}</strong>
-                              {c.pallet_code ? ` • Pal: ${c.pallet_code}` : ''}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                              <span className="text-[11px] text-amber-300 font-mono">
+                                Lotto: <strong>{c.batch && c.batch !== 'TUTTI' ? c.batch : 'Qualsiasi (FEFO)'}</strong>
+                              </span>
+                              {c.client_pallet_number && (
+                                <span className="text-[10px] font-mono font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40 px-1.5 py-0.2 rounded">
+                                  Rif. Pal. Cl: {c.client_pallet_number}
+                                </span>
+                              )}
+                              {c.pallet_code && (
+                                <span className="text-[10px] font-mono text-slate-400">
+                                  ({c.pallet_code})
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <button
                             type="button"
@@ -1233,6 +1399,49 @@ const Outbound = () => {
                             <Trash2 size={15} />
                           </button>
                         </div>
+
+                        {/* Selettore Inline Riferimento Paletta Cliente (se disponibile) */}
+                        {(hasAnyClientRef || matchingPalletsForCart.length > 1) && (
+                          <div className="pt-1 border-t border-slate-800/70">
+                            <label className="block text-[9px] font-bold uppercase text-sky-400 mb-0.5">
+                              Riferimento Paletta Cliente / Bancale Esatto (Opz.)
+                            </label>
+                            <select
+                              value={c.pallet_id ? String(c.pallet_id) : ''}
+                              onChange={e => {
+                                const val = e.target.value;
+                                if (!val) {
+                                  updateCartItem(i, { pallet_id: null, pallet_code: null, client_pallet_number: null });
+                                } else {
+                                  const chosen = matchingPalletsForCart.find(p => String(p.id) === String(val));
+                                  if (chosen) {
+                                    const avail = parseFloat((chosen.available_quantity ?? chosen.quantity) || 0);
+                                    const chosenBatch = (chosen.batch && String(chosen.batch).trim() !== '') ? String(chosen.batch).trim() : 'Nessun lotto';
+                                    updateCartItem(i, {
+                                      pallet_id: chosen.id,
+                                      pallet_code: chosen.pallet_code,
+                                      client_pallet_number: chosen.client_pallet_number ? String(chosen.client_pallet_number).trim() : null,
+                                      batch: chosenBatch,
+                                      quantity_required: c.requested_uom === 'Bancali' ? 1 : Math.min(parseFloat(c.quantity_required) || avail, avail)
+                                    });
+                                  }
+                                }
+                              }}
+                              className="w-full bg-slate-950 border border-slate-700 focus:border-sky-400 text-sky-300 font-mono font-bold text-[11px] rounded-lg px-2 py-1.5"
+                            >
+                              <option value="">⚡ Automatico (FEFO / Scade prima)</option>
+                              {matchingPalletsForCart.map(p => {
+                                const avail = parseFloat((p.available_quantity ?? p.quantity) || 0);
+                                const refStr = p.client_pallet_number ? `Rif. Cliente: ${p.client_pallet_number}` : `Senza Rif. Cl.`;
+                                return (
+                                  <option key={p.id} value={String(p.id)}>
+                                    {refStr} • Pal: {p.pallet_code} ({avail} {p.uom || 'Pz'}{p.location ? ` • Pos: ${p.location}` : ''})
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </div>
+                        )}
 
                         {/* Modifica Inline Quantità e Unità di Misura */}
                         <div className="grid grid-cols-12 gap-2 items-center pt-1 border-t border-slate-800/70">
@@ -1264,7 +1473,8 @@ const Outbound = () => {
                           </div>
                         </div>
                       </div>
-                    ))
+                    );
+                    })
                   )}
                 </div>
 
@@ -1294,7 +1504,7 @@ const Outbound = () => {
               <select 
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-brand-white font-mono text-sm focus:border-brand-blue"
                 value={pickingPallet.selectedBatch || pickingPallet.batch}
-                onChange={e => setPickingPallet({...pickingPallet, selectedBatch: e.target.value})}
+                onChange={e => setPickingPallet({...pickingPallet, selectedBatch: e.target.value, selectedPalletId: ''})}
               >
                 {(pickingPallet.productBatches || []).map(b => (
                   <option key={b.batch} value={b.batch}>
@@ -1306,6 +1516,81 @@ const Outbound = () => {
                 )}
               </select>
             </div>
+
+            {/* Selettore Numero Riferimento Paletta Cliente / Bancale Specifico */}
+            {selectedBatchStats.candidatePallets && selectedBatchStats.candidatePallets.length > 0 && (
+              <div className="mb-4 bg-slate-950/80 border border-slate-800 rounded-2xl p-3">
+                <label className="block text-sky-400 text-xs font-bold mb-1.5">
+                  Riferimento Paletta Cliente / Bancale Specifico (Opzionale)
+                </label>
+                {selectedBatchStats.candidatePallets.some(p => p.client_pallet_number) && (
+                  <div className="flex flex-wrap gap-1.5 mb-2 max-h-24 overflow-y-auto pr-1">
+                    <button
+                      type="button"
+                      onClick={() => setPickingPallet(prev => ({ ...prev, selectedPalletId: '' }))}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all ${
+                        !pickingPallet.selectedPalletId
+                          ? 'bg-brand-blue text-brand-black border-brand-blue'
+                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      Auto (FEFO)
+                    </button>
+                    {selectedBatchStats.candidatePallets.filter(p => p.client_pallet_number).map(p => {
+                      const isSel = String(pickingPallet.selectedPalletId) === String(p.id);
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setPickingPallet(prev => ({
+                              ...prev,
+                              selectedPalletId: p.id,
+                              selectedBatch: p.batch
+                            }));
+                            setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Scatole' ? Math.max(1, Math.floor(p.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : p.available_quantity));
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition-all ${
+                            isSel
+                              ? 'bg-sky-400 text-slate-950 border-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.3)]'
+                              : 'bg-sky-500/10 text-sky-300 border-sky-500/30 hover:bg-sky-500/20'
+                          }`}
+                        >
+                          Rif: {p.client_pallet_number} ({p.available_quantity} {pickingPallet.base_uom || 'Pz'})
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <select
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-brand-white font-mono text-xs focus:border-sky-400"
+                  value={pickingPallet.selectedPalletId ? String(pickingPallet.selectedPalletId) : ''}
+                  onChange={e => {
+                    const pid = e.target.value;
+                    if (!pid) {
+                      setPickingPallet(prev => ({ ...prev, selectedPalletId: '' }));
+                    } else {
+                      const chosen = selectedBatchStats.candidatePallets.find(p => String(p.id) === String(pid));
+                      setPickingPallet(prev => ({
+                        ...prev,
+                        selectedPalletId: pid,
+                        selectedBatch: chosen ? chosen.batch : prev.selectedBatch
+                      }));
+                      if (chosen) {
+                        setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Scatole' ? Math.max(1, Math.floor(chosen.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : chosen.available_quantity));
+                      }
+                    }
+                  }}
+                >
+                  <option value="">⚡ Automatico (FEFO / Scade prima / Regole di Prelievo)</option>
+                  {selectedBatchStats.candidatePallets.map(p => (
+                    <option key={p.id} value={String(p.id)}>
+                      {p.client_pallet_number ? `Rif. Paletta Cliente: ${p.client_pallet_number}` : `Senza Rif. Cliente`} • Cod: {p.pallet_code} • {p.available_quantity} {pickingPallet.base_uom || 'Pz'}{p.location ? ` • Pos: ${p.location}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="mb-4">
               <label className="block text-slate-400 text-xs font-bold mb-1.5">Unità di Misura Prelievo</label>
@@ -1380,7 +1665,18 @@ const Outbound = () => {
                 onChange={e => setPickQty(e.target.value)}
               />
               <div className="text-xs text-slate-400 mt-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <div>Disponibilità per <strong className="text-amber-300">{pickingPallet.selectedBatch === 'TUTTI' ? 'Tutti i lotti' : `Lotto ${pickingPallet.selectedBatch}`}</strong>:</div>
+                <div>
+                  Disponibilità per{' '}
+                  {selectedBatchStats.chosenPallet ? (
+                    <strong className="text-sky-400">
+                      Bancale {selectedBatchStats.chosenPallet.client_pallet_number ? `Rif. Cliente ${selectedBatchStats.chosenPallet.client_pallet_number}` : selectedBatchStats.chosenPallet.pallet_code}
+                    </strong>
+                  ) : (
+                    <strong className="text-amber-300">
+                      {pickingPallet.selectedBatch === 'TUTTI' ? 'Tutti i lotti' : `Lotto ${pickingPallet.selectedBatch}`}
+                    </strong>
+                  )}:
+                </div>
                 <div className="mt-1 font-mono text-emerald-400 font-bold">
                   • {selectedBatchStats.qty} {pickingPallet.base_uom || 'Pezzi'}
                   {pickingPallet.units_per_box > 1 && ` • ${selectedBatchStats.boxes} Scatole`}
@@ -1400,20 +1696,24 @@ const Outbound = () => {
 
                  const upb = parseFloat(pickingPallet.units_per_box) || 1;
                  if (pickUom === 'Bancali' && reqVal > selectedBatchStats.pallets) {
-                   appAlert(`Disponibilità insufficiente per questo lotto: massimo ${selectedBatchStats.pallets} bancali/palette disponibili.`);
+                   appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.pallets} bancali/palette disponibili.`);
                    return;
                  }
                  if (pickUom === 'Scatole' && (reqVal * upb) > selectedBatchStats.qty) {
-                   appAlert(`Disponibilità insufficiente per questo lotto: massimo ${selectedBatchStats.boxes} scatole disponibili.`);
+                   appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.boxes} scatole disponibili.`);
                    return;
                  }
                  if (pickUom !== 'Bancali' && pickUom !== 'Scatole' && reqVal > selectedBatchStats.qty) {
-                   appAlert(`Disponibilità insufficiente per questo lotto: massimo ${selectedBatchStats.qty} ${pickingPallet.base_uom || 'Pezzi'} disponibili.`);
+                   appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.qty} ${pickingPallet.base_uom || 'Pezzi'} disponibili.`);
                    return;
                  }
 
-                 const targetBatch = pickingPallet.selectedBatch || pickingPallet.batch || 'Nessun lotto';
+                 const chosen = selectedBatchStats.chosenPallet;
+                 const targetBatch = chosen ? chosen.batch : (pickingPallet.selectedBatch || pickingPallet.batch || 'Nessun lotto');
                  const newCartItem = {
+                    pallet_id: chosen ? chosen.id : null,
+                    pallet_code: chosen ? chosen.pallet_code : null,
+                    client_pallet_number: chosen && chosen.client_pallet_number ? chosen.client_pallet_number : null,
                     product_id: pickingPallet.product_id,
                     product_name: pickingPallet.name,
                     quantity_required: reqVal,

@@ -56,7 +56,7 @@ async function palletRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
+        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
         (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
@@ -74,7 +74,8 @@ async function palletRoutes(fastify, options) {
   fastify.get('/inventory', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name,
+        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name,
+               COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                l.zone, l.col, l.pos,
                (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
         FROM PALLETS p
@@ -428,21 +429,43 @@ async function palletRoutes(fastify, options) {
     }
 
     try {
-      const [codeRows] = await db.query(`SELECT pallet_code FROM PALLETS WHERE id IN (?) GROUP BY pallet_code ORDER BY MIN(id) ASC`, [ids]);
-      const codes = codeRows.map(r => r.pallet_code);
+      // Mantiene rigorosamente l'ordine esatto dell'array ids ricevuto dal frontend
+      // (Riga 1 visualizzata -> 1° barcode, Riga 2 -> 2° barcode, ecc.)
+      const [idRows] = await db.query(`SELECT id, pallet_code FROM PALLETS WHERE id IN (?)`, [ids]);
+      const idToCode = new Map(idRows.map(r => [Number(r.id), r.pallet_code]));
+      const codes = [];
+      const seenCodes = new Set();
+      for (const rawId of ids) {
+        const code = idToCode.get(Number(rawId));
+        if (code && !seenCodes.has(code)) {
+          seenCodes.add(code);
+          codes.push(code);
+        }
+      }
+
+      if (codes.length === 0) {
+        return reply.code(404).send({ error: 'Nessuna paletta valida trovata per la stampa' });
+      }
+
+      const [allCodeRows] = await db.query(`
+        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
+        FROM PALLETS p
+        JOIN PRODUCTS pr ON p.product_id = pr.id
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        WHERE p.pallet_code IN (?)
+        ORDER BY p.id ASC
+      `, [codes]);
+
+      const rowsByCode = new Map();
+      for (const r of allCodeRows) {
+        if (!rowsByCode.has(r.pallet_code)) rowsByCode.set(r.pallet_code, []);
+        rowsByCode.get(r.pallet_code).push(r);
+      }
 
       const generatedLabelsData = [];
       
       for (const code of codes) {
-        const [allRows] = await db.query(`
-          SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
-          FROM PALLETS p
-          JOIN PRODUCTS pr ON p.product_id = pr.id
-          JOIN CUSTOMERS c ON p.customer_id = c.id
-          WHERE p.pallet_code = ?
-          ORDER BY p.id ASC
-        `, [code]);
-        
+        const allRows = rowsByCode.get(code) || [];
         if (allRows.length === 0) continue;
         
         const activeRows = allRows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);

@@ -572,6 +572,7 @@ const ProductsManagement = () => {
       const matchSearch = p.product_name.toLowerCase().includes(searchLower) || 
                           p.pallet_code.toLowerCase().includes(searchLower) ||
                           p.customer_name.toLowerCase().includes(searchLower) ||
+                          (p.sku && p.sku.toLowerCase().includes(searchLower)) ||
                           (p.batch && p.batch.toLowerCase().includes(searchLower)) ||
                           (p.location && p.location.toLowerCase().includes(searchLower)) ||
                           (p.notes && p.notes.toLowerCase().includes(searchLower)) ||
@@ -651,6 +652,15 @@ const ProductsManagement = () => {
     });
 
     return [...list].sort((a, b) => {
+      if (sortBy === 'CLIENT_PAL_ASC' || sortBy === 'CLIENT_PAL_DESC') {
+        const refA = (a.client_pallet_number || '').toString().trim();
+        const refB = (b.client_pallet_number || '').toString().trim();
+        if (!refA && !refB) return new Date(b.created_at) - new Date(a.created_at);
+        if (!refA) return 1;
+        if (!refB) return -1;
+        const cmp = refA.localeCompare(refB, undefined, { numeric: true, sensitivity: 'base' });
+        return sortBy === 'CLIENT_PAL_ASC' ? cmp : -cmp;
+      }
       if (sortBy === 'EXP_ASC') {
         if (!a.expiration_date && !b.expiration_date) return 0;
         if (!a.expiration_date) return 1;
@@ -693,6 +703,20 @@ const ProductsManagement = () => {
     });
     return map;
   }, [pallets]);
+
+  const productStockStats = React.useMemo(() => {
+    let all = 0;
+    let inStock = 0;
+    let outOfStock = 0;
+    products.forEach(p => {
+      if (filterCustomer !== 'ALL' && String(p.customer_id) !== String(filterCustomer)) return;
+      all += 1;
+      const st = stockByProduct.get(p.id) || { totalQty: 0, palletCount: 0 };
+      if (st.totalQty > 0) inStock += 1;
+      else outOfStock += 1;
+    });
+    return { all, inStock, outOfStock };
+  }, [products, filterCustomer, stockByProduct]);
 
   const filteredProducts = React.useMemo(() => {
     const searchLower = searchTerm.toLowerCase();
@@ -961,9 +985,9 @@ const ProductsManagement = () => {
 
               {activeTab === 'products' && (
                 <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
-                  <button onClick={() => setProductStockFilter('ALL')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti</button>
-                  <button onClick={() => setProductStockFilter('IN_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'IN_STOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>In Giacenza</button>
-                  <button onClick={() => setProductStockFilter('OUT_OF_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'OUT_OF_STOCK' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 hover:text-rose-400'}`}>Esauriti (0)</button>
+                  <button onClick={() => setProductStockFilter('ALL')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti ({productStockStats.all})</button>
+                  <button onClick={() => setProductStockFilter('IN_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'IN_STOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>In Giacenza ({productStockStats.inStock})</button>
+                  <button onClick={() => setProductStockFilter('OUT_OF_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'OUT_OF_STOCK' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 hover:text-rose-400'}`}>Esauriti ({productStockStats.outOfStock})</button>
                 </div>
               )}
 
@@ -982,11 +1006,9 @@ const ProductsManagement = () => {
                       <button onClick={() => setFilterStatus('ALL')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti Stati</button>
                       <button onClick={() => setFilterStatus('PENDING')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'PENDING' ? 'bg-slate-700 text-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
                       <button onClick={() => setFilterStatus('STOCKED')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'STOCKED' ? 'bg-green-500/20 text-green-400 font-bold' : 'text-slate-500 hover:text-green-400'}`}>A Scaffale</button>
-                      {loadingZoneCount > 0 && (
-                        <button onClick={() => setFilterStatus('LOADING_ZONE')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'LOADING_ZONE' ? 'bg-amber-500/25 text-amber-300 font-bold' : 'text-amber-400/70 hover:text-amber-300'}`}>
-                          Zona Carico ({loadingZoneCount})
-                        </button>
-                      )}
+                      <button onClick={() => setFilterStatus('LOADING_ZONE')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'LOADING_ZONE' ? 'bg-amber-500/25 text-amber-300 font-bold' : 'text-amber-400/70 hover:text-amber-300'}`}>
+                        Zona Carico ({loadingZoneCount})
+                      </button>
                     </div>
                   </div>
 
@@ -998,6 +1020,8 @@ const ProductsManagement = () => {
                       className="bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-2.5 py-1.5 font-semibold focus:border-brand-blue"
                     >
                       <option value="ARRIVAL_DESC">Ordina: Arrivo (Più recenti)</option>
+                      <option value="CLIENT_PAL_ASC">Ordina: Rif. Paletta Cliente ↑ (Crescente)</option>
+                      <option value="CLIENT_PAL_DESC">Ordina: Rif. Paletta Cliente ↓ (Decrescente)</option>
                       <option value="EXP_ASC">Ordina: Scadenza ↑ (FEFO - Più urgenti)</option>
                       <option value="EXP_DESC">Ordina: Scadenza ↓ (Più lontane)</option>
                     </select>
@@ -1016,23 +1040,34 @@ const ProductsManagement = () => {
                 </button>
               )}
 
-              {activeTab === 'pallets' && selectedPallets.length > 0 && (
-                <div className="flex items-center gap-2">
-                  {selectedPallets.length < filteredPallets.length && (
+              {activeTab === 'pallets' && filteredPallets.length > 0 && (
+                <div className="flex items-center gap-2 ml-auto">
+                  {selectedPallets.length < filteredPallets.length ? (
                     <button
                       type="button"
                       onClick={() => setSelectedPallets(filteredPallets.map(p => p.id))}
-                      className="px-3 py-2 bg-slate-950 border border-slate-700 hover:border-brand-blue text-slate-300 rounded-xl text-xs font-bold transition-colors"
+                      className="px-3 py-1.5 bg-slate-950 border border-slate-700 hover:border-brand-blue text-slate-300 rounded-xl text-xs font-bold transition-colors"
+                      title="Seleziona tutte le palette filtrate (anche su più pagine)"
                     >
                       Seleziona tutte ({filteredPallets.length})
                     </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPallets([])}
+                      className="px-3 py-1.5 bg-slate-950 border border-slate-700 hover:border-rose-500 text-slate-300 rounded-xl text-xs font-bold transition-colors"
+                    >
+                      Deseleziona ({selectedPallets.length})
+                    </button>
                   )}
-                  <button
-                    onClick={handlePrintBulk}
-                    className="flex items-center gap-2 px-4 py-2 bg-brand-blue text-brand-black font-black rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95 text-xs"
-                  >
-                    <Printer size={15} /> Stampa {selectedPallets.length} Etichett{selectedPallets.length === 1 ? 'a' : 'e'}
-                  </button>
+                  {selectedPallets.length > 0 && (
+                    <button
+                      onClick={handlePrintBulk}
+                      className="flex items-center gap-2 px-4 py-1.5 bg-brand-blue text-brand-black font-black rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95 text-xs"
+                    >
+                      <Printer size={15} /> Stampa {selectedPallets.length} Etichett{selectedPallets.length === 1 ? 'a' : 'e'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1213,7 +1248,18 @@ const ProductsManagement = () => {
                         </div>
                       </th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Paletta</th>
-                      <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs">Prodotto & Info</th>
+                      <th
+                        onClick={() => setSortBy(sortBy === 'CLIENT_PAL_ASC' ? 'CLIENT_PAL_DESC' : 'CLIENT_PAL_ASC')}
+                        className="px-3 py-3 font-semibold uppercase tracking-wider text-xs cursor-pointer hover:text-sky-400 transition-colors select-none"
+                        title="Clicca per ordinare in base al Numero Riferimento Paletta Cliente (Crescente / Decrescente)"
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          Prodotto & Rif. Pal. Cliente
+                          <ArrowUpDown size={12} className={sortBy.startsWith('CLIENT_PAL_') ? 'text-sky-400' : 'text-slate-600'} />
+                          {sortBy === 'CLIENT_PAL_ASC' && <span className="text-sky-400 font-black">↑</span>}
+                          {sortBy === 'CLIENT_PAL_DESC' && <span className="text-sky-400 font-black">↓</span>}
+                        </span>
+                      </th>
                       <th className="px-3 py-3 font-semibold uppercase tracking-wider text-xs text-center">Q.tà</th>
                       <th
                         onClick={() => setSortBy('ARRIVAL_DESC')}
@@ -1268,9 +1314,17 @@ const ProductsManagement = () => {
                           <div className="font-bold">{p.product_name}</div>
                           <div className="text-slate-400 text-xs">{p.customer_name}</div>
                           {(p.client_pallet_number || p.client_article_number) && (
-                            <div className="text-slate-500 text-[10px] uppercase mt-1">
-                              {p.client_pallet_number && <span className="mr-2">Pal: {p.client_pallet_number}</span>}
-                              {p.client_article_number && <span>Art: {p.client_article_number}</span>}
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              {p.client_pallet_number && (
+                                <span className="bg-sky-500/15 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-md font-mono font-bold text-[10px]">
+                                  Rif. Pal. Cl: {p.client_pallet_number}
+                                </span>
+                              )}
+                              {p.client_article_number && (
+                                <span className="text-slate-400 font-mono text-[10px] uppercase bg-slate-950 border border-slate-800 px-1.5 py-0.5 rounded">
+                                  Art: {p.client_article_number}
+                                </span>
+                              )}
                             </div>
                           )}
                         </td>
@@ -1651,36 +1705,51 @@ const ProductsManagement = () => {
 
             <form onSubmit={handleAdjustQty}>
               <div className="mb-5">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                   <label className="text-slate-400 text-xs font-bold uppercase tracking-wider">
                     Nuova Quantità ({adjustQtyModal.pallet.uom || 'Pezzi'})
                   </label>
-                  {adjustQtyModal.pallet.units_per_box > 1 && (
-                    <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {[-10, -1, 1, 10].map(delta => (
                       <button
+                        key={delta}
                         type="button"
                         onClick={() => {
-                          const upb = parseFloat(adjustQtyModal.pallet.units_per_box) || 1;
                           const cur = parseFloat(adjustQtyModal.newQuantity) || 0;
-                          setAdjustQtyModal(prev => ({ ...prev, newQuantity: Math.max(0, cur - upb) }));
+                          setAdjustQtyModal(prev => ({ ...prev, newQuantity: Math.max(0, cur + delta) }));
                         }}
                         className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-bold"
                       >
-                        -1 Scat. (-{adjustQtyModal.pallet.units_per_box})
+                        {delta > 0 ? `+${delta}` : delta}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const upb = parseFloat(adjustQtyModal.pallet.units_per_box) || 1;
-                          const cur = parseFloat(adjustQtyModal.newQuantity) || 0;
-                          setAdjustQtyModal(prev => ({ ...prev, newQuantity: cur + upb }));
-                        }}
-                        className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded text-[11px] font-bold"
-                      >
-                        +1 Scat. (+{adjustQtyModal.pallet.units_per_box})
-                      </button>
-                    </div>
-                  )}
+                    ))}
+                    {adjustQtyModal.pallet.units_per_box > 1 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const upb = parseFloat(adjustQtyModal.pallet.units_per_box) || 1;
+                            const cur = parseFloat(adjustQtyModal.newQuantity) || 0;
+                            setAdjustQtyModal(prev => ({ ...prev, newQuantity: Math.max(0, cur - upb) }));
+                          }}
+                          className="px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-bold"
+                        >
+                          -1 Scat. (-{adjustQtyModal.pallet.units_per_box})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const upb = parseFloat(adjustQtyModal.pallet.units_per_box) || 1;
+                            const cur = parseFloat(adjustQtyModal.newQuantity) || 0;
+                            setAdjustQtyModal(prev => ({ ...prev, newQuantity: cur + upb }));
+                          }}
+                          className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded text-[11px] font-bold"
+                        >
+                          +1 Scat. (+{adjustQtyModal.pallet.units_per_box})
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <input
                   type="number"
@@ -1855,8 +1924,10 @@ const ProductsManagement = () => {
                 </button>
                 <button onClick={() => {
                   if (printModal.isBulk) {
+                    const orderedSelectedIds = filteredPallets.filter(p => selectedPallets.includes(p.id)).map(p => p.id);
+                    const idsToSend = orderedSelectedIds.length > 0 ? orderedSelectedIds : selectedPallets;
                     axios.post(`http://${window.location.hostname}:3000/api/pallets/print-bulk`, {
-                      ids: selectedPallets,
+                      ids: idsToSend,
                       paper_format: printModal.format,
                       print_mode: printModal.format === 'A4' ? 'GRID' : 'SINGLE_PAGE',
                       copies: printModal.copies

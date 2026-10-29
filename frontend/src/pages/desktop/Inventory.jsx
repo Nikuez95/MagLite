@@ -12,6 +12,7 @@ import { io } from 'socket.io-client';
 
 const defaultColumns = [
   { key: 'code', label: 'Cod. Paletta', visible: true },
+  { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: true },
   { key: 'customer', label: 'Cliente', visible: true },
   { key: 'product', label: 'Prodotto', visible: true },
   { key: 'quantity', label: 'Q.tà', visible: true },
@@ -21,8 +22,7 @@ const defaultColumns = [
   { key: 'expiration', label: 'Scadenza', visible: true },
   { key: 'flags', label: 'Flag', visible: true },
   { key: 'status', label: 'Stato', visible: false },
-  { key: 'notes', label: 'Note', visible: false },
-  { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: false }
+  { key: 'notes', label: 'Note', visible: false }
 ];
 
 const formatUOM = (uom) => {
@@ -176,9 +176,15 @@ const Inventory = () => {
   const [selectedCustomers, setSelectedCustomers] = useState([]);
   const [filterWarehouse, setFilterWarehouse] = useState('ALL'); // 'ALL' | 'Settala' | 'Caleppio'
   const [filterLocationState, setFilterLocationState] = useState('ALL'); // 'ALL' | 'SHELF' | 'LOADING_ZONE' | 'PENDING'
-  const [sortBy, setSortBy] = useState('alphabetical'); // 'alphabetical', 'customer', 'zone', 'arrival', 'qty_desc', 'expiration_asc', 'expiration_desc'
+  const [sortBy, setSortBy] = useState('alphabetical'); // 'alphabetical', 'customer', 'zone', 'arrival', 'qty_desc', 'expiration_asc', 'expiration_desc', 'client_pallet_asc', 'client_pallet_desc'
   const [groupByBatch, setGroupByBatch] = useState(false);
   const [showColumnManager, setShowColumnManager] = useState(false);
+
+  // Stampa rapida Barcode in ordine visivo
+  const [barcodePrintModal, setBarcodePrintModal] = useState(false);
+  const [barcodeFormat, setBarcodeFormat] = useState('A4');
+  const [barcodeCopies, setBarcodeCopies] = useState(1);
+  const [printingBarcodes, setPrintingBarcodes] = useState(false);
 
   // Filtri Scadenza & Preavviso (GG / MESI)
   const [expirationWarningValue, setExpirationWarningValue] = useState(60);
@@ -205,6 +211,11 @@ const Inventory = () => {
     let cols = [...defaultColumns];
     if (user.preferences && Array.isArray(user.preferences.inventoryColumns)) {
       cols = [...user.preferences.inventoryColumns];
+    }
+    if (!cols.find(c => c.key === 'clientPallet')) {
+      cols.splice(1, 0, { key: 'clientPallet', label: 'Rif. Paletta Cl.', visible: true });
+    } else {
+      cols = cols.map(c => c.key === 'clientPallet' ? { ...c, label: 'Rif. Paletta Cl.', visible: true } : c);
     }
     if (!cols.find(c => c.key === 'expiration')) {
       const batchIdx = cols.findIndex(c => c.key === 'batch');
@@ -286,9 +297,9 @@ const Inventory = () => {
   const applyColumnPreset = (preset) => {
     let visibleKeys = [];
     if (preset === 'COMPACT') {
-      visibleKeys = ['customer', 'product', 'quantity', 'location', 'batch', 'expiration'];
+      visibleKeys = ['clientPallet', 'customer', 'product', 'quantity', 'location', 'batch', 'expiration'];
     } else if (preset === 'FEFO') {
-      visibleKeys = ['code', 'customer', 'product', 'batch', 'expiration', 'quantity', 'location'];
+      visibleKeys = ['code', 'clientPallet', 'customer', 'product', 'batch', 'expiration', 'quantity', 'location'];
     } else if (preset === 'ALL') {
       visibleKeys = columns.map(c => c.key);
     } else {
@@ -414,6 +425,8 @@ const Inventory = () => {
           groups[key] = {
             ...p,
             id: key,
+            palletIds: [p.id],
+            clientPalletList: p.client_pallet_number ? [String(p.client_pallet_number).trim()] : [],
             quantity: parseFloat(p.quantity) || 0,
             palletCount: 1,
             location: '',
@@ -423,6 +436,13 @@ const Inventory = () => {
             pallet_code: 'MULTIPLI'
           };
         } else {
+          groups[key].palletIds.push(p.id);
+          if (p.client_pallet_number) {
+            const trimmed = String(p.client_pallet_number).trim();
+            if (trimmed && !groups[key].clientPalletList.includes(trimmed)) {
+              groups[key].clientPalletList.push(trimmed);
+            }
+          }
           groups[key].quantity += (parseFloat(p.quantity) || 0);
           groups[key].palletCount += 1;
           if (p.expiration_date) {
@@ -434,11 +454,22 @@ const Inventory = () => {
       });
       data = Object.values(groups).map(g => {
         g.pallet_code = `${g.palletCount} Palette`;
+        g.client_pallet_number = g.clientPalletList.join(', ');
         return g;
       });
     }
 
     data = [...data].sort((a, b) => {
+      if (sortBy === 'client_pallet_asc' || sortBy === 'client_pallet_desc') {
+        const refA = String(a.client_pallet_number || '').trim();
+        const refB = String(b.client_pallet_number || '').trim();
+        if (!refA && !refB) return String(a.id || '').localeCompare(String(b.id || ''));
+        if (!refA) return 1; // Senza riferimento sempre in fondo
+        if (!refB) return -1;
+        const cmp = refA.localeCompare(refB, undefined, { numeric: true, sensitivity: 'base' });
+        if (cmp !== 0) return sortBy === 'client_pallet_asc' ? cmp : -cmp;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      }
       if (sortBy === 'alphabetical') {
         return (a.product_name || '').localeCompare(b.product_name || '');
       }
@@ -478,6 +509,47 @@ const Inventory = () => {
     });
     return data;
   }, [baseFilteredData, filterExpCategory, expirationWarningValue, warningUnit, sortBy, groupByBatch]);
+
+  // Lista degli ID paletta nell'ORDINE ESATTO visualizzato a schermo (riga 1 -> 1° barcode, riga 2 -> 2° barcode, ecc.)
+  const orderedVisiblePalletIds = useMemo(() => {
+    const ids = [];
+    processedData.forEach(row => {
+      if (Array.isArray(row.palletIds) && row.palletIds.length > 0) {
+        row.palletIds.forEach(pid => ids.push(pid));
+      } else if (row.id) {
+        ids.push(row.id);
+      }
+    });
+    return ids;
+  }, [processedData]);
+
+  // Funzione stampa rapida di TUTTI i barcode visualizzati nell'ordine esatto
+  const handlePrintAllDisplayedBarcodes = async (e) => {
+    if (e) e.preventDefault();
+    if (orderedVisiblePalletIds.length === 0) return;
+    setPrintingBarcodes(true);
+    try {
+      const response = await axios.post(
+        `http://${window.location.hostname}:3000/api/pallets/print-bulk`,
+        {
+          ids: orderedVisiblePalletIds,
+          format: barcodeFormat,
+          copies: barcodeCopies
+        },
+        {
+          headers: { Authorization: `Bearer ${getToken()}` },
+          responseType: 'blob'
+        }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+      setBarcodePrintModal(false);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Errore nella generazione del PDF dei barcode');
+    } finally {
+      setPrintingBarcodes(false);
+    }
+  };
 
   // Riepilogo live dei totali della vista corrente
   const summaryMetrics = useMemo(() => {
@@ -531,7 +603,7 @@ const Inventory = () => {
       }
       case 'status': return row.status;
       case 'notes': return groupByBatch ? '-' : (row.notes || '-');
-      case 'clientPallet': return groupByBatch ? '-' : (row.client_pallet_number || '-');
+      case 'clientPallet': return row.client_pallet_number || '-';
       default: return '';
     }
   };
@@ -643,7 +715,13 @@ const Inventory = () => {
         </span>
       );
       case 'notes': return groupByBatch ? <span className="text-slate-500">-</span> : <div className="text-xs text-slate-400 max-w-xs truncate" title={row.notes}>{row.notes || '-'}</div>;
-      case 'clientPallet': return groupByBatch ? <span className="text-slate-500">-</span> : <span className="text-xs text-slate-400">{row.client_pallet_number || '-'}</span>;
+      case 'clientPallet': return row.client_pallet_number ? (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/15 border border-sky-500/40 text-xs font-mono font-bold text-sky-300">
+          {row.client_pallet_number}
+        </span>
+      ) : (
+        <span className="text-xs text-slate-600">-</span>
+      );
       default: return null;
     }
   };
@@ -700,6 +778,8 @@ const Inventory = () => {
     if (sortBy === 'arrival') filterText += 'Data Arrivo';
     if (sortBy === 'expiration_asc') filterText += 'Scadenza (FEFO - Più urgenti)';
     if (sortBy === 'expiration_desc') filterText += 'Scadenza (Più lontane)';
+    if (sortBy === 'client_pallet_asc') filterText += 'Rif. Paletta Cliente ↑ (Crescente)';
+    if (sortBy === 'client_pallet_desc') filterText += 'Rif. Paletta Cliente ↓ (Decrescente)';
     if (filterWarehouse !== 'ALL') {
       filterText += ` | Magazzino: ${filterWarehouse}`;
     }
@@ -781,6 +861,15 @@ const Inventory = () => {
             <Columns size={17} />
             Colonne ({visibleCols.length}/{columns.length})
             {showColumnManager ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+          </button>
+          <button
+            type="button"
+            disabled={orderedVisiblePalletIds.length === 0}
+            onClick={() => setBarcodePrintModal(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 text-brand-black rounded-xl hover:bg-amber-400 disabled:opacity-40 transition-colors shadow-[0_0_20px_rgba(245,158,11,0.25)] font-black text-sm"
+            title="Stampa tutti i barcode dei prodotti visualizzati nell'ordine esatto a schermo (Riga 1 = 1° barcode, Riga 2 = 2° barcode, ecc.)"
+          >
+            <Printer size={18} /> Stampa Barcode in Ordine ({orderedVisiblePalletIds.length})
           </button>
           <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 border border-slate-700 text-brand-white rounded-xl hover:bg-slate-800 transition-colors shadow-lg font-bold text-sm">
             <Download size={18} className="text-brand-blue" /> CSV ({processedData.length})
@@ -972,6 +1061,8 @@ const Inventory = () => {
               className="bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 focus:ring-brand-blue text-xs font-bold"
             >
               <option value="alphabetical">Ordina: Prodotto (A-Z)</option>
+              <option value="client_pallet_asc">Ordina: Rif. Paletta Cliente ↑ (Crescente)</option>
+              <option value="client_pallet_desc">Ordina: Rif. Paletta Cliente ↓ (Decrescente)</option>
               <option value="customer">Ordina: Cliente (A-Z)</option>
               <option value="zone">Ordina: Zona / Posizione</option>
               <option value="qty_desc">Ordina: Quantità (↓)</option>
@@ -1212,8 +1303,19 @@ const Inventory = () => {
             Clienti: <strong className="text-slate-200 font-bold">{summaryMetrics.customersCount}</strong>
           </span>
         </div>
-        <div className="text-slate-500 italic hidden md:block">
-          Clicca sulle intestazioni di colonna per ordinare rapidamente
+        <div className="flex items-center gap-3">
+          <span className="text-slate-500 italic hidden md:block">
+            Clicca sulle intestazioni di colonna per ordinare rapidamente
+          </span>
+          {orderedVisiblePalletIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setBarcodePrintModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-brand-black border border-amber-500/40 rounded-lg font-bold transition-all"
+            >
+              <Printer size={13} /> Stampa {orderedVisiblePalletIds.length} Barcode in Ordine
+            </button>
+          )}
         </div>
       </div>
 
@@ -1224,12 +1326,13 @@ const Inventory = () => {
             <thead>
               <tr className="bg-slate-950 border-b border-slate-800">
                 {visibleCols.map(col => {
-                  const isSortable = ['expiration', 'product', 'customer', 'location', 'arrival', 'quantity'].includes(col.key);
+                  const isSortable = ['expiration', 'product', 'customer', 'location', 'arrival', 'quantity', 'clientPallet'].includes(col.key);
                   return (
                     <th
                       key={col.key}
                       onClick={() => {
                         if (col.key === 'expiration') setSortBy(sortBy === 'expiration_asc' ? 'expiration_desc' : 'expiration_asc');
+                        else if (col.key === 'clientPallet') setSortBy(sortBy === 'client_pallet_asc' ? 'client_pallet_desc' : 'client_pallet_asc');
                         else if (col.key === 'product') setSortBy('alphabetical');
                         else if (col.key === 'customer') setSortBy('customer');
                         else if (col.key === 'location') setSortBy('zone');
@@ -1244,6 +1347,8 @@ const Inventory = () => {
                         {col.label}
                         {col.key === 'expiration' && sortBy === 'expiration_asc' && <span className="text-brand-blue">↑</span>}
                         {col.key === 'expiration' && sortBy === 'expiration_desc' && <span className="text-brand-blue">↓</span>}
+                        {col.key === 'clientPallet' && sortBy === 'client_pallet_asc' && <span className="text-brand-blue">↑</span>}
+                        {col.key === 'clientPallet' && sortBy === 'client_pallet_desc' && <span className="text-brand-blue">↓</span>}
                         {col.key === 'product' && sortBy === 'alphabetical' && <span className="text-brand-blue">↑</span>}
                         {col.key === 'customer' && sortBy === 'customer' && <span className="text-brand-blue">↑</span>}
                         {col.key === 'location' && sortBy === 'zone' && <span className="text-brand-blue">↑</span>}
@@ -1291,6 +1396,103 @@ const Inventory = () => {
           </table>
         </div>
       </div>
+
+      {/* MODALE STAMPA BARCODE IN ORDINE VISIVO */}
+      {barcodePrintModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl">
+            <h3 className="text-xl font-bold text-brand-white mb-2 flex items-center gap-2">
+              <Printer className="text-amber-400" /> Stampa Barcode in Ordine
+            </h3>
+            <p className="text-slate-400 text-xs mb-4 leading-relaxed">
+              Verranno generati <strong className="text-brand-white">{orderedVisiblePalletIds.length} barcode</strong> nell&apos;esatto ordine in cui sono visualizzati in tabella (Riga 1 = 1° Barcode, Riga 2 = 2° Barcode, ecc.).
+            </p>
+
+            {/* Anteprima delle prime righe in sequenza */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 mb-5 max-h-36 overflow-y-auto space-y-1.5">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                Sequenza di Stampa:
+              </div>
+              {processedData.slice(0, 6).map((row, idx) => (
+                <div key={row.id} className="flex items-center justify-between text-xs gap-2 py-0.5 border-b border-slate-900 last:border-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-5 h-5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-400 font-black text-[10px] flex items-center justify-center shrink-0">
+                      {idx + 1}°
+                    </span>
+                    <span className="font-mono font-bold text-brand-blue shrink-0">
+                      {formatPalletCode(row.pallet_code)}
+                    </span>
+                    {row.client_pallet_number && (
+                      <span className="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 font-mono text-[10px] shrink-0">
+                        Rif: {row.client_pallet_number}
+                      </span>
+                    )}
+                    <span className="text-slate-300 truncate">{row.product_name}</span>
+                  </div>
+                </div>
+              ))}
+              {processedData.length > 6 && (
+                <div className="text-[11px] text-slate-500 italic pt-1 text-center">
+                  ...e altre {processedData.length - 6} righe in ordine
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={handlePrintAllDisplayedBarcodes} className="space-y-4">
+              <div>
+                <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Formato Carta</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setBarcodeFormat('A4')}
+                    className={`p-3 rounded-xl border text-center font-bold transition-all ${barcodeFormat === 'A4' ? 'bg-brand-blue/20 border-brand-blue text-brand-white' : 'bg-slate-950 border-slate-800 text-slate-500'}`}
+                  >
+                    A4 (Griglia)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBarcodeFormat('Zebra')}
+                    className={`p-3 rounded-xl border text-center font-bold transition-all ${barcodeFormat === 'Zebra' ? 'bg-brand-blue/20 border-brand-blue text-brand-white' : 'bg-slate-950 border-slate-800 text-slate-500'}`}
+                  >
+                    Zebra (10x15)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1 block">Numero Copie per Etichetta</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  onWheel={(e) => e.target.blur()}
+                  required
+                  value={barcodeCopies}
+                  onChange={e => setBarcodeCopies(parseInt(e.target.value, 10) || 1)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-brand-white focus:ring-brand-blue font-bold text-lg text-center"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBarcodePrintModal(false)}
+                  className="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  disabled={printingBarcodes}
+                  className="flex-1 py-3 rounded-xl bg-amber-500 text-brand-black font-black hover:bg-amber-400 transition-colors flex justify-center items-center gap-2 shadow-lg"
+                >
+                  <Printer size={18} /> {printingBarcodes ? 'Generazione...' : `Stampa (${orderedVisiblePalletIds.length})`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
