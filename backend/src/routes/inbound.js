@@ -37,7 +37,13 @@ async function inboundRoutes(fastify, options) {
         );
       }
 
+      await connection.query(
+        "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+        ['CREATE_INBOUND_DDT', `Creato DDT Entrata ${ddtNumber} (${cart.length} righe attese)`, 'Gestionale', request.user?.username || 'Operatore']
+      );
+
       await connection.commit();
+      if (fastify.io) fastify.io.emit('dashboard_update');
       return { success: true, ddt_id: ddtId, ddt_number: ddtNumber };
     } catch (err) {
       await connection.rollback();
@@ -48,27 +54,127 @@ async function inboundRoutes(fastify, options) {
     }
   });
 
-  // 2. Get all Inbound DDTs
+  // 2. Get all Inbound DDTs (with items summary & discrepancy info)
   fastify.get('/ddt', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT d.*, c.business_name 
+        SELECT d.*, 
+               c.business_name, 
+               c.business_name AS customer_name,
+               c.parent_id AS customer_parent_id,
+               pc.business_name AS parent_customer_name,
+               (SELECT COUNT(*) FROM PALLETS p WHERE p.inbound_ddt_id = d.id) AS pallets_count
         FROM INBOUND_DDTS d
         JOIN CUSTOMERS c ON d.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
         ORDER BY d.created_at DESC
       `);
+
+      if (rows.length > 0) {
+        const ddtIds = rows.map(r => r.id);
+        const [allItems] = await db.query(`
+          SELECT i.*,
+                 COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+                 COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
+                 COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
+                 COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
+          FROM INBOUND_DDT_ITEMS i
+          LEFT JOIN PRODUCTS p ON i.product_id = p.id
+          WHERE i.inbound_ddt_id IN (?)
+          ORDER BY i.id ASC
+        `, [ddtIds]);
+
+        const [discLogs] = await db.query(`
+          SELECT * FROM INBOUND_DISCREPANCY_LOGS
+          WHERE inbound_ddt_id IN (?)
+          ORDER BY created_at DESC
+        `, [ddtIds]);
+
+        const itemsByDdt = new Map();
+        for (const it of allItems) {
+          if (!itemsByDdt.has(it.inbound_ddt_id)) itemsByDdt.set(it.inbound_ddt_id, []);
+          itemsByDdt.get(it.inbound_ddt_id).push(it);
+        }
+
+        const logsByDdt = new Map();
+        for (const lg of discLogs) {
+          if (!logsByDdt.has(lg.inbound_ddt_id)) logsByDdt.set(lg.inbound_ddt_id, []);
+          let parsedSnap = [];
+          try {
+            parsedSnap = lg.items_snapshot ? (typeof lg.items_snapshot === 'string' ? JSON.parse(lg.items_snapshot) : lg.items_snapshot) : [];
+          } catch (e) {
+            parsedSnap = [];
+          }
+          logsByDdt.get(lg.inbound_ddt_id).push({ ...lg, items_snapshot: parsedSnap });
+        }
+
+        for (const r of rows) {
+          const dItems = itemsByDdt.get(r.id) || [];
+          r.items = dItems;
+          r.discrepancy_logs = logsByDdt.get(r.id) || [];
+          r.total_items = dItems.length;
+          r.completed_items = dItems.filter(i => parseFloat(i.actual_quantity || 0) >= parseFloat(i.expected_quantity || 0)).length;
+          r.discrepant_items_count = dItems.filter(i => parseFloat(i.actual_quantity || 0) !== parseFloat(i.expected_quantity || 0)).length;
+          r.total_expected_qty = dItems.reduce((s, i) => s + (parseFloat(i.expected_quantity) || 0), 0);
+          r.total_actual_qty = dItems.reduce((s, i) => s + (parseFloat(i.actual_quantity) || 0), 0);
+        }
+      }
+
       return rows;
     } catch (err) {
+      fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore fetch DDTs' });
     }
   });
 
-  // 3. Get Single DDT Details (for Zebra)
+  // 2b. Get Discrepancies History (Storico Discrepanze & Motivi Accettazione/Rifiuto)
+  fastify.get('/discrepancies/history', async (request, reply) => {
+    try {
+      const [rows] = await db.query(`
+        SELECT l.*, 
+               c.business_name AS customer_name,
+               pc.business_name AS parent_customer_name,
+               d.status AS current_ddt_status,
+               d.discrepancy_accepted,
+               d.discrepancy_reason,
+               d.discrepancy_resolved_by,
+               d.discrepancy_resolved_at
+        FROM INBOUND_DISCREPANCY_LOGS l
+        JOIN CUSTOMERS c ON l.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
+        LEFT JOIN INBOUND_DDTS d ON l.inbound_ddt_id = d.id
+        ORDER BY l.created_at DESC
+        LIMIT 500
+      `);
+
+      const formatted = rows.map(r => {
+        let parsedSnap = [];
+        try {
+          parsedSnap = r.items_snapshot ? (typeof r.items_snapshot === 'string' ? JSON.parse(r.items_snapshot) : r.items_snapshot) : [];
+        } catch (e) {
+          parsedSnap = [];
+        }
+        return {
+          ...r,
+          items_snapshot: parsedSnap
+        };
+      });
+
+      return formatted;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore recupero storico discrepanze' });
+    }
+  });
+
+  // 3. Get Single DDT Details (for Zebra & Desktop)
   fastify.get('/ddt/:identifier', async (request, reply) => {
     const { identifier } = request.params;
     try {
       const isId = !isNaN(identifier);
-      const queryStr = isId ? 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.id = ?' : 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.ddt_number = ?';
+      const queryStr = isId
+        ? 'SELECT d.*, c.business_name, c.business_name AS customer_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.id = ?'
+        : 'SELECT d.*, c.business_name, c.business_name AS customer_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.ddt_number = ?';
       const [ddts] = await db.query(queryStr, [identifier]);
       
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
@@ -106,6 +212,7 @@ async function inboundRoutes(fastify, options) {
       const item = items[0];
 
       const [ddts] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddt_id]);
+      if (ddts.length === 0) throw new Error('DDT non trovato');
       if (ddts[0].status === 'PENDING') {
         await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
       }
@@ -142,7 +249,7 @@ async function inboundRoutes(fastify, options) {
         palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
       }
 
-      // Insert Pallet
+      // Insert Pallet (Nota: finché il DDT non è in stato COMPLETED, la paletta non viene conteggiata nell'inventario attivo)
       await connection.query(`
         INSERT INTO PALLETS 
         (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id)
@@ -155,13 +262,14 @@ async function inboundRoutes(fastify, options) {
       
       await connection.query(
         "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-        ['INBOUND', `Spunta Zebra: Creata paletta ${palletCode} (${quantity} pz)${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
+        ['INBOUND', `Spunta Zebra (${ddts[0].ddt_number}): Creata paletta ${palletCode} (${quantity} ${item.product_uom || 'pz'}) per ${item.product_name || 'Articolo'}${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
       );
 
       // Update actual quantity
       await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = actual_quantity + ? WHERE id = ?', [quantity, item_id]);
 
       await connection.commit();
+      if (fastify.io) fastify.io.emit('dashboard_update');
       return { success: true, pallet_code: palletCode };
     } catch (err) {
       await connection.rollback();
@@ -172,31 +280,291 @@ async function inboundRoutes(fastify, options) {
     }
   });
 
-  // 5. Complete DDT
+  // 5. Complete DDT (from Zebra)
   fastify.post('/ddt/:id/complete', async (request, reply) => {
+    const ddtId = request.params.id;
+    const connection = await db.getConnection();
     try {
-      const [items] = await db.query('SELECT expected_quantity, actual_quantity FROM INBOUND_DDT_ITEMS WHERE inbound_ddt_id = ?', [request.params.id]);
+      await connection.beginTransaction();
+
+      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+      if (!ddt) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+
+      const [items] = await connection.query(`
+        SELECT i.*, 
+               COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+               COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
+               COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom
+        FROM INBOUND_DDT_ITEMS i
+        LEFT JOIN PRODUCTS p ON i.product_id = p.id
+        WHERE i.inbound_ddt_id = ?
+      `, [ddtId]);
+
       let discrepancy = false;
       let totalDiff = 0;
+      const itemsSnapshot = [];
+
       for (const item of items) {
-        if (parseFloat(item.expected_quantity) !== parseFloat(item.actual_quantity)) {
+        const exp = parseFloat(item.expected_quantity) || 0;
+        const act = parseFloat(item.actual_quantity) || 0;
+        const diff = act - exp;
+        if (exp !== act) {
           discrepancy = true;
-          totalDiff += (parseFloat(item.actual_quantity) - parseFloat(item.expected_quantity));
+          totalDiff += diff;
         }
+        itemsSnapshot.push({
+          item_id: item.id,
+          product_id: item.product_id,
+          sku: item.sku,
+          product_name: item.product_name,
+          batch: item.batch || null,
+          uom: item.product_uom || 'Pezzi',
+          expected_quantity: exp,
+          actual_quantity: act,
+          diff
+        });
       }
 
       const status = discrepancy ? 'DISCREPANCY' : 'COMPLETED';
-      const notes = discrepancy ? `Completato con discrepanza (${totalDiff > 0 ? '+' : ''}${totalDiff})` : null;
+      const notes = discrepancy
+        ? `Rilevata discrepanza in spunta (${totalDiff > 0 ? '+' : ''}${totalDiff}) — In attesa di approvazione o rifiuto da Backoffice`
+        : 'Spunta completata regolarmente senza discrepanze';
 
-      await db.query('UPDATE INBOUND_DDTS SET status = ?, closed_at = NOW(), notes = ? WHERE id = ?', [status, notes, request.params.id]);
-      
-      await db.query('INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)', [
-        'COMPLETE_INBOUND_DDT', `Completato DDT ${request.params.id} con stato ${status}`, 'Zebra', request.user.username
-      ]);
+      await connection.query(
+        'UPDATE INBOUND_DDTS SET status = ?, closed_at = NOW(), notes = ? WHERE id = ?',
+        [status, notes, ddtId]
+      );
 
+      if (discrepancy) {
+        await connection.query(
+          `INSERT INTO INBOUND_DISCREPANCY_LOGS (inbound_ddt_id, ddt_number, customer_id, decision, reason, items_snapshot, username, source)
+           VALUES (?, ?, ?, 'REPORTED', ?, ?, ?, 'Zebra')`,
+          [
+            ddtId,
+            ddt.ddt_number,
+            ddt.customer_id,
+            `Discrepanza rilevata a fine spunta Zebra (Diff. totale: ${totalDiff > 0 ? '+' : ''}${totalDiff})`,
+            JSON.stringify(itemsSnapshot),
+            request.user?.username || 'Operatore Zebra'
+          ]
+        );
+      }
+
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'COMPLETE_INBOUND_DDT',
+          `Completata spunta DDT ${ddt.ddt_number} con stato ${status}${discrepancy ? ` (Diff: ${totalDiff > 0 ? '+' : ''}${totalDiff})` : ''}`,
+          'Zebra',
+          request.user?.username || 'Operatore Zebra'
+        ]
+      );
+
+      await connection.commit();
+      if (fastify.io) {
+        fastify.io.emit('dashboard_update');
+        fastify.io.emit('stow_updated');
+      }
       return { success: true, status, notes };
     } catch (err) {
+      await connection.rollback();
+      fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore completamento DDT' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  // 5b. Accept Discrepancy (from Desktop Backoffice) -> Merce entra in inventario, DDT diventa COMPLETED, sblocca stampa Barcode
+  fastify.post('/ddt/:id/discrepancy/accept', async (request, reply) => {
+    const ddtId = request.params.id;
+    const { reason } = request.body || {};
+
+    if (!reason || !String(reason).trim()) {
+      return reply.code(400).send({ error: 'Devi specificare obbligatoriamente il motivo dell\'accettazione della discrepanza.' });
+    }
+
+    const cleanReason = String(reason).trim();
+    const username = request.user?.username || 'Backoffice';
+    const connection = await db.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+      if (!ddt) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+
+      const [items] = await connection.query(`
+        SELECT i.*, 
+               COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+               COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
+               COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom
+        FROM INBOUND_DDT_ITEMS i
+        LEFT JOIN PRODUCTS p ON i.product_id = p.id
+        WHERE i.inbound_ddt_id = ?
+      `, [ddtId]);
+
+      const itemsSnapshot = items.map(item => {
+        const exp = parseFloat(item.expected_quantity) || 0;
+        const act = parseFloat(item.actual_quantity) || 0;
+        return {
+          item_id: item.id,
+          product_id: item.product_id,
+          sku: item.sku,
+          product_name: item.product_name,
+          batch: item.batch || null,
+          uom: item.product_uom || 'Pezzi',
+          expected_quantity: exp,
+          actual_quantity: act,
+          diff: act - exp
+        };
+      });
+
+      const resolvedNote = `Discrepanza accettata da ${username}: ${cleanReason}`;
+
+      await connection.query(
+        `UPDATE INBOUND_DDTS 
+         SET status = 'COMPLETED',
+             discrepancy_accepted = 1,
+             discrepancy_reason = ?,
+             discrepancy_resolved_by = ?,
+             discrepancy_resolved_at = NOW(),
+             notes = ?
+         WHERE id = ?`,
+        [cleanReason, username, resolvedNote, ddtId]
+      );
+
+      await connection.query(
+        `INSERT INTO INBOUND_DISCREPANCY_LOGS (inbound_ddt_id, ddt_number, customer_id, decision, reason, items_snapshot, username, source)
+         VALUES (?, ?, ?, 'ACCEPTED', ?, ?, ?, 'Gestionale')`,
+        [ddtId, ddt.ddt_number, ddt.customer_id, cleanReason, JSON.stringify(itemsSnapshot), username]
+      );
+
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'ACCEPT_DISCREPANCY',
+          `Accettata discrepanza DDT ${ddt.ddt_number} — Motivo: "${cleanReason}". Merce caricata in inventario.`,
+          'Gestionale',
+          username
+        ]
+      );
+
+      await connection.commit();
+      if (fastify.io) {
+        fastify.io.emit('dashboard_update');
+        fastify.io.emit('stow_updated');
+      }
+
+      return { success: true, status: 'COMPLETED', reason: cleanReason, resolved_by: username };
+    } catch (err) {
+      await connection.rollback();
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante l\'accettazione della discrepanza' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  // 5c. Reject Discrepancy (from Desktop Backoffice) -> Azzera spunta e rimanda a Zebra per ri-fare la spunta
+  fastify.post('/ddt/:id/discrepancy/reject', async (request, reply) => {
+    const ddtId = request.params.id;
+    const { reason } = request.body || {};
+    const cleanReason = reason && String(reason).trim() ? String(reason).trim() : 'Richiesta nuova spunta da Backoffice';
+    const username = request.user?.username || 'Backoffice';
+    const connection = await db.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+      if (!ddt) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+
+      const [items] = await connection.query(`
+        SELECT i.*, 
+               COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+               COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
+               COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom
+        FROM INBOUND_DDT_ITEMS i
+        LEFT JOIN PRODUCTS p ON i.product_id = p.id
+        WHERE i.inbound_ddt_id = ?
+      `, [ddtId]);
+
+      const itemsSnapshot = items.map(item => {
+        const exp = parseFloat(item.expected_quantity) || 0;
+        const act = parseFloat(item.actual_quantity) || 0;
+        return {
+          item_id: item.id,
+          product_id: item.product_id,
+          sku: item.sku,
+          product_name: item.product_name,
+          batch: item.batch || null,
+          uom: item.product_uom || 'Pezzi',
+          expected_quantity: exp,
+          actual_quantity: act,
+          diff: act - exp
+        };
+      });
+
+      // Elimina le palette provvisorie create durante la spunta rifiutata
+      await connection.query('DELETE FROM PALLETS WHERE inbound_ddt_id = ?', [ddtId]);
+
+      // Azzera le quantità effettive sulle righe del DDT affinché l'operatore Zebra possa rifare la spunta da zero
+      await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = 0 WHERE inbound_ddt_id = ?', [ddtId]);
+
+      const rejectNote = `Discrepanza RIFIUTATA da ${username} (${cleanReason}) — Da rispuntare su Zebra`;
+
+      await connection.query(
+        `UPDATE INBOUND_DDTS 
+         SET status = 'PENDING',
+             closed_at = NULL,
+             rejected_count = COALESCE(rejected_count, 0) + 1,
+             last_rejected_reason = ?,
+             last_rejected_by = ?,
+             last_rejected_at = NOW(),
+             notes = ?
+         WHERE id = ?`,
+        [cleanReason, username, rejectNote, ddtId]
+      );
+
+      await connection.query(
+        `INSERT INTO INBOUND_DISCREPANCY_LOGS (inbound_ddt_id, ddt_number, customer_id, decision, reason, items_snapshot, username, source)
+         VALUES (?, ?, ?, 'REJECTED', ?, ?, ?, 'Gestionale')`,
+        [ddtId, ddt.ddt_number, ddt.customer_id, cleanReason, JSON.stringify(itemsSnapshot), username]
+      );
+
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'REJECT_DISCREPANCY',
+          `Rifiutata discrepanza DDT ${ddt.ddt_number} — Motivo: "${cleanReason}". Spunta azzerata e rimandata a Zebra.`,
+          'Gestionale',
+          username
+        ]
+      );
+
+      await connection.commit();
+      if (fastify.io) {
+        fastify.io.emit('dashboard_update');
+        fastify.io.emit('stow_updated');
+      }
+
+      return { success: true, status: 'PENDING', reason: cleanReason };
+    } catch (err) {
+      await connection.rollback();
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante il rifiuto della discrepanza' });
+    } finally {
+      connection.release();
     }
   });
 
@@ -207,16 +575,21 @@ async function inboundRoutes(fastify, options) {
       const PDFDocument = require('pdfkit');
       
       const isId = !isNaN(identifier);
-      const queryStr = isId ? 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.id = ?' : 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.ddt_number = ?';
+      const queryStr = isId
+        ? 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.id = ?'
+        : 'SELECT d.*, c.business_name FROM INBOUND_DDTS d JOIN CUSTOMERS c ON d.customer_id = c.id WHERE d.ddt_number = ?';
       const [ddts] = await db.query(queryStr, [identifier]);
       
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
       const ddt = ddts[0];
 
       const [items] = await db.query(`
-        SELECT i.*, p.sku, p.name as product_name, p.uom as product_uom
+        SELECT i.*, 
+               COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+               COALESCE(NULLIF(i.product_name, ''), p.name) as product_name,
+               COALESCE(i.product_uom, p.uom, 'Pezzi') as product_uom
         FROM INBOUND_DDT_ITEMS i
-        JOIN PRODUCTS p ON i.product_id = p.id
+        LEFT JOIN PRODUCTS p ON i.product_id = p.id
         WHERE i.inbound_ddt_id = ?
       `, [ddt.id]);
 
@@ -240,7 +613,6 @@ async function inboundRoutes(fastify, options) {
 
       doc.fillColor('#1e293b').fontSize(16).font('Helvetica-Bold').text('DDT ENTRATA MERCE (SPUNTA)', { align: 'center' });
       
-      // We need a barcode for the DDT number!
       const bwipjs = require('bwip-js');
       try {
         const barcodeBuffer = await bwipjs.toBuffer({ bcid: 'code128', text: ddt.ddt_number, scale: 3, height: 10, includetext: false });
@@ -256,7 +628,12 @@ async function inboundRoutes(fastify, options) {
       doc.fontSize(12).font('Helvetica').text(`Cliente: ${ddt.business_name}`);
       doc.text(`Data: ${new Date(ddt.created_at).toLocaleDateString('it-IT')}`);
       doc.text(`Stato: ${ddt.status}`);
-      if (ddt.notes) doc.text(`Note: ${ddt.notes}`);
+      if (ddt.discrepancy_accepted && ddt.discrepancy_reason) {
+        doc.text(`Discrepanza Accettata da ${ddt.discrepancy_resolved_by || 'Backoffice'} il ${ddt.discrepancy_resolved_at ? new Date(ddt.discrepancy_resolved_at).toLocaleString('it-IT') : '-'}`);
+        doc.text(`Motivo Accettazione: ${ddt.discrepancy_reason}`);
+      } else if (ddt.notes) {
+        doc.text(`Note: ${ddt.notes}`);
+      }
       
       doc.moveDown(2);
       doc.font('Helvetica-Bold').text('RIGHE ATTESE:', { underline: true });
@@ -270,7 +647,7 @@ async function inboundRoutes(fastify, options) {
         doc.font('Helvetica-Bold').fontSize(11).fillColor('black').text(`${idx + 1}. ${item.product_name} (${item.sku})`);
         
         if (isDiscrepancy) {
-          doc.font('Helvetica-Bold').fontSize(10).fillColor('#ef4444').text(`Q.ta Attesa: ${item.expected_quantity} ${item.product_uom} (Effettiva: ${item.actual_quantity}) - DISCREPANZA!`);
+          doc.font('Helvetica-Bold').fontSize(10).fillColor('#ef4444').text(`Q.ta Attesa: ${item.expected_quantity} ${item.product_uom} (Effettiva: ${item.actual_quantity}) - DISCREPANZA (${act - exp > 0 ? '+' : ''}${act - exp})`);
         } else {
           doc.font('Helvetica').fontSize(10).fillColor('#475569').text(`Q.ta Attesa: ${item.expected_quantity} ${item.product_uom} (Effettiva: ${item.actual_quantity})`);
         }
@@ -288,15 +665,17 @@ async function inboundRoutes(fastify, options) {
     }
   });
 
-
-  // 7. Get Barcodes for generated pallets
+  // 7. Get Barcodes for generated pallets (Solo quando COMPLETED)
   fastify.get('/ddt/:identifier/barcodes', async (request, reply) => {
     const { identifier } = request.params;
     try {
       const isId = !isNaN(identifier);
-      const queryStr = isId ? 'SELECT d.id FROM INBOUND_DDTS d WHERE d.id = ?' : 'SELECT d.id FROM INBOUND_DDTS d WHERE d.ddt_number = ?';
+      const queryStr = isId ? 'SELECT d.* FROM INBOUND_DDTS d WHERE d.id = ?' : 'SELECT d.* FROM INBOUND_DDTS d WHERE d.ddt_number = ?';
       const [ddts] = await db.query(queryStr, [identifier]);
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
+      if (ddts[0].status !== 'COMPLETED') {
+        return reply.code(400).send({ error: 'Impossibile stampare i barcode finché il DDT non è Completato (o la discrepanza non è stata accettata).' });
+      }
 
       const [pallets] = await db.query(`
         SELECT p.*, pr.name as product_name, pr.uom as product_uom, c.business_name
@@ -350,7 +729,6 @@ async function inboundRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Errore generazione barcodes' });
     }
   });
-
 }
 
 module.exports = inboundRoutes;

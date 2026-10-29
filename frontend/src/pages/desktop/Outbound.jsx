@@ -56,6 +56,14 @@ function TimelineModal({ order, onClose, token }) {
         </p>
 
         {/* Barra progresso live dentro la modale */}
+        {ordData.notes && (
+          <div className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-3.5 mb-4">
+            <div className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-1">
+              Nota Operativa sul DDT per il Magazziniere:
+            </div>
+            <div className="text-sm font-bold text-amber-100 whitespace-pre-wrap">{ordData.notes}</div>
+          </div>
+        )}
         <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 mb-5">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -154,7 +162,7 @@ const Outbound = () => {
   
   // Modale nuova spedizione
   const [showModal, setShowModal] = useState(false);
-  const [newOrder, setNewOrder] = useState({ customer_id: '', exit_date: new Date().toISOString().split('T')[0] });
+  const [newOrder, setNewOrder] = useState({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
   const [cart, setCart] = useState([]);
 
   // Modale selezione paletta/lotto
@@ -228,7 +236,7 @@ const Outbound = () => {
     try {
       const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/${orderId}/details`, { headers: { Authorization: `Bearer ${token}` }});
       const { order, items } = res.data;
-      setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0], client_ddt: order.client_ddt || '' });
+      setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0], client_ddt: order.client_ddt || '', notes: order.notes || '' });
       setCart(items.map(i => ({
         pallet_id: i.pallet_id || null,
         pallet_code: i.pallet_code || null,
@@ -321,6 +329,7 @@ const Outbound = () => {
         customer_id: newOrder.customer_id,
         exit_date: newOrder.exit_date,
         client_ddt: newOrder.client_ddt || null,
+        notes: newOrder.notes ? newOrder.notes.trim() : null,
         items: cart.map(c => ({
           pallet_id: c.pallet_id || null,
           pallet_code: c.pallet_code || null,
@@ -340,7 +349,7 @@ const Outbound = () => {
       
       setShowModal(false);
       setCart([]);
-      setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0] });
+      setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
       setAvailablePallets([]);
       setPalletSearchTerm('');
       fetchOrders();
@@ -668,7 +677,7 @@ const Outbound = () => {
           </button>
           <button
             onClick={() => {
-              setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0] });
+              setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
               setCart([]);
               setAvailablePallets([]);
               setPalletSearchTerm('');
@@ -867,6 +876,11 @@ const Outbound = () => {
                       {o.client_ddt && (
                         <span className="text-[11px] text-brand-blue font-sans font-bold uppercase mt-0.5">
                           DDT Rif: {o.client_ddt}
+                        </span>
+                      )}
+                      {o.notes && (
+                        <span className="text-[10px] text-amber-300 font-sans font-semibold mt-0.5 truncate max-w-[180px]" title={`Nota DDT: ${o.notes}`}>
+                          Nota: {o.notes}
                         </span>
                       )}
                     </div>
@@ -1079,8 +1093,8 @@ const Outbound = () => {
             </div>
             
             {/* Riga Parametri Testata Ordine */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-              <div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 mb-4">
+              <div className="lg:col-span-3">
                 <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Cliente Proprietario *</label>
                 <Select 
                   styles={selectStyles}
@@ -1090,8 +1104,8 @@ const Outbound = () => {
                   onChange={handleCustomerChange}
                 />
               </div>
-              <div>
-                <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">DDT Cliente (Riferimento)</label>
+              <div className="lg:col-span-2">
+                <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">DDT Cliente (Rif.)</label>
                 <input 
                   type="text" 
                   value={newOrder.client_ddt || ''} 
@@ -1100,7 +1114,7 @@ const Outbound = () => {
                   placeholder="Es. DDT-3025"
                 />
               </div>
-              <div>
+              <div className="lg:col-span-2">
                 <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Data di Uscita *</label>
                 <input 
                   type="date" 
@@ -1109,15 +1123,27 @@ const Outbound = () => {
                   className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm [color-scheme:dark] focus:ring-brand-blue" 
                 />
               </div>
-              <div className="flex items-end">
-                <label className="flex items-center gap-2.5 cursor-pointer px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl w-full h-[42px] hover:border-brand-blue transition-colors select-none">
+              <div className="lg:col-span-3">
+                <label className="block text-amber-400 font-bold mb-1 text-[10px] uppercase tracking-wider">
+                  Nota Libera sul DDT (per Magazziniere)
+                </label>
+                <input 
+                  type="text" 
+                  value={newOrder.notes || ''} 
+                  onChange={e => setNewOrder({...newOrder, notes: e.target.value})} 
+                  className="w-full bg-slate-950 border border-amber-500/40 text-amber-100 rounded-xl px-3 py-2 text-sm focus:border-amber-400 outline-none placeholder-slate-600" 
+                  placeholder="Es. Preparare su bancali EPAL, avvolgere con film nero..."
+                />
+              </div>
+              <div className="lg:col-span-2 flex items-end">
+                <label className="flex items-center gap-2 cursor-pointer px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl w-full h-[40px] hover:border-brand-blue transition-colors select-none">
                   <input 
                     type="checkbox" 
                     checked={includePending} 
                     onChange={e => toggleIncludePending(e.target.checked)}
                     className="w-4 h-4 rounded border-slate-700 text-brand-blue focus:ring-brand-blue bg-slate-900"
                   />
-                  <span className="text-xs font-bold text-slate-300 truncate">Includi merce "In Attesa"</span>
+                  <span className="text-xs font-bold text-slate-300 truncate">Includi "In Attesa"</span>
                 </label>
               </div>
             </div>

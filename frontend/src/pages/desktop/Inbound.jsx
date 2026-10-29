@@ -20,7 +20,9 @@ import {
   Layers,
   Calendar,
   Hash,
-  X
+  X,
+  GitBranch,
+  Building2
 } from 'lucide-react';
 
 const Inbound = () => {
@@ -46,6 +48,8 @@ const Inbound = () => {
   });
 
   const [formData, setFormData] = useState({
+    parent_customer_id: null,
+    fragment_id: null,
     customer_id: null,
     product_id: null,
     isNewProduct: false,
@@ -81,7 +85,7 @@ const Inbound = () => {
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/products/flags`, { headers }).catch(() => ({ data: [] }))
       ]);
-      setCustomers(custRes.data.map(c => ({ value: c.id, label: c.business_name })));
+      setCustomers(custRes.data.map(c => ({ value: c.id, label: c.business_name, raw: c })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
       setFreeLocations(freeRes.data.map(fl => ({ value: fl.name, label: fl.name })));
       setMappedLocations(locRes.data || []);
@@ -162,7 +166,66 @@ const Inbound = () => {
     }
   };
 
-  const filteredProducts = products.filter(p => p.raw.customer_id === formData.customer_id);
+  // Opzioni Clienti Madre (primo menu a tendina)
+  const parentCustomerOptions = React.useMemo(() => {
+    return customers
+      .filter(c => !c.raw?.parent_id)
+      .map(c => ({
+        value: c.value,
+        label: Number(c.raw?.children_count) > 0
+          ? `${c.raw.business_name} (${c.raw.children_count} Frammentazioni)`
+          : c.raw?.business_name || c.label,
+        raw: c.raw
+      }));
+  }, [customers]);
+
+  // Frammentazioni disponibili per il Cliente Madre selezionato
+  const availableFragments = React.useMemo(() => {
+    if (!formData.parent_customer_id) return [];
+    return customers
+      .filter(c => c.raw?.parent_id === formData.parent_customer_id)
+      .map(c => ({
+        value: c.value,
+        label: c.raw?.business_name || c.label,
+        raw: c.raw
+      }));
+  }, [customers, formData.parent_customer_id]);
+
+  // Cambia la frammentazione attiva (oppure vuoto = direttamente al Cliente Madre)
+  const handleFragmentChange = (fragId) => {
+    const effectiveCustomerId = fragId || formData.parent_customer_id;
+    const effectiveCustomerName = customers.find(c => c.value === effectiveCustomerId)?.label || '';
+    const familyIds = new Set([
+      formData.parent_customer_id,
+      ...availableFragments.map(f => f.value)
+    ]);
+
+    setFormData(prev => ({
+      ...prev,
+      fragment_id: fragId || null,
+      customer_id: effectiveCustomerId
+    }));
+
+    // Se nel carrello ci sono già righe appartenenti a questo stesso gruppo Cliente Madre, aggiorniamo la destinazione
+    if (cart.length > 0 && effectiveCustomerId) {
+      setCart(prev =>
+        prev.map(item =>
+          familyIds.has(item.customer_id)
+            ? { ...item, customer_id: effectiveCustomerId, customer_name: effectiveCustomerName }
+            : item
+        )
+      );
+    }
+  };
+
+  // Mostra sia i prodotti della frammentazione selezionata sia quelli condivisi del Cliente Madre
+  const filteredProducts = React.useMemo(() => {
+    if (!formData.customer_id) return [];
+    return products.filter(p =>
+      p.raw.customer_id === formData.customer_id ||
+      (formData.parent_customer_id && p.raw.customer_id === formData.parent_customer_id)
+    );
+  }, [products, formData.customer_id, formData.parent_customer_id]);
 
   const fileInputRef = useRef(null);
 
@@ -479,12 +542,13 @@ const Inbound = () => {
           if (articoloCliente) {
             existingProd = currentProducts.find(p =>
               p.raw.sku?.trim().toLowerCase() === articoloCliente.toLowerCase() ||
-              (p.raw.customer_id === formData.customer_id && p.raw.default_article_number?.trim().toLowerCase() === articoloCliente.toLowerCase())
+              ((p.raw.customer_id === formData.customer_id || p.raw.customer_id === formData.parent_customer_id) &&
+                p.raw.default_article_number?.trim().toLowerCase() === articoloCliente.toLowerCase())
             );
           }
           const existingByName = prodName
             ? currentProducts.find(p =>
-                p.raw.customer_id === formData.customer_id &&
+                (p.raw.customer_id === formData.customer_id || p.raw.customer_id === formData.parent_customer_id) &&
                 (p.raw.name?.trim().toLowerCase() === prodName.toLowerCase() || p.label?.trim().toLowerCase() === prodName.toLowerCase())
               )
             : null;
@@ -913,7 +977,7 @@ const Inbound = () => {
         
         setCart([]);
         setCartSearch('');
-        setFormData({...formData, customer_id: '', product_id: null, isNewProduct: false, newProductName: ''});
+        setFormData({...formData, parent_customer_id: null, fragment_id: null, customer_id: null, product_id: null, isNewProduct: false, newProductName: ''});
         setPrintOptions({ paper_format: 'A4', print_mode: 'GRID', isMixed: false, noBarcode: false, freeLocation: '' });
       } catch (err) {
         appAlert('Errore durante la creazione del DDT Inbound.');
@@ -1097,7 +1161,7 @@ const Inbound = () => {
               Nuova Merce (In-bound)
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Carica da file Excel/CSV o inserisci manualmente, modifica inline quantità/lotto/posizione nel carrello e stampa in blocco.
+              Carica da file Excel/CSV o inserisci manualmente.
             </p>
           </div>
 
@@ -1160,19 +1224,85 @@ const Inbound = () => {
               
               <form onSubmit={handleAddToCart} className="space-y-4">
                 
-                {/* Cliente & Prodotto */}
+                {/* Cliente Madre & Eventuale Frammentazione */}
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1.5 text-[11px] uppercase tracking-wider">Cliente Proprietario *</label>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-[11px] uppercase tracking-wider">
+                    Cliente Proprietario (Cliente Madre) *
+                  </label>
                   <Select 
                     styles={selectStyles}
-                    options={customers}
+                    options={parentCustomerOptions}
                     placeholder="Seleziona cliente..."
-                    value={customers.find(c => c.value === formData.customer_id) || null}
+                    value={parentCustomerOptions.find(c => c.value === formData.parent_customer_id) || null}
                     onChange={val => {
-                      setFormData({...formData, customer_id: val ? val.value : null, product_id: null});
+                      const parentId = val ? val.value : null;
+                      setFormData({
+                        ...formData,
+                        parent_customer_id: parentId,
+                        fragment_id: null,
+                        customer_id: parentId,
+                        product_id: null
+                      });
                     }}
                   />
                 </div>
+
+                {/* Se il Cliente Madre selezionato è frammentato, mostra la scelta della Frammentazione (o vuoto per Cliente Madre) */}
+                {formData.parent_customer_id && availableFragments.length > 0 && (
+                  <div className="bg-violet-950/20 border border-violet-500/35 rounded-2xl p-3.5 space-y-2.5 animate-fade-in-up">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-violet-300 font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                        <GitBranch size={14} className="text-violet-400" />
+                        Frammentazione / Reparto (Opzionale)
+                      </label>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
+                        {formData.fragment_id
+                          ? `Destinazione: ${availableFragments.find(f => f.value === formData.fragment_id)?.label}`
+                          : `Diretto a Cliente Madre (${customers.find(c => c.value === formData.parent_customer_id)?.label})`}
+                      </span>
+                    </div>
+
+                    <Select
+                      isClearable
+                      styles={selectStyles}
+                      options={availableFragments}
+                      placeholder={`-- Vuoto: invia direttamente a ${customers.find(c => c.value === formData.parent_customer_id)?.label || 'Cliente Madre'} --`}
+                      value={availableFragments.find(f => f.value === formData.fragment_id) || null}
+                      onChange={val => handleFragmentChange(val ? val.value : null)}
+                    />
+
+                    {/* Scelta rapida con 1 click */}
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleFragmentChange(null)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 border ${
+                          !formData.fragment_id
+                            ? 'bg-brand-blue text-brand-black border-brand-blue shadow'
+                            : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <Building2 size={11} />
+                        Diretto a {customers.find(c => c.value === formData.parent_customer_id)?.label} (Madre)
+                      </button>
+                      {availableFragments.map(frag => (
+                        <button
+                          key={frag.value}
+                          type="button"
+                          onClick={() => handleFragmentChange(frag.value)}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 border ${
+                            formData.fragment_id === frag.value
+                              ? 'bg-violet-500 text-white border-violet-400 shadow'
+                              : 'bg-slate-900 text-violet-300 border-slate-800 hover:border-violet-500/50'
+                          }`}
+                        >
+                          <GitBranch size={11} />
+                          {frag.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-slate-400 font-bold mb-1.5 text-[11px] uppercase tracking-wider">Prodotto / SKU *</label>
@@ -1286,7 +1416,7 @@ const Inbound = () => {
                   </div>
                   <div>
                     <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Rif. Paletta Cliente</label>
-                    <input value={formData.client_pallet_number} onChange={e => setFormData({...formData, client_pallet_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. PAL-CLI-123" />
+                    <input value={formData.client_pallet_number} onChange={e => setFormData({...formData, client_pallet_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. Longlife" />
                   </div>
                 </div>
 
@@ -1312,7 +1442,7 @@ const Inbound = () => {
 
                 <div>
                   <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Note Paletta (Opzionale)</label>
-                  <input type="text" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. Scatola danneggiata, priorità alta..." />
+                  <input type="text" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. Scatola danneggiata, nome per paletta generica, ecct..." />
                 </div>
 
                 <button type="submit" disabled={isProcessing} className="w-full py-3.5 bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-brand-black border border-brand-blue/40 rounded-2xl font-black transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg">
@@ -1434,6 +1564,11 @@ const Inbound = () => {
                           <span className="font-bold text-brand-white text-sm truncate" title={item.product_name}>
                             {item.product_name}
                           </span>
+                          {item.customer_name && (
+                            <span className="text-[10px] font-bold bg-violet-500/15 border border-violet-500/30 px-2 py-0.5 rounded-md text-violet-300 shrink-0">
+                              {item.customer_name}
+                            </span>
+                          )}
                           {upb > 1 && (
                             <span className="text-[10px] font-bold bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-md text-slate-300 shrink-0">
                               {Math.floor(qtyNum / upb)} Scat.

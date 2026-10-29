@@ -55,6 +55,7 @@ async function runMigrations() {
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN location VARCHAR(50) DEFAULT NULL",
 
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN client_ddt VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN notes TEXT DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN start_picking_at DATETIME DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN end_picking_at DATETIME DEFAULT NULL",
       "ALTER TABLE OUTBOUND_ORDERS ADD COLUMN shipped_at DATETIME DEFAULT NULL",
@@ -74,8 +75,33 @@ async function runMigrations() {
       "ALTER TABLE PALLETS ADD COLUMN shipped_at DATETIME DEFAULT NULL",
       "ALTER TABLE invoices ADD COLUMN invoice_data JSON DEFAULT NULL",
       "ALTER TABLE invoices ADD COLUMN is_paid BOOLEAN DEFAULT FALSE",
-      // Estensione dell'ENUM per rules_type
-      "ALTER TABLE billing_rules MODIFY COLUMN rule_type ENUM('EVENT', 'STORAGE', 'FLAG', 'DISCOUNT_PERCENT', 'DISCOUNT_FIXED', 'MANUAL') NOT NULL"
+      // Estensione dell'ENUM per rules_type e tariffa Deposito Paletta
+      "ALTER TABLE billing_rules MODIFY COLUMN rule_type ENUM('EVENT', 'STORAGE', 'FLAG', 'DISCOUNT_PERCENT', 'DISCOUNT_FIXED', 'MANUAL') NOT NULL",
+      "INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_type) VALUES ('DEPOSITO_PALLET', 'Deposito Paletta (Giacenza Rimasta)', 10.00, 'STORAGE')",
+      // Frammentazione Clienti (Cliente Madre -> Reparti/Frammentazioni)
+      "ALTER TABLE CUSTOMERS ADD COLUMN parent_id INT DEFAULT NULL",
+      // Gestione Discrepanze DDT Entrata e Storico Motivi
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN discrepancy_accepted BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN discrepancy_reason TEXT DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN discrepancy_resolved_by VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN discrepancy_resolved_at DATETIME DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN rejected_count INT DEFAULT 0",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN last_rejected_reason TEXT DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN last_rejected_by VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN last_rejected_at DATETIME DEFAULT NULL",
+      `CREATE TABLE IF NOT EXISTS INBOUND_DISCREPANCY_LOGS (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        inbound_ddt_id INT NOT NULL,
+        ddt_number VARCHAR(50) NOT NULL,
+        customer_id INT NOT NULL,
+        decision ENUM('REPORTED', 'ACCEPTED', 'REJECTED') NOT NULL,
+        reason TEXT DEFAULT NULL,
+        items_snapshot JSON DEFAULT NULL,
+        username VARCHAR(100) DEFAULT 'Sistema',
+        source VARCHAR(50) DEFAULT 'Gestionale',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (inbound_ddt_id) REFERENCES INBOUND_DDTS(id) ON DELETE CASCADE
+      )`
     ];
 
     for (const query of alterQueries) {
@@ -85,7 +111,6 @@ async function runMigrations() {
         // Ignoriamo gli errori di "colonna o chiave già esistente", significano che il db è già aggiornato
         if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_CANT_DROP_FIELD_OR_KEY') {
           // Logga solo errori inaspettati
-          // console.warn(`[ALTER NOTE] ${err.message}`);
         }
       }
     }

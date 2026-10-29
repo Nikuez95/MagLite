@@ -869,6 +869,12 @@ const OutboundZebra = () => {
 
       {/* Area Centrale Scrollabile */}
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+        {order?.notes && (
+          <div className="bg-amber-500/15 border border-amber-500/40 px-3 py-2 rounded-2xl text-amber-200 text-xs font-bold shrink-0">
+            <span className="text-amber-400 uppercase font-black mr-1.5">NOTA DDT:</span>
+            {order.notes}
+          </div>
+        )}
         {error && (
           <div className="bg-rose-500/15 border-2 border-rose-500 p-3 rounded-2xl flex gap-2.5 items-center text-rose-300 shadow-lg shrink-0 animate-[shake_0.4s_ease-in-out]">
             <AlertTriangle size={22} className="shrink-0 text-rose-400" />

@@ -327,7 +327,7 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound - Create new order
   fastify.post('/', async (request, reply) => {
-    const { customer_id, exit_date, items, client_ddt } = request.body;
+    const { customer_id, exit_date, items, client_ddt, notes } = request.body;
     const connection = await db.getConnection();
     
     try {
@@ -336,10 +336,11 @@ async function outboundRoutes(fastify, options) {
       const orderCode = `OUT-${new Date().toISOString().slice(2,10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
       
       const username = request.user?.username || 'SYSTEM';
+      const cleanNotes = notes && String(notes).trim() !== '' ? String(notes).trim() : null;
       
       const [orderRes] = await connection.query(
-        'INSERT INTO OUTBOUND_ORDERS (order_code, customer_id, exit_date, created_by, client_ddt) VALUES (?, ?, ?, ?, ?)',
-        [orderCode, customer_id ?? null, exit_date ?? null, username, client_ddt ?? null]
+        'INSERT INTO OUTBOUND_ORDERS (order_code, customer_id, exit_date, created_by, client_ddt, notes) VALUES (?, ?, ?, ?, ?, ?)',
+        [orderCode, customer_id ?? null, exit_date ?? null, username, client_ddt ?? null, cleanNotes]
       );
       const orderId = orderRes.insertId;
 
@@ -381,7 +382,7 @@ async function outboundRoutes(fastify, options) {
   // PUT /api/outbound/:id - Edit an outbound order
   fastify.put('/:id', async (request, reply) => {
     const { id } = request.params;
-    const { customer_id, exit_date, items, client_ddt } = request.body;
+    const { customer_id, exit_date, items, client_ddt, notes } = request.body;
     
     const userRole = request.user?.role;
     if (userRole !== 'developer' && userRole !== 'backoffice' && userRole !== 'admin') {
@@ -396,9 +397,11 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) throw new Error('Ordine non trovato');
       if (orders[0].status === 'SHIPPED') throw new Error('Impossibile modificare un ordine già spedito.');
 
+      const cleanNotes = notes && String(notes).trim() !== '' ? String(notes).trim() : null;
+
       await connection.query(
-        'UPDATE OUTBOUND_ORDERS SET customer_id = ?, exit_date = ?, client_ddt = ?, status = "PENDING" WHERE id = ?',
-        [customer_id ?? null, exit_date ?? null, client_ddt ?? null, id]
+        'UPDATE OUTBOUND_ORDERS SET customer_id = ?, exit_date = ?, client_ddt = ?, notes = ?, status = "PENDING" WHERE id = ?',
+        [customer_id ?? null, exit_date ?? null, client_ddt ?? null, cleanNotes, id]
       );
 
       await connection.query('DELETE FROM OUTBOUND_ITEMS WHERE order_id = ?', [id]);
@@ -614,6 +617,20 @@ async function outboundRoutes(fastify, options) {
       if (detailsLines.length > 0) {
         doc.fillColor('#192935').font('Helvetica-Bold').fontSize(11).text(detailsLines.join('   |   '), { align: 'center' });
         doc.moveDown(0.5);
+      }
+
+      // --- NOTA LIBERA PER IL MAGAZZINIERE (SE PRESENTE) ---
+      if (order.notes && String(order.notes).trim() !== '') {
+        const noteText = String(order.notes).trim();
+        doc.font('Helvetica').fontSize(10);
+        const noteHeight = doc.heightOfString(noteText, { width: 490 });
+        const boxHeight = Math.max(36, noteHeight + 22);
+        const boxY = doc.y + 2;
+
+        doc.rect(40, boxY, 515, boxHeight).fillAndStroke('#fffbeb', '#f59e0b');
+        doc.fillColor('#b45309').font('Helvetica-Bold').fontSize(9).text('NOTA OPERATIVA PER IL MAGAZZINIERE:', 50, boxY + 7);
+        doc.fillColor('#1e293b').font('Helvetica-Bold').fontSize(10).text(noteText, 50, boxY + 19, { width: 495 });
+        doc.y = boxY + boxHeight + 10;
       }
 
       // --- BARCODE SECTION ---

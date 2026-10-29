@@ -21,13 +21,15 @@ const InboundZebra = () => {
   const [boxesInput, setBoxesInput] = useState('');
   const [expDateInput, setExpDateInput] = useState('');
   const [locationInput, setLocationInput] = useState('');
-    const [locationsList, setLocationsList] = useState([]);
+  const [locationsList, setLocationsList] = useState([]);
+  const [availableDdts, setAvailableDdts] = useState([]);
   
   const fetchLocs = async () => {
     try {
-      const [locRes, freeRes] = await Promise.all([
+      const [locRes, freeRes, ddtsRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${token}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${token}` } })
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
       const allLocs = [
         ...locRes.data.map(l => ({ name: l.barcode, occupied: !!l.pallet_code })),
@@ -43,6 +45,7 @@ const InboundZebra = () => {
       }));
       
       setLocationsList(finalLocs);
+      setAvailableDdts((ddtsRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS'));
     } catch (err) {
       console.error(err);
     }
@@ -135,34 +138,81 @@ const InboundZebra = () => {
 
   if (step === 'SCAN_DDT') {
     return (
-      <div className="flex-1 p-6 flex flex-col items-center justify-center">
-        <button onClick={() => navigate('/zebra')} className="absolute top-24 left-6 p-3 bg-slate-800 rounded-full text-brand-white">
-          <ChevronLeft size={24} />
-        </button>
-        <ScanBarcode size={80} className="text-brand-blue mb-8 animate-pulse" />
-        <h2 className="text-3xl font-black text-brand-white text-center mb-4">Spunta Entrata</h2>
-        <p className="text-slate-400 text-center text-lg mb-8">Scansiona o digita il numero del DDT.</p>
+      <div className="flex-1 p-5 flex flex-col">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => navigate('/zebra')} className="p-3 bg-slate-800 rounded-full text-brand-white">
+            <ChevronLeft size={22} />
+          </button>
+          <div>
+            <h2 className="text-2xl font-black text-brand-white leading-tight">Spunta Entrata</h2>
+            <p className="text-slate-400 text-xs">Scansiona o seleziona un DDT da spuntare</p>
+          </div>
+        </div>
         
-        {error && <div className="bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl text-rose-400 text-center font-bold mb-6 w-full">{error}</div>}
+        {error && <div className="bg-rose-500/10 border border-rose-500/50 p-3.5 rounded-xl text-rose-400 text-center font-bold mb-4 w-full text-sm">{error}</div>}
         
-        <input 
-          type="text" 
-          placeholder="Es. IN-2026-0001"
-          className="bg-slate-900 border-2 border-slate-800 p-4 rounded-xl text-center text-2xl font-bold w-full uppercase"
-          value={scannedDdt}
-          onChange={e => {
-            const val = e.target.value.toUpperCase();
-            setScannedDdt(val);
-          }}
-          onKeyDown={e => e.key === 'Enter' && fetchDdt(scannedDdt)}
-        />
-        <button 
-          onClick={() => fetchDdt(scannedDdt)}
-          disabled={!scannedDdt || isProcessing}
-          className="mt-4 w-full bg-brand-blue text-brand-black p-4 rounded-xl font-bold text-xl disabled:opacity-50"
-        >
-          {isProcessing ? 'Caricamento...' : 'Avvia'}
-        </button>
+        <div className="flex gap-2 mb-5">
+          <input 
+            type="text" 
+            placeholder="Es. IN-2026-0001"
+            className="bg-slate-900 border-2 border-slate-800 p-3.5 rounded-xl text-center text-lg font-bold flex-1 uppercase"
+            value={scannedDdt}
+            onChange={e => {
+              const val = e.target.value.toUpperCase();
+              setScannedDdt(val);
+            }}
+            onKeyDown={e => e.key === 'Enter' && fetchDdt(scannedDdt)}
+          />
+          <button 
+            onClick={() => fetchDdt(scannedDdt)}
+            disabled={!scannedDdt || isProcessing}
+            className="bg-brand-blue text-brand-black px-5 rounded-xl font-black text-base disabled:opacity-50"
+          >
+            {isProcessing ? '...' : 'Avvia'}
+          </button>
+        </div>
+
+        {/* Lista DDT da spuntare (inclusi eventuali DDT rifiutati dall'ufficio da ri-spuntare) */}
+        <div className="flex-1 overflow-y-auto space-y-2.5">
+          <div className="text-xs font-black uppercase tracking-wider text-slate-400 px-1">
+            DDT in attesa di spunta ({availableDdts.length})
+          </div>
+          {availableDdts.length === 0 ? (
+            <div className="p-8 text-center border-2 border-dashed border-slate-800 rounded-2xl text-slate-500 text-sm">
+              Nessun DDT in attesa. Scansiona il codice sul foglio DDT.
+            </div>
+          ) : availableDdts.map(d => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => fetchDdt(d.ddt_number)}
+              className={`w-full text-left p-4 rounded-2xl border-2 transition-all active:scale-95 ${
+                d.rejected_count > 0
+                  ? 'bg-rose-950/30 border-rose-500/60 shadow-[0_0_15px_rgba(244,63,94,0.2)]'
+                  : 'bg-slate-900 border-slate-800 hover:border-brand-blue'
+              }`}
+            >
+              <div className="flex justify-between items-start gap-2">
+                <span className="font-mono font-black text-lg text-brand-white">{d.ddt_number}</span>
+                {d.rejected_count > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black uppercase">
+                    ⚠ Rifiutata — Rifare Spunta
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full bg-brand-blue/20 text-brand-blue text-[10px] font-black uppercase">
+                    {d.status === 'IN_PROGRESS' ? 'In Corso' : 'Da Spuntare'}
+                  </span>
+                )}
+              </div>
+              <div className="text-sm font-bold text-slate-300 mt-1">{d.customer_name || d.business_name}</div>
+              {d.rejected_count > 0 && d.last_rejected_reason && (
+                <div className="mt-2 p-2 rounded-lg bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 font-semibold">
+                  Motivo rifiuto ufficio: &ldquo;{d.last_rejected_reason}&rdquo;
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
@@ -203,15 +253,21 @@ const InboundZebra = () => {
 
     return (
       <div className="flex-1 p-4 flex flex-col">
-        <div className="flex items-center gap-4 mb-4">
-          <button onClick={() => setStep('SCAN_DDT')} className="p-3 bg-slate-800 rounded-full text-brand-white shrink-0">
+        <div className="flex items-center gap-4 mb-3">
+          <button onClick={() => { fetchLocs(); setStep('SCAN_DDT'); }} className="p-3 bg-slate-800 rounded-full text-brand-white shrink-0">
             <ChevronLeft size={20} />
           </button>
           <div className="min-w-0 flex-1">
             <h2 className="text-2xl font-black text-white leading-tight">Spunta DDT</h2>
-            <p className="text-brand-blue font-bold text-sm truncate">{ddt?.ddt_number}</p>
+            <p className="text-brand-blue font-bold text-sm truncate">{ddt?.ddt_number} — {ddt?.customer_name || ddt?.business_name}</p>
           </div>
         </div>
+
+        {ddt?.rejected_count > 0 && (
+          <div className="mb-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-300 font-bold">
+            ⚠️ Spunta precedente rifiutata dall&apos;ufficio{ddt.last_rejected_reason ? `: "${ddt.last_rejected_reason}"` : ''}. Ripeti il conteggio con attenzione.
+          </div>
+        )}
 
         {/* Ricerca per Nome o Lotto */}
         <div className="relative mb-3">

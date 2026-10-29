@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS CUSTOMERS (
     vat_number VARCHAR(50),
     address TEXT,
     phone VARCHAR(50),
-    email VARCHAR(100)
+    email VARCHAR(100),
+    parent_id INT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS PRODUCTS (
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   exit_date DATE NOT NULL,
   status ENUM('PENDING', 'PICKING', 'READY', 'SHIPPED') DEFAULT 'PENDING',
   client_ddt VARCHAR(100) DEFAULT NULL,
+  notes TEXT DEFAULT NULL,
   picking_operator VARCHAR(100) DEFAULT NULL,
   start_picking_at DATETIME DEFAULT NULL,
   end_picking_at DATETIME DEFAULT NULL,
@@ -127,7 +129,8 @@ INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_ty
 ('IN_PALLET', 'Ingresso Paletta', 20.00, 'EVENT'),
 ('OUT_PALLET', 'Uscita Paletta', 20.00, 'EVENT'),
 ('SOSTA_15', 'Sosta (Ingresso <= 15)', 4.00, 'STORAGE'),
-('SOSTA_MAGGIORE_15', 'Sosta (Ingresso > 15)', 8.00, 'STORAGE');
+('SOSTA_MAGGIORE_15', 'Sosta (Ingresso > 15)', 8.00, 'STORAGE'),
+('DEPOSITO_PALLET', 'Deposito Paletta (Giacenza Rimasta)', 10.00, 'STORAGE');
 
 CREATE TABLE IF NOT EXISTS client_tariffs (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -175,7 +178,29 @@ CREATE TABLE IF NOT EXISTS INBOUND_DDTS (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     closed_at DATETIME DEFAULT NULL,
     notes TEXT,
+    discrepancy_accepted BOOLEAN DEFAULT FALSE,
+    discrepancy_reason TEXT DEFAULT NULL,
+    discrepancy_resolved_by VARCHAR(100) DEFAULT NULL,
+    discrepancy_resolved_at DATETIME DEFAULT NULL,
+    rejected_count INT DEFAULT 0,
+    last_rejected_reason TEXT DEFAULT NULL,
+    last_rejected_by VARCHAR(100) DEFAULT NULL,
+    last_rejected_at DATETIME DEFAULT NULL,
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS INBOUND_DISCREPANCY_LOGS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    inbound_ddt_id INT NOT NULL,
+    ddt_number VARCHAR(50) NOT NULL,
+    customer_id INT NOT NULL,
+    decision ENUM('REPORTED', 'ACCEPTED', 'REJECTED') NOT NULL,
+    reason TEXT DEFAULT NULL,
+    items_snapshot JSON DEFAULT NULL,
+    username VARCHAR(100) DEFAULT 'Sistema',
+    source VARCHAR(50) DEFAULT 'Gestionale',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (inbound_ddt_id) REFERENCES INBOUND_DDTS(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS INBOUND_DDT_ITEMS (

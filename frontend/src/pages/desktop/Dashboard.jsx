@@ -122,10 +122,10 @@ const Dashboard = () => {
             </div>
             <div>
               <h1 className="text-2xl md:text-3xl font-black text-brand-white tracking-tight">
-                Control Center Operativo
+                Logistic Porcelli
               </h1>
               <p className="text-slate-400 text-sm">
-                Panoramica in tempo reale su scaffali, palette, spedizioni e scadenze di magazzino.
+                Dashboard Operativa - {new Date().toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
               </p>
             </div>
           </div>
@@ -150,7 +150,7 @@ const Dashboard = () => {
               className="flex items-center gap-2 px-4 py-2.5 bg-slate-950 hover:bg-slate-800 text-slate-300 font-bold rounded-xl border border-slate-800 transition-all text-sm"
             >
               <Box size={18} className="text-brand-blue" />
-              Stampa Inventario
+              Inventario
             </button>
           </div>
         </div>
@@ -412,7 +412,7 @@ const Dashboard = () => {
                 >
                   <Users size={18} className="text-brand-blue mb-2" />
                   <div className="text-2xl font-black text-brand-white">{stats.total_customers || 0}</div>
-                  <div className="text-xs text-slate-400 font-semibold">Clienti Attivi</div>
+                  <div className="text-xs text-slate-400 font-semibold">Clienti</div>
                 </button>
                 <button
                   onClick={() => navigate('/desktop/products')}
@@ -420,7 +420,7 @@ const Dashboard = () => {
                 >
                   <Box size={18} className="text-brand-blue mb-2" />
                   <div className="text-2xl font-black text-brand-white">{stats.total_products || 0}</div>
-                  <div className="text-xs text-slate-400 font-semibold">Articoli Censiti</div>
+                  <div className="text-xs text-slate-400 font-semibold">Articoli Registrati</div>
                 </button>
               </div>
             </div>

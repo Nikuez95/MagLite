@@ -1,86 +1,201 @@
-import React, { useState } from 'react';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { PackagePlus, ArrowRightLeft, PackageMinus, LogOut, Scan, Download } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import axios from 'axios';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
-import Stow from './Stow';
 import InboundZebra from './InboundZebra';
 import OutboundZebra from './OutboundZebra';
 import Handling from './Handling';
 
-const TouchButton = ({ icon: Icon, label, onClick }) => (
-  <button 
-    onClick={onClick}
-    className="flex flex-col items-center justify-center p-6 rounded-3xl border-2 border-slate-800 shadow-xl transition-all active:scale-95 bg-slate-900 text-brand-white hover:border-brand-blue"
-  >
-    <Icon size={56} className="mb-4 text-brand-blue" />
-    <span className="text-xl font-bold tracking-wide">{label}</span>
-  </button>
-);
+const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', onClick }) => {
+  const accentStyles = {
+    blue: {
+      border: 'border-slate-800 hover:border-brand-blue active:border-brand-blue',
+      iconBg: 'bg-brand-blue/15 text-brand-blue border-brand-blue/30',
+      badgeBg: 'bg-brand-blue text-brand-black'
+    },
+    amber: {
+      border: 'border-slate-800 hover:border-amber-400 active:border-amber-400',
+      iconBg: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+      badgeBg: 'bg-amber-400 text-brand-black'
+    },
+    emerald: {
+      border: 'border-slate-800 hover:border-emerald-400 active:border-emerald-400',
+      iconBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+      badgeBg: 'bg-emerald-400 text-brand-black'
+    }
+  }[accent];
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center justify-between p-5 rounded-3xl border-2 shadow-xl transition-all active:scale-[0.98] bg-slate-900/95 text-brand-white text-left ${accentStyles.border}`}
+    >
+      <div className="flex items-center gap-4 min-w-0">
+        <div className={`w-16 h-16 rounded-2xl border flex items-center justify-center shrink-0 ${accentStyles.iconBg}`}>
+          <Icon size={34} />
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xl font-black tracking-wide leading-tight">{label}</span>
+            {badge !== undefined && badge !== null && badge > 0 && (
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${accentStyles.badgeBg}`}>
+                {badge}
+              </span>
+            )}
+          </div>
+          {subtitle && (
+            <p className="text-xs text-slate-400 font-semibold mt-1 leading-snug">
+              {subtitle}
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="w-10 h-10 rounded-xl bg-slate-800/80 flex items-center justify-center text-slate-400 shrink-0 ml-2">
+        <ChevronRight size={22} />
+      </div>
+    </button>
+  );
+};
 
 const TopBar = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const isHome = location.pathname === '/zebra';
+  const isHome = location.pathname === '/zebra' || location.pathname === '/zebra/';
+  const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
 
   return (
-    <header className="bg-brand-black border-b border-slate-800 px-5 py-4 flex justify-between items-center sticky top-0 z-10 shadow-lg">
+    <header className="bg-brand-black/95 backdrop-blur border-b border-slate-800 px-4 py-3.5 flex justify-between items-center sticky top-0 z-20 shadow-lg">
       <div 
-        className={`flex items-center gap-3.5 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
+        className={`flex items-center gap-3 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
         onClick={() => !isHome && navigate('/zebra')}
       >
-        <div className="h-11 w-16 flex items-center justify-center shrink-0">
+        <div className="h-10 w-14 flex items-center justify-center shrink-0">
           <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
         </div>
         <div>
-          <h1 className="text-brand-white font-bold text-xl leading-tight tracking-tight">MagLite</h1>
-          <p className="text-brand-blue text-[11px] uppercase font-bold tracking-[0.2em]">Operatore</p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-brand-white font-black text-lg leading-tight tracking-tight">MagLite</h1>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-black uppercase">
+              <Radio size={10} className="animate-pulse" /> Zebra
+            </span>
+          </div>
+          <p className="text-slate-400 text-[11px] font-bold flex items-center gap-1 mt-0.5">
+            <User size={11} className="text-brand-blue" />
+            <span>{user.username || 'Operatore'}</span>
+          </p>
         </div>
       </div>
-      <button 
-        onClick={() => {
-          localStorage.removeItem('maglite_token');
-          localStorage.removeItem('maglite_user');
-          window.location.href = '/login';
-        }}
-        className="p-3.5 rounded-full bg-slate-900 border border-slate-800 text-brand-white active:bg-slate-800 transition-colors"
-      >
-        <LogOut size={22} />
-      </button>
+      <div className="flex items-center gap-2">
+        {!isHome && (
+          <button
+            onClick={() => navigate('/zebra')}
+            className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-brand-blue active:bg-slate-800"
+          >
+            Home
+          </button>
+        )}
+        <button 
+          onClick={() => {
+            localStorage.removeItem('maglite_token');
+            localStorage.removeItem('maglite_user');
+            window.location.href = '/login';
+          }}
+          className="p-3 rounded-2xl bg-slate-900 border border-slate-800 text-rose-400 active:bg-slate-800 transition-colors"
+          title="Esci"
+        >
+          <LogOut size={20} />
+        </button>
+      </div>
     </header>
   );
 };
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0 });
+
+  useEffect(() => {
+    const token = localStorage.getItem('maglite_token');
+    if (!token) return;
+    const fetchCounts = async () => {
+      try {
+        const [inRes, outRes] = await Promise.all([
+          axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } }),
+          axios.get(`http://${window.location.hostname}:3000/api/outbound`, { headers: { Authorization: `Bearer ${token}` } })
+        ]);
+        const inboundPending = (inRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS').length;
+        const outboundActive = (outRes.data || []).filter(o => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'PARTIAL').length;
+        setCounts({ inboundPending, outboundActive });
+      } catch (e) {
+        // Ignora errori di rete silenziosi sulla home
+      }
+    };
+    fetchCounts();
+  }, []);
+
+  // Se l'operatore spara direttamente un codice dalla Home, apriamo il modulo corrispondente
+  useBarcodeScanner((barcode) => {
+    const code = (barcode || '').trim().toUpperCase();
+    if (!code) return;
+    if (code.startsWith('PAL-')) {
+      navigate('/zebra/handling', { state: { initialBarcode: code } });
+    } else if (code.startsWith('IN-')) {
+      navigate('/zebra/inbound');
+    } else if (code.startsWith('OUT-')) {
+      navigate('/zebra/outbound');
+    }
+  });
 
   return (
-    <div className="flex-1 p-6 flex flex-col gap-6 overflow-y-auto w-full max-w-md mx-auto">
-      <div className="mb-2 mt-4">
-        <h2 className="text-4xl font-extrabold text-brand-white tracking-tight">Scanner</h2>
-        <p className="text-brand-blue text-base font-medium mt-1">Seleziona l'azione da eseguire</p>
+    <div className="flex-1 p-5 flex flex-col justify-between overflow-y-auto w-full max-w-md mx-auto">
+      <div>
+        <div className="mb-5 mt-1 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-4 shadow-lg">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-[11px] font-black uppercase tracking-widest text-brand-blue">Terminale Operativo</span>
+              <h2 className="text-2xl font-black text-brand-white tracking-tight mt-0.5">Cosa devi fare?</h2>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-brand-blue/10 border border-brand-blue/20 flex items-center justify-center text-brand-blue">
+              <Scan size={26} />
+            </div>
+          </div>
+          <p className="text-slate-400 text-xs font-medium mt-2">
+            Tocca un&apos;operazione oppure spara direttamente una paletta <span className="font-mono text-brand-blue font-bold">PAL-...</span> per stivarla o spostarla.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-4">
+          <TouchCard 
+            icon={Download} 
+            label="SPUNTA ENTRATA" 
+            subtitle="Controlla DDT in arrivo e genera bancali"
+            badge={counts.inboundPending}
+            accent="blue"
+            onClick={() => navigate('/zebra/inbound')} 
+          />
+          <TouchCard 
+            icon={ArrowRightLeft} 
+            label="HANDLING (Spostamento)" 
+            subtitle="Stiva nuove palette, sposta o unisci sugli scaffali"
+            accent="amber"
+            onClick={() => navigate('/zebra/handling')} 
+          />
+          <TouchCard 
+            icon={PackageMinus} 
+            label="PICKING (Prelievo)" 
+            subtitle="Preleva bancali e scatole per le spedizioni"
+            badge={counts.outboundActive}
+            accent="emerald"
+            onClick={() => navigate('/zebra/outbound')} 
+          />
+        </div>
       </div>
-      
-      <div className="grid grid-cols-1 gap-5">
-        <TouchButton 
-          icon={Download} 
-          label="SPUNTA ENTRATA" 
-          onClick={() => navigate('/zebra/inbound')} 
-        />
-        <TouchButton 
-          icon={PackagePlus} 
-          label="STIVAGGIO (Messa a dimora)" 
-          onClick={() => navigate('/zebra/stow')} 
-        />
-        <TouchButton 
-          icon={ArrowRightLeft} 
-          label="HANDLING (Spostamento)" 
-          onClick={() => navigate('/zebra/handling')} 
-        />
-        <TouchButton 
-          icon={PackageMinus} 
-          label="PICKING (Prelievo)" 
-          onClick={() => navigate('/zebra/outbound')} 
-        />
+
+      <div className="mt-6 pt-3 border-t border-slate-900 text-center">
+        <p className="text-[11px] text-slate-500 font-semibold">
+          Suggerimento: clicca il logo in alto per tornare sempre alla Home
+        </p>
       </div>
     </div>
   );
@@ -128,7 +243,7 @@ const ZebraApp = () => {
       <Routes>
         <Route path="/inbound" element={<InboundZebra />} />
         <Route path="/" element={<Dashboard />} />
-        <Route path="/stow" element={<Stow />} />
+        <Route path="/stow" element={<Navigate to="/zebra/handling" replace />} />
         <Route path="/outbound" element={<OutboundZebra />} />
         <Route path="/handling" element={<Handling />} />
         <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />

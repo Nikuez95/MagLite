@@ -56,12 +56,13 @@ async function palletRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
+        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
         (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         WHERE p.status != 'SHIPPED'
+          AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
         ORDER BY p.created_at DESC
       `);
       return rows;
@@ -74,7 +75,7 @@ async function palletRoutes(fastify, options) {
   fastify.get('/inventory', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name,
+        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                l.zone, l.col, l.pos,
                (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
@@ -83,6 +84,7 @@ async function palletRoutes(fastify, options) {
         JOIN CUSTOMERS c ON p.customer_id = c.id
         LEFT JOIN LOCATIONS l ON p.location = l.barcode
         WHERE p.status != 'SHIPPED'
+          AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
       `);
       return rows;
     } catch (err) {

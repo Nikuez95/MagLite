@@ -1,9 +1,50 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard, Layers } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 
+// Estrae Piano (level) e Posizione Orizzontale (colIndex) da una posizione scaffale (es. "01", "12", "33", "010")
+const parseShelfPos = (posStr) => {
+  const clean = String(posStr || '').trim();
+  if (/^\d{2,}$/.test(clean)) {
+    return {
+      pos: clean,
+      level: parseInt(clean[0], 10),
+      colIndex: parseInt(clean.slice(1), 10)
+    };
+  }
+  if (/^\d$/.test(clean)) {
+    return {
+      pos: clean,
+      level: 0,
+      colIndex: parseInt(clean, 10)
+    };
+  }
+  const digits = clean.match(/\d+/g);
+  if (digits && digits.length >= 2) {
+    return {
+      pos: clean,
+      level: parseInt(digits[0], 10),
+      colIndex: parseInt(digits[1], 10)
+    };
+  }
+  if (digits && digits.length === 1 && digits[0].length >= 2) {
+    return {
+      pos: clean,
+      level: parseInt(digits[0][0], 10),
+      colIndex: parseInt(digits[0].slice(1), 10)
+    };
+  }
+  return {
+    pos: clean,
+    level: 0,
+    colIndex: 0
+  };
+};
+
 const Handling = () => {
+  const routeLocation = useLocation();
   const [pallet, setPallet] = useState(null);
   const [status, setStatus] = useState('WAITING_PALLET'); 
   const [message, setMessage] = useState('');
@@ -26,26 +67,33 @@ const Handling = () => {
 
   const getToken = () => localStorage.getItem('maglite_token');
 
-  useEffect(() => {
-    const fetchInit = async () => {
-      try {
-        const [resLoc, resSettings] = await Promise.all([
-          axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${getToken()}` } }),
-          axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers: { Authorization: `Bearer ${getToken()}` } })
-        ]);
-        setLocations(resLoc.data);
-        const uniqueZones = [...new Set(resLoc.data.map(l => l.zone).filter(Boolean))].sort();
-        setZones(uniqueZones);
-        
-        if (resSettings.data.require_location_pins) {
-          setRequirePins(resSettings.data.require_location_pins === 'true');
-        }
-      } catch (err) {
-        console.error("Errore fetch", err);
+  const fetchInit = async () => {
+    try {
+      const [resLoc, resSettings] = await Promise.all([
+        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${getToken()}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      ]);
+      setLocations(resLoc.data);
+      const uniqueZones = [...new Set(resLoc.data.map(l => l.zone).filter(Boolean))].sort();
+      setZones(uniqueZones);
+      
+      if (resSettings.data.require_location_pins !== undefined) {
+        setRequirePins(resSettings.data.require_location_pins === 'true');
       }
-    };
+    } catch (err) {
+      console.error("Errore fetch", err);
+    }
+  };
+
+  useEffect(() => {
     fetchInit();
   }, []);
+
+  useEffect(() => {
+    if (routeLocation.state?.initialBarcode) {
+      handleScan(routeLocation.state.initialBarcode);
+    }
+  }, [routeLocation.state]);
 
   const handleScan = async (barcodeStr) => {
     const barcode = barcodeStr.trim();
@@ -157,6 +205,7 @@ const Handling = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
 
+      await fetchInit();
       setStatus('SUCCESS');
       setMessage(`Unita e Spostata in: ${targetLocation}`);
       setPallet(null);
@@ -186,6 +235,7 @@ const Handling = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
 
+      await fetchInit();
       setStatus('SUCCESS');
       setMessage(`Spostato in: ${locationCode}`);
       setPallet(null);
@@ -209,7 +259,34 @@ const Handling = () => {
   };
 
   const colsInZone = [...new Set(locations.filter(l => l.zone === selectedZone).map(l => l.col))].sort();
-  const posInCol = [...new Set(locations.filter(l => l.zone === selectedZone && l.col === selectedCol).map(l => l.pos))].sort();
+
+  // Costruisce la vista reale dello scaffale: ripiani ordinati dall'ALTO verso il BASSO (es. 3 -> 2 -> 1 -> 0)
+  // e posizioni ordinate da SINISTRA verso DESTRA su ogni ripiano (es. 31 32 33 / 21 22 23 / 11 12 13 / 01 02 03)
+  const shelfRows = (() => {
+    const rackLocs = locations.filter(l => l.zone === selectedZone && l.col === selectedCol);
+    const uniqueByPos = new Map();
+    rackLocs.forEach(l => {
+      if (!uniqueByPos.has(l.pos)) {
+        uniqueByPos.set(l.pos, {
+          ...l,
+          ...parseShelfPos(l.pos)
+        });
+      }
+    });
+
+    const byLevel = new Map();
+    uniqueByPos.forEach(item => {
+      if (!byLevel.has(item.level)) byLevel.set(item.level, []);
+      byLevel.get(item.level).push(item);
+    });
+
+    // Livelli dal più alto (in cima allo scaffale) al più basso (0 = terra)
+    const sortedLevels = [...byLevel.keys()].sort((a, b) => b - a);
+    return sortedLevels.map(lvl => ({
+      level: lvl,
+      items: byLevel.get(lvl).sort((a, b) => a.colIndex - b.colIndex || a.pos.localeCompare(b.pos, undefined, { numeric: true }))
+    }));
+  })();
 
   return (
     <div className={`flex-1 p-6 flex flex-col items-center justify-center text-center transition-colors duration-300 
@@ -394,23 +471,90 @@ const Handling = () => {
       )}
 
       {status === 'SELECT_POS' && pallet && !requirePins && (
-        <div className="w-full max-w-sm animate-fade-in-up text-left flex flex-col h-full py-4">
-          <button onClick={() => setStatus('SELECT_COL')} className="flex items-center gap-2 text-slate-400 mb-4 active:text-brand-white">
-            <ArrowLeft size={20} /> Cambia Colonna
-          </button>
-          <h3 className="text-2xl font-black text-brand-white mb-2">{selectedZone}-{selectedCol}</h3>
-          <p className="text-slate-400 mb-4">Scegli il Livello (Numero)</p>
-          
-          <div className="flex-1 overflow-y-auto grid grid-cols-3 gap-3 pb-4">
-            {posInCol.map(p => (
-              <button 
-                key={p} 
-                onClick={() => checkOccupiedAndStow(`${selectedZone}-${selectedCol}-${p}`)}
-                className="py-4 px-2 bg-slate-900 border border-slate-700 rounded-2xl text-2xl font-bold text-emerald-400 text-center hover:border-emerald-400 active:bg-slate-800 transition-colors"
+        <div className="w-full max-w-sm animate-fade-in-up text-left flex flex-col h-full py-2">
+          <div className="flex items-center justify-between mb-2">
+            <button onClick={() => setStatus('SELECT_COL')} className="flex items-center gap-1.5 text-slate-400 active:text-brand-white font-bold text-sm bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800">
+              <ArrowLeft size={18} /> Cambia Colonna
+            </button>
+            <div className="flex items-center gap-2 text-[11px] font-bold">
+              <span className="inline-flex items-center gap-1 text-emerald-400"><span className="w-2 h-2 rounded-full bg-emerald-400"></span>Libera</span>
+              <span className="inline-flex items-center gap-1 text-amber-400"><span className="w-2 h-2 rounded-full bg-amber-400"></span>Occupata</span>
+            </div>
+          </div>
+
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="text-2xl font-black text-brand-white flex items-center gap-2">
+              <Layers size={22} className="text-brand-blue" />
+              <span>Scaffale {selectedZone}-{selectedCol}</span>
+            </h3>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Vista Frontale</span>
+          </div>
+
+          {/* Cornice Scaffale Reale (Dall'alto verso il basso) */}
+          <div className="flex-1 overflow-y-auto bg-slate-950/80 border-x-4 border-t-2 border-slate-700 rounded-t-2xl p-2.5 space-y-2.5 shadow-inner">
+            <div className="text-center text-[10px] font-black uppercase tracking-widest text-sky-400/80 bg-sky-500/10 border border-sky-500/20 rounded-lg py-1">
+              ⬆️ Ripiani Alti (Cima Scaffale)
+            </div>
+
+            {shelfRows.map((row) => (
+              <div
+                key={row.level}
+                className="bg-slate-900/70 rounded-xl p-2 border-b-4 border-amber-500/70 shadow-md"
               >
-                {p}
-              </button>
+                <div className="flex items-center justify-between mb-1.5 px-1">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-400">
+                    {row.level === 0 ? 'Piano 0 (Terra)' : `Piano ${row.level}`}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500">
+                    {row.items.length} {row.items.length === 1 ? 'posizione' : 'posizioni'}
+                  </span>
+                </div>
+                <div
+                  className="grid gap-2"
+                  style={{
+                    gridTemplateColumns: `repeat(${Math.min(Math.max(row.items.length, 1), 4)}, minmax(0, 1fr))`
+                  }}
+                >
+                  {row.items.map((item) => {
+                    const fullCode = `${selectedZone}-${selectedCol}-${item.pos}`;
+                    const existingPallets = item.pallet_code
+                      ? item.pallet_code.split(',').map(s => s.trim()).filter(Boolean)
+                      : [];
+                    const isCurrentPalletHere = existingPallets.includes(pallet.pallet_code) || pallet.location === fullCode;
+                    const isOccupiedByOther = existingPallets.some(code => code !== pallet.pallet_code);
+
+                    return (
+                      <button
+                        key={item.pos}
+                        onClick={() => checkOccupiedAndStow(fullCode)}
+                        className={`py-3 px-1.5 rounded-xl border-2 flex flex-col items-center justify-center transition-all active:scale-95 ${
+                          isCurrentPalletHere
+                            ? 'bg-sky-500/20 border-sky-400 text-sky-300'
+                            : isOccupiedByOther
+                              ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 hover:border-amber-400'
+                              : 'bg-slate-950 border-emerald-500/50 text-emerald-400 hover:border-emerald-400 active:bg-slate-800'
+                        }`}
+                      >
+                        <span className="text-2xl font-black leading-none tracking-tight">{item.pos}</span>
+                        <span className={`text-[9px] font-black uppercase mt-1 px-1.5 py-0.5 rounded ${
+                          isCurrentPalletHere
+                            ? 'bg-sky-500/30 text-sky-200'
+                            : isOccupiedByOther
+                              ? 'bg-amber-500/25 text-amber-300'
+                              : 'bg-emerald-500/15 text-emerald-400'
+                        }`}>
+                          {isCurrentPalletHere ? 'QUI' : isOccupiedByOther ? 'OCC.' : 'LIBERA'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             ))}
+
+            <div className="text-center text-[10px] font-black uppercase tracking-widest text-emerald-400/90 bg-emerald-500/10 border border-emerald-500/20 rounded-lg py-1.5">
+              ⬇️ Pavimento / Terra (Piano 0)
+            </div>
           </div>
         </div>
       )}
