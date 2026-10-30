@@ -27,6 +27,7 @@ import {
   ReceiptText,
   Coins,
   DollarSign,
+  RotateCcw,
   Activity,
   TrendingDown,
   Archive,
@@ -51,7 +52,7 @@ const DesktopLayout = () => {
   })();
 
   const [openSubmenus, setOpenSubmenus] = useState({
-    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history'].includes(location.pathname),
+    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns'].includes(location.pathname),
     Finanza: ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
     Amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
   });
@@ -67,7 +68,7 @@ const DesktopLayout = () => {
   useEffect(() => {
     setOpenSubmenus(prev => ({
       ...prev,
-      Merce: prev.Merce || ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history'].includes(location.pathname),
+      Merce: prev.Merce || ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns'].includes(location.pathname),
       Finanza: prev.Finanza || ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
       Amministrazione: prev.Amministrazione || ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
     }));
@@ -146,6 +147,7 @@ const DesktopLayout = () => {
       submenu: [
         { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus },
         { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus },
+        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw },
         { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box },
         { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch },
       ]
@@ -181,6 +183,7 @@ const DesktopLayout = () => {
     { name: 'Nuova Merce (Inbound)', path: '/desktop/inbound', icon: PackagePlus, group: 'Merce' },
     { name: 'Spedizioni (Outbound)', path: '/desktop/outbound', icon: PackageMinus, group: 'Merce' },
     { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce' },
+    { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce' },
     { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce' },
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce' },
     { name: 'Anagrafica Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche' },

@@ -11,7 +11,7 @@ import {
 import { jwtDecode } from 'jwt-decode';
 import { useNavigate } from 'react-router-dom';
 
-function TimelineModal({ order, onClose, token }) {
+function TimelineModal({ order, onClose, token, onOpenReturn }) {
   const [details, setDetails] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -120,7 +120,24 @@ function TimelineModal({ order, onClose, token }) {
                   </div>
                 </div>
               ))}
+            
+          {/* Pulsante Reso per ordini spediti */}
+          {ordData.status === 'SHIPPED' && onOpenReturn && (
+            <div className="pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenReturn(ordData);
+                }}
+                className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-black font-black rounded-xl transition-all flex items-center justify-center gap-2 text-sm shadow-[0_0_20px_rgba(245,158,11,0.25)]"
+              >
+                <RotateCcw size={18} />
+                Fai Tornare la Merce (Registra Reso)
+              </button>
             </div>
+          )}
+</div>
           </div>
         </div>
       </div>
@@ -187,6 +204,71 @@ const Outbound = () => {
   const [timelineModal, setTimelineModal] = useState(null);
   
   const [includePending, setIncludePending] = useState(false);
+
+  // Return modal state
+  const [returnModal, setReturnModal] = useState({
+    show: false,
+    order: null,
+    reason: 'Merce non accettata dal cliente',
+    customReason: '',
+    notes: '',
+    loading: false,
+    items: []
+  });
+
+  const openReturnModal = async (order) => {
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/${order.id}/details`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setReturnModal({
+        show: true,
+        order: res.data.order || order,
+        reason: 'Merce non accettata dal cliente',
+        customReason: '',
+        notes: '',
+        loading: false,
+        items: res.data.items || []
+      });
+    } catch (e) {
+      setReturnModal({
+        show: true,
+        order: order,
+        reason: 'Merce non accettata dal cliente',
+        customReason: '',
+        notes: '',
+        loading: false,
+        items: []
+      });
+    }
+  };
+
+  const handleConfirmReturn = async () => {
+    if (!returnModal.order) return;
+    const finalReason = returnModal.reason === 'Altro (personalizzato)' || returnModal.customReason.trim() !== ''
+      ? (returnModal.customReason.trim() || returnModal.reason)
+      : returnModal.reason;
+
+    if (!finalReason) {
+      appAlert('Specificare un motivo per il reso');
+      return;
+    }
+
+    setReturnModal(prev => ({ ...prev, loading: true }));
+    try {
+      await axios.post(
+        `http://${window.location.hostname}:3000/api/outbound/${returnModal.order.id}/return`,
+        { reason: finalReason, notes: returnModal.notes },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      appAlert('Reso registrato con successo! La merce è tornata in giacenza in magazzino con posizione "IN ATTESA".', 'success');
+      setReturnModal({ show: false, order: null, reason: 'Merce non accettata dal cliente', customReason: '', notes: '', loading: false, items: [] });
+      fetchOrders();
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Errore durante la registrazione del reso');
+      setReturnModal(prev => ({ ...prev, loading: false }));
+    }
+  };
 
   const token = localStorage.getItem('maglite_token');
   const userRole = token ? jwtDecode(token).role : '';
@@ -568,7 +650,7 @@ const Outbound = () => {
   }, [orders, customerFilter, dateFrom, dateTo, searchTerm]);
 
   const statusStats = useMemo(() => {
-    const s = { ALL: baseFilteredOrders.length, PENDING: 0, PICKING: 0, READY: 0, SHIPPED: 0 };
+    const s = { ALL: baseFilteredOrders.length, PENDING: 0, PICKING: 0, READY: 0, SHIPPED: 0, RETURNED: 0 };
     baseFilteredOrders.forEach(o => {
       if (s[o.status] !== undefined) s[o.status] += 1;
     });
@@ -691,7 +773,7 @@ const Outbound = () => {
       </div>
 
       {/* Cruscotto Interattivo Stati Spedizione (5 Card KPI) */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
         <button
           type="button"
           onClick={() => setStatusFilter('')}
@@ -713,6 +795,7 @@ const Outbound = () => {
               <div style={{ width: `${(statusStats.PICKING / statusStats.ALL) * 100}%` }} className="bg-amber-500 h-full" />
               <div style={{ width: `${(statusStats.READY / statusStats.ALL) * 100}%` }} className="bg-emerald-500 h-full" />
               <div style={{ width: `${(statusStats.SHIPPED / statusStats.ALL) * 100}%` }} className="bg-sky-500 h-full" />
+              <div style={{ width: `${((statusStats.RETURNED || 0) / statusStats.ALL) * 100}%` }} className="bg-amber-500 h-full" />
             </div>
           )}
         </button>
@@ -1020,6 +1103,16 @@ const Outbound = () => {
                       >
                         <Printer size={17} />
                       </button>
+                      {o.status === 'SHIPPED' && (
+                        <button 
+                          onClick={() => openReturnModal(o)}
+                          className="px-3 py-2 bg-amber-500/20 hover:bg-amber-500 text-amber-400 hover:text-black border border-amber-500/40 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 shadow-sm"
+                          title="Fai tornare la merce (Registra Reso)"
+                        >
+                          <RotateCcw size={15} />
+                          <span>Reso Merce</span>
+                        </button>
+                      )}
                       {(userRole === 'admin' || userRole === 'developer' || userRole === 'backoffice') && o.status !== 'SHIPPED' && (
                         <>
                           <button 
@@ -1049,7 +1142,7 @@ const Outbound = () => {
                           title="Conferma spedizione ed evasione definitiva magazzino"
                         >
                           <CheckCircle size={16} />
-                          <span className="hidden xl:inline">{o.status === 'READY' ? 'Conferma Uscita' : 'Evadi'}</span>
+                          <span className="hidden xl:inline">{o.status === 'RETURNED' ? 'Rispedisci' : o.status === 'READY' ? 'Conferma Uscita' : 'Evadi'}</span>
                         </button>
                       )}
                     </div>
@@ -1068,6 +1161,7 @@ const Outbound = () => {
           order={timelineModal} 
           onClose={() => setTimelineModal(null)} 
           token={token}
+          onOpenReturn={openReturnModal}
         />
       )}
 
@@ -1132,7 +1226,7 @@ const Outbound = () => {
                   value={newOrder.notes || ''} 
                   onChange={e => setNewOrder({...newOrder, notes: e.target.value})} 
                   className="w-full bg-slate-950 border border-amber-500/40 text-amber-100 rounded-xl px-3 py-2 text-sm focus:border-amber-400 outline-none placeholder-slate-600" 
-                  placeholder="Es. Preparare su bancali EPAL, avvolgere con film nero..."
+                  placeholder="Es. Ritira il cliente, spedire con DDT 3025, ecc..."
                 />
               </div>
               <div className="lg:col-span-2 flex items-end">
@@ -1783,6 +1877,160 @@ const Outbound = () => {
           </div>
         </div>
       )}
+
+      {/* Modal Registrazione Reso Spedizione */}
+      {returnModal.show && returnModal.order && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-amber-500/20 text-amber-400 rounded-2xl border border-amber-500/30">
+                  <RotateCcw size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-brand-white">Registra Rientro Merce (Reso)</h3>
+                  <p className="text-xs font-mono text-slate-400">{returnModal.order.order_code}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReturnModal({ show: false, order: null, reason: 'Merce non accettata dal cliente', customReason: '', notes: '', loading: false, items: [] })}
+                className="p-2 text-slate-400 hover:text-brand-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 text-sm flex-1">
+              {/* Info Box */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Cliente:</span>
+                  <strong className="text-brand-white">{returnModal.order.customer_name}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Preparato originariamente da:</span>
+                  <strong className="text-slate-300">{returnModal.order.picking_operator || returnModal.order.created_by || 'Non registrato'}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Spedito originariamente da:</span>
+                  <strong className="text-slate-300">{returnModal.order.shipped_by || 'Non registrato'} {returnModal.order.shipped_at ? `(${new Date(returnModal.order.shipped_at).toLocaleDateString('it-IT')})` : ''}</strong>
+                </div>
+                <div className="flex justify-between border-t border-slate-800/80 pt-2">
+                  <span className="text-amber-400 font-bold">Destinazione merce rientrata:</span>
+                  <strong className="text-emerald-400 font-bold">Giacenza magazzino - "IN ATTESA"</strong>
+                </div>
+              </div>
+
+              {/* Motivo del reso */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                  Seleziona il Motivo del Reso <span className="text-rose-400">*</span>
+                </label>
+                <div className="space-y-2">
+                  {[
+                    "Merce rovinata/rotta",
+                    "Merce non accettata dal cliente",
+                    "Indirizzo sconosciuto o non trovato",
+                    "Altro (personalizzato)"
+                  ].map((r) => (
+                    <label
+                      key={r}
+                      className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                        returnModal.reason === r
+                          ? 'bg-amber-500/15 border-amber-500 text-brand-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="returnReason"
+                        checked={returnModal.reason === r}
+                        onChange={() => setReturnModal(prev => ({ ...prev, reason: r }))}
+                        className="accent-amber-400"
+                      />
+                      <span className="text-xs font-semibold">{r}</span>
+                    </label>
+                  ))}
+                </div>
+
+                {/* Campo motivo libero */}
+                {(returnModal.reason === "Altro (personalizzato)" || returnModal.customReason) && (
+                  <div className="mt-3">
+                    <label className="block text-xs text-slate-400 mb-1">
+                      Scrivi il motivo liberamente:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Digita motivo personalizzato..."
+                      value={returnModal.customReason}
+                      onChange={(e) => setReturnModal(prev => ({ ...prev, customReason: e.target.value }))}
+                      className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-xs focus:ring-amber-400"
+                      autoFocus
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Note */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Note Aggiuntive (opzionale)
+                </label>
+                <textarea
+                  rows="2"
+                  placeholder="Eventuali dettagli o segnalazioni..."
+                  value={returnModal.notes}
+                  onChange={(e) => setReturnModal(prev => ({ ...prev, notes: e.target.value }))}
+                  className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-xs focus:ring-amber-400"
+                />
+              </div>
+
+              {/* Riepilogo Merce che tornerà in magazzino */}
+              {returnModal.items && returnModal.items.length > 0 && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                    Merce che rientrerà in giacenza ({returnModal.items.length} articoli):
+                  </label>
+                  <div className="max-h-36 overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl p-2 space-y-1.5">
+                    {returnModal.items.map((it, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-xs p-1.5 border-b border-slate-900 last:border-b-0">
+                        <div className="truncate max-w-[280px]">
+                          <strong className="text-brand-white">{it.product_name}</strong>
+                          {it.batch && <span className="text-slate-500 ml-2 font-mono">Lot: {it.batch}</span>}
+                        </div>
+                        <span className="font-bold text-amber-400">
+                          {it.quantity_picked || it.quantity_required} {it.requested_uom || it.base_uom}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950 flex justify-between items-center">
+              <button
+                onClick={() => setReturnModal({ show: false, order: null, reason: 'Merce non accettata dal cliente', customReason: '', notes: '', loading: false, items: [] })}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl text-xs font-bold transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={handleConfirmReturn}
+                disabled={returnModal.loading}
+                className="bg-amber-500 hover:bg-amber-400 text-black px-5 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.3)] disabled:opacity-50"
+              >
+                <RotateCcw size={16} />
+                {returnModal.loading ? 'Salvataggio in corso...' : 'Conferma Rientro Merce'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

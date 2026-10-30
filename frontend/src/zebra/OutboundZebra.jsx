@@ -204,7 +204,7 @@ const OutboundZebra = () => {
         })
         .then((res) => {
           const active = (res.data || []).filter(
-            (o) => o.status === 'PENDING' || o.status === 'PICKING'
+            (o) => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'RETURNED'
           );
           setPendingOrders(active);
         })
@@ -308,22 +308,37 @@ const OutboundZebra = () => {
   const handlePalletBarcodeScan = async (barcode, targetItem = currentItem, currentItemsList = items, idx = currentItemIndex) => {
     if (!targetItem) return;
     const cleanCode = barcode.trim();
-    if (cleanCode.toLowerCase() !== String(targetItem.pallet_code || '').toLowerCase()) {
-      try {
-        navigator.vibrate?.([100, 60, 100]);
-      } catch (e) {}
-      setError(`Paletta errata (${cleanCode}). Attesa: ${targetItem.pallet_code}`);
-      return;
-    }
-
-    setScannedPallet(cleanCode);
+    setIsProcessing(true);
     setError(null);
 
     try {
-      setIsProcessing(true);
       const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/${cleanCode}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      const palData = res.data;
+
+      const isExactPallet = cleanCode.toLowerCase() === String(targetItem.pallet_code || '').toLowerCase();
+      const targetBatch = (targetItem.batch || '').trim().toUpperCase();
+      const palBatch = (palData.batch || '').trim().toUpperCase();
+      const matchesBatch = !targetBatch || targetBatch === 'NESSUN LOTTO' || palBatch === targetBatch;
+      const matchesProduct = palData.product_id === targetItem.product_id || (palData.isMixed && Array.isArray(palData.items) && palData.items.some(m => m.product_id === targetItem.product_id));
+
+      if (!isExactPallet && (!matchesProduct || !matchesBatch || palData.status === 'SHIPPED')) {
+        try {
+          navigator.vibrate?.([100, 60, 100]);
+        } catch (e) {}
+        setError(`Paletta errata (${cleanCode}). Attesa: ${targetItem.pallet_code}`);
+        return;
+      }
+
+      if (!isExactPallet) {
+        targetItem.pallet_code = palData.pallet_code;
+        targetItem.pallet_id = palData.id;
+        targetItem.location = palData.location;
+      }
+
+      setScannedPallet(cleanCode);
+      setError(null);
 
       if (res.data.isMixed && Array.isArray(res.data.items)) {
         // Raggruppa per prodotto + lotto per non mostrare duplicati identici
@@ -356,7 +371,10 @@ const OutboundZebra = () => {
         setStep('INPUT_QTY');
       }
     } catch (err) {
-      setError('Errore lettura dettagli paletta.');
+      try {
+        navigator.vibrate?.([100, 60, 100]);
+      } catch (e) {}
+      setError(`Errore lettura dettagli paletta (${cleanCode}).`);
     } finally {
       setIsProcessing(false);
     }
