@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { hasPermission } = require('../utils/permissions');
 
 async function settingsRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -18,6 +19,10 @@ async function settingsRoutes(fastify, options) {
   });
 
   fastify.post('/', async (request, reply) => {
+    if (!hasPermission(request.user, 'settings_manage') && !hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare le impostazioni.' });
+    }
+
     const settings = request.body; // Object of key-value pairs
     const conn = await db.getConnection();
     try {

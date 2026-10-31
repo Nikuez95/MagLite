@@ -1,4 +1,5 @@
 import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
+import { hasPerm } from "../../utils/permissions.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer } from 'lucide-react';
@@ -32,6 +33,8 @@ const Locations = () => {
     }
   };
   const role = getUserRole();
+  const canManageLocations = hasPerm(['pallet_move', 'settings_manage']);
+  const canDeleteLocations = hasPerm(['pallet_delete', 'settings_manage']);
 
   const fetchLocations = async () => {
     try {
@@ -62,6 +65,7 @@ const Locations = () => {
   }, []);
 
   const togglePins = async () => {
+    if (!canManageLocations) return appAlert('Non hai i permessi per modificare le impostazioni PIN.');
     const newValue = !requirePins;
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/settings`, { require_location_pins: newValue.toString() }, { headers: { Authorization: `Bearer ${getToken()}` } });
@@ -74,6 +78,7 @@ const Locations = () => {
 
   const handleBulkGenerate = async (e) => {
     e.preventDefault();
+    if (!canManageLocations) return appAlert('Non hai i permessi per generare scaffalature.');
     if (isProcessing) return;
     setIsProcessing(true);
 
@@ -343,7 +348,7 @@ const Locations = () => {
                                     >
                                       <Printer size={16} />
                                     </button>
-                                    {role === 'developer' && totalOccupied === 0 && (
+                                    {canDeleteLocations && totalOccupied === 0 && (
                                       <button 
                                         onClick={(e) => { e.stopPropagation(); handleDeleteZone(zoneName); }} 
                                         className="p-1.5 ml-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-lg transition-colors" 
@@ -380,7 +385,7 @@ const Locations = () => {
                                         <Eye size={18} />
                                       </button>
                                     )}
-                                    {role === 'developer' && (
+                                    {canDeleteLocations && (
                                       <button onClick={() => handleDelete(loc.id)} className="p-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-lg transition-colors" title="Elimina Posizione">
                                         <Trash2 size={18} />
                                       </button>

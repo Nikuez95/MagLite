@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
-import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio } from 'lucide-react';
+import { io } from 'socket.io-client';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import InboundZebra from './InboundZebra';
 import OutboundZebra from './OutboundZebra';
 import Handling from './Handling';
+import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
 
-const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', onClick }) => {
+const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabled = false, onClick }) => {
   const accentStyles = {
     blue: {
       border: 'border-slate-800 hover:border-brand-blue active:border-brand-blue',
@@ -25,6 +27,24 @@ const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', onClic
       badgeBg: 'bg-emerald-400 text-brand-black'
     }
   }[accent];
+
+  if (disabled) {
+    return (
+      <div className="w-full flex items-center justify-between p-5 rounded-3xl border-2 border-slate-800/60 bg-slate-900/40 text-slate-500 opacity-60 cursor-not-allowed">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="w-16 h-16 rounded-2xl border border-slate-800 bg-slate-950 flex items-center justify-center shrink-0 text-slate-600">
+            <Lock size={28} />
+          </div>
+          <div className="min-w-0">
+            <span className="text-lg font-black tracking-wide leading-tight block">{label}</span>
+            <p className="text-xs text-slate-500 font-semibold mt-1 leading-snug">
+              Permesso operativo non abilitato sul tuo profilo
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <button
@@ -58,11 +78,11 @@ const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', onClic
   );
 };
 
-const TopBar = () => {
+const TopBar = ({ user }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const isHome = location.pathname === '/zebra' || location.pathname === '/zebra/';
-  const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+  const allowDesktop = canAccessDesktop(user);
 
   return (
     <header className="bg-brand-black/95 backdrop-blur border-b border-slate-800 px-4 py-3.5 flex justify-between items-center sticky top-0 z-20 shadow-lg">
@@ -87,6 +107,16 @@ const TopBar = () => {
         </div>
       </div>
       <div className="flex items-center gap-2">
+        {allowDesktop && isHome && (
+          <button
+            onClick={() => navigate('/desktop')}
+            className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-slate-300 hover:text-brand-white flex items-center gap-1.5"
+            title="Passa al Gestionale Desktop"
+          >
+            <Monitor size={14} className="text-brand-blue" />
+            PC
+          </button>
+        )}
         {!isHome && (
           <button
             onClick={() => navigate('/zebra')}
@@ -111,19 +141,28 @@ const TopBar = () => {
   );
 };
 
-const Dashboard = () => {
+const Dashboard = ({ user }) => {
   const navigate = useNavigate();
   const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0 });
+
+  const canInbound = hasPerm('inbound_create', user);
+  const canHandling = hasPerm('pallet_move', user);
+  const canPicking = hasPerm('outbound_pick', user);
 
   useEffect(() => {
     const token = localStorage.getItem('maglite_token');
     if (!token) return;
     const fetchCounts = async () => {
       try {
-        const [inRes, outRes] = await Promise.all([
-          axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } }),
-          axios.get(`http://${window.location.hostname}:3000/api/outbound`, { headers: { Authorization: `Bearer ${token}` } })
-        ]);
+        const reqs = [
+          canInbound
+            ? axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
+            : Promise.resolve({ data: [] }),
+          canPicking
+            ? axios.get(`http://${window.location.hostname}:3000/api/outbound`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
+            : Promise.resolve({ data: [] })
+        ];
+        const [inRes, outRes] = await Promise.all(reqs);
         const inboundPending = (inRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS').length;
         const outboundActive = (outRes.data || []).filter(o => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'PARTIAL').length;
         setCounts({ inboundPending, outboundActive });
@@ -132,17 +171,17 @@ const Dashboard = () => {
       }
     };
     fetchCounts();
-  }, []);
+  }, [canInbound, canPicking]);
 
-  // Se l'operatore spara direttamente un codice dalla Home, apriamo il modulo corrispondente
+  // Se l'operatore spara direttamente un codice dalla Home, apriamo il modulo corrispondente se ha il permesso
   useBarcodeScanner((barcode) => {
     const code = (barcode || '').trim().toUpperCase();
     if (!code) return;
-    if (code.startsWith('PAL-')) {
+    if (code.startsWith('PAL-') && canHandling) {
       navigate('/zebra/handling', { state: { initialBarcode: code } });
-    } else if (code.startsWith('IN-')) {
+    } else if (code.startsWith('IN-') && canInbound) {
       navigate('/zebra/inbound');
-    } else if (code.startsWith('OUT-')) {
+    } else if (code.startsWith('OUT-') && canPicking) {
       navigate('/zebra/outbound');
     }
   });
@@ -172,14 +211,16 @@ const Dashboard = () => {
             subtitle="Controlla DDT in arrivo e genera bancali"
             badge={counts.inboundPending}
             accent="blue"
-            onClick={() => navigate('/zebra/inbound')} 
+            disabled={!canInbound}
+            onClick={() => canInbound && navigate('/zebra/inbound')} 
           />
           <TouchCard 
             icon={ArrowRightLeft} 
             label="HANDLING (Spostamento)" 
             subtitle="Stiva nuove palette, sposta o unisci sugli scaffali"
             accent="amber"
-            onClick={() => navigate('/zebra/handling')} 
+            disabled={!canHandling}
+            onClick={() => canHandling && navigate('/zebra/handling')} 
           />
           <TouchCard 
             icon={PackageMinus} 
@@ -187,7 +228,8 @@ const Dashboard = () => {
             subtitle="Preleva bancali e scatole per le spedizioni"
             badge={counts.outboundActive}
             accent="emerald"
-            onClick={() => navigate('/zebra/outbound')} 
+            disabled={!canPicking}
+            onClick={() => canPicking && navigate('/zebra/outbound')} 
           />
         </div>
       </div>
@@ -236,16 +278,60 @@ const ZebraOperationPage = ({ title }) => {
 };
 
 const ZebraApp = () => {
+  const navigate = useNavigate();
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('maglite_user') || '{}'); } catch { return {}; }
+  });
+
+  useEffect(() => {
+    refreshUserProfile().then(u => {
+      if (u) setUser(u);
+    });
+    const sync = () => {
+      try {
+        setUser(JSON.parse(localStorage.getItem('maglite_user') || '{}'));
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('maglite_permissions_updated', sync);
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('permissions_updated', () => {
+      refreshUserProfile().then(u => {
+        if (u) setUser(u);
+      });
+    });
+    return () => {
+      window.removeEventListener('maglite_permissions_updated', sync);
+      socket.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!canAccessZebra(user)) {
+      navigate(canAccessDesktop(user) ? '/desktop' : '/', { replace: true });
+    }
+  }, [user, navigate]);
+
   return (
     <div className="min-h-screen bg-brand-black flex flex-col font-sans text-brand-white antialiased selection:bg-brand-blue selection:text-brand-black">
-      <TopBar />
+      <TopBar user={user} />
       
       <Routes>
-        <Route path="/inbound" element={<InboundZebra />} />
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Dashboard user={user} />} />
+        <Route
+          path="/inbound"
+          element={hasPerm('inbound_create', user) ? <InboundZebra /> : <Navigate to="/zebra" replace />}
+        />
         <Route path="/stow" element={<Navigate to="/zebra/handling" replace />} />
-        <Route path="/outbound" element={<OutboundZebra />} />
-        <Route path="/handling" element={<Handling />} />
+        <Route
+          path="/handling"
+          element={hasPerm('pallet_move', user) ? <Handling /> : <Navigate to="/zebra" replace />}
+        />
+        <Route
+          path="/outbound"
+          element={hasPerm('outbound_pick', user) ? <OutboundZebra /> : <Navigate to="/zebra" replace />}
+        />
         <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
       </Routes>
     </div>

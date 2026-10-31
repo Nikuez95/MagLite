@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Settings2, Plus, Save, Trash2, Loader2, Flag } from 'lucide-react';
 import { appAlert, appConfirm } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
 
@@ -12,6 +13,7 @@ const BillingRulesManager = () => {
   const [existingFlags, setExistingFlags] = useState([]);
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageFinance = hasPerm('finance_manage');
 
   const fetchRules = async () => {
     setIsLoading(true);
@@ -43,6 +45,7 @@ const BillingRulesManager = () => {
 
   const handleCreateRule = async (e) => {
     e.preventDefault();
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto.');
     const formData = new FormData(e.target);
     const payload = {
       rule_code: formData.get('rule_code'),
@@ -69,6 +72,7 @@ const BillingRulesManager = () => {
   };
 
   const handleDelete = async (id, code) => {
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto.');
     const ok = await appConfirm(`Vuoi davvero eliminare la regola ${code}?`);
     if (!ok) return;
     try {

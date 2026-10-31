@@ -136,10 +136,10 @@ const OPERATOR_PERMISSIONS = buildPermMap([
 const DEFAULT_ROLES = [
   {
     code: 'developer',
-    name: 'Developer (Root)',
-    description: 'Poteri massimi assoluti di sistema. Immutabile e non eliminabile da nessuno.',
+    name: 'Software Engineer',
+    description: 'Grado massimo del sistema. Accesso totale, resta sempre in cima alla gerarchia e non può essere eliminato.',
     color: '#f59e0b',
-    hierarchy_level: 1000,
+    hierarchy_level: 10000,
     is_system: true,
     permissions: { ...FULL_PERMISSIONS, restricted_customers: [] }
   },
@@ -161,6 +161,32 @@ async function seedDefaultRoles(connection = db) {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'Sistema')`,
       [r.code, r.name, r.description, r.color, r.hierarchy_level, r.is_system ? 1 : 0, JSON.stringify(r.permissions)]
     );
+  }
+  // Assicura che il ruolo developer sia sempre Software Engineer con grado massimo 10000
+  await connection.query(
+    `UPDATE ROLES SET name = 'Software Engineer', hierarchy_level = 10000, is_system = 1 WHERE code = 'developer'`
+  );
+
+  // Normalizza i livelli dei ruoli sotto il Software Engineer se ci sono duplicati o valori >= 10000
+  const [otherRoles] = await connection.query(
+    `SELECT id, code, hierarchy_level FROM ROLES WHERE code != 'developer' ORDER BY hierarchy_level DESC, id ASC`
+  );
+  const seenLevels = new Set();
+  let needsNormalization = false;
+  for (const role of otherRoles) {
+    const lvl = Number(role.hierarchy_level) || 0;
+    if (lvl >= 10000 || lvl <= 0 || seenLevels.has(lvl)) {
+      needsNormalization = true;
+      break;
+    }
+    seenLevels.add(lvl);
+  }
+  if (needsNormalization && otherRoles.length > 0) {
+    const total = otherRoles.length;
+    for (let i = 0; i < total; i++) {
+      const cleanLevel = (total - i) * 100;
+      await connection.query('UPDATE ROLES SET hierarchy_level = ? WHERE id = ?', [cleanLevel, otherRoles[i].id]);
+    }
   }
 }
 
@@ -198,26 +224,14 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
   const rawRolePerms = parseJsonSafe(roleRow.permissions, {});
   const rawUserCustom = parseJsonSafe(userRow.custom_permissions, null);
 
-  if (isDeveloper) {
-    return {
-      id: userRow.id,
-      username: userRow.username,
-      role: 'developer',
-      role_name: roleRow.name || 'Developer (Root)',
-      role_color: roleRow.color || '#a855f7',
-      hierarchy_level: 1000,
-      requires_password_change: Boolean(userRow.requires_password_change),
-      preferences: parseJsonSafe(userRow.preferences, null),
-      permissions: { ...FULL_PERMISSIONS },
-      restricted_customers: [],
-      custom_permissions: null
-    };
-  }
-
   // Costruisci mappa permessi effettivi: parte dal ruolo e applica eventuali override singoli dell'utente
   const effectivePermissions = {};
   for (const key of ALL_PERMISSION_KEYS) {
-    effectivePermissions[key] = Boolean(rawRolePerms[key]);
+    if (isDeveloper) {
+      effectivePermissions[key] = typeof rawRolePerms[key] === 'boolean' ? rawRolePerms[key] : true;
+    } else {
+      effectivePermissions[key] = Boolean(rawRolePerms[key]);
+    }
   }
 
   const userOverrides = rawUserCustom?.overrides || {};
@@ -227,6 +241,12 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     } else if (userOverrides[key] === false || userOverrides[key] === 'DENY') {
       effectivePermissions[key] = false;
     }
+  }
+
+  // Il Software Engineer mantiene sempre accesso alla gestione utenti/ruoli per non auto-bloccarsi mai
+  if (isDeveloper) {
+    effectivePermissions.view_users = true;
+    effectivePermissions.users_manage = true;
   }
 
   // Calcola restrizioni clienti effettive
@@ -251,9 +271,9 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     id: userRow.id,
     username: userRow.username,
     role: roleCode,
-    role_name: roleRow.name || roleCode,
-    role_color: roleRow.color || '#38bdf8',
-    hierarchy_level: Number(roleRow.hierarchy_level) || 100,
+    role_name: isDeveloper ? (roleRow.name || 'Software Engineer') : (roleRow.name || roleCode),
+    role_color: roleRow.color || (isDeveloper ? '#f59e0b' : '#38bdf8'),
+    hierarchy_level: isDeveloper ? 10000 : (Number(roleRow.hierarchy_level) || 100),
     requires_password_change: Boolean(userRow.requires_password_change),
     preferences: parseJsonSafe(userRow.preferences, null),
     permissions: effectivePermissions,
@@ -264,18 +284,15 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
 
 function hasPermission(userContext, permKey) {
   if (!userContext) return false;
-  if (userContext.role === 'developer') return true;
   if (userContext.permissions && typeof userContext.permissions[permKey] === 'boolean') {
     return userContext.permissions[permKey];
   }
-  // Fallback legacy nel caso un vecchio token non sia ancora passato da resolveUserAccess
-  if (userContext.role === 'backoffice' || userContext.role === 'direzione_generale') return true;
+  if (userContext.role === 'developer') return true;
   return false;
 }
 
 function canAccessCustomer(userContext, customerId) {
   if (!userContext || !customerId) return true;
-  if (userContext.role === 'developer') return true;
   const restricted = userContext.restricted_customers;
   if (!Array.isArray(restricted) || restricted.length === 0) return true;
   return !restricted.map(Number).includes(Number(customerId));

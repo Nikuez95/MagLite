@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { appAlert } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 
 const InboundDDTs = () => {
   const [ddts, setDdts] = useState([]);
@@ -36,6 +37,7 @@ const InboundDDTs = () => {
   });
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageDiscrepancy = hasPerm('inbound_create');
 
   const fetchAllData = async () => {
     try {
@@ -548,7 +550,7 @@ const InboundDDTs = () => {
                             </button>
 
                             {/* Se in DISCREPANCY: mostra tasto Gestisci Discrepanza (Accetta/Rifiuta) e NASCONDE il tasto Barcode */}
-                            {d.status === 'DISCREPANCY' && (
+                            {d.status === 'DISCREPANCY' && canManageDiscrepancy && (
                               <button
                                 type="button"
                                 onClick={() => handleOpenDiscrepancyModal(d)}
@@ -584,7 +586,7 @@ const InboundDDTs = () => {
                                   <h4 className="text-xs font-black uppercase tracking-wider text-brand-blue flex items-center gap-2">
                                     <Layers size={15} /> Dettaglio Righe Spunta ({d.ddt_number})
                                   </h4>
-                                  {d.status === 'DISCREPANCY' && (
+                                  {d.status === 'DISCREPANCY' && canManageDiscrepancy && (
                                     <button
                                       type="button"
                                       onClick={() => handleOpenDiscrepancyModal(d)}

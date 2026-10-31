@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Truck, MapPin, Calendar, Clock, Euro, MessageCircle, Copy, AlertTriangle, Briefcase, FileText, Plus, Edit2, X, Check, Trash2, CalendarDays, LayoutTemplate, StretchHorizontal, GripVertical } from 'lucide-react';
 import { format, differenceInMinutes } from 'date-fns';
 import { it } from 'date-fns/locale';
-import Swal from 'sweetalert2';
+import { appAlert, appConfirm } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 import axios from 'axios';
 
 const INITIAL_DRIVERS = [
@@ -58,6 +59,7 @@ const TMSDashboard = () => {
   const [drivers, setDrivers] = useState(INITIAL_DRIVERS);
   const [columns, setColumns] = useState(INITIAL_TRIPS);
   const [loading, setLoading] = useState(true);
+  const canManageTMS = hasPerm('tms_manage');
 
   // Load State from Database
   useEffect(() => {
@@ -98,6 +100,7 @@ const TMSDashboard = () => {
     prevColumns.current = columns;
     
     const saveToDB = async () => {
+      if (!canManageTMS) return;
       try {
         await axios.post(`http://${window.location.hostname}:3000/api/tms/sync`, 
           { drivers, columns },
@@ -128,6 +131,7 @@ const TMSDashboard = () => {
 
   // --- LOGIC ---
   const handleOpenDriverModal = (driver = null) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
     if (driver) setEditingDriver({ ...driver, isNew: false });
     else setEditingDriver({ id: 'driver-' + Date.now(), name: '', vehicle: '', isNew: true });
     setIsDriverModalOpen(true);
@@ -146,19 +150,18 @@ const TMSDashboard = () => {
   };
 
   const handleDeleteDriver = async () => {
-    const res = await Swal.fire({ title: 'Eliminare Autista?', text: "I viaggi andranno in Da Assegnare.", icon: 'warning', showCancelButton: true, confirmButtonColor: '#f43f5e', cancelButtonColor: '#1e293b' });
-    if (res.isConfirmed) {
-      const driverTrips = columns[editingDriver.id] || [];
-      const updatedUnassigned = [...(columns['unassigned'] || []), ...driverTrips.map(t => ({ ...t, status: 'UNASSIGNED' }))];
-      const newColumns = { ...columns, 'unassigned': updatedUnassigned };
-      delete newColumns[editingDriver.id];
-      setColumns(newColumns);
-      setDrivers(drivers.filter(d => d.id !== editingDriver.id));
-      setIsDriverModalOpen(false);
-    }
+    if (!await appConfirm("I viaggi andranno in Da Assegnare.", "Eliminare Autista?")) return;
+    const driverTrips = columns[editingDriver.id] || [];
+    const updatedUnassigned = [...(columns['unassigned'] || []), ...driverTrips.map(t => ({ ...t, status: 'UNASSIGNED' }))];
+    const newColumns = { ...columns, 'unassigned': updatedUnassigned };
+    delete newColumns[editingDriver.id];
+    setColumns(newColumns);
+    setDrivers(drivers.filter(d => d.id !== editingDriver.id));
+    setIsDriverModalOpen(false);
   };
 
   const handleOpenTripModal = (trip = null) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
     if (trip) setEditingTrip({ ...trip });
     else {
       const dateTarget = viewMode === 'CALENDAR' ? selectedDate : format(new Date(), 'yyyy-MM-dd');
@@ -218,6 +221,7 @@ const TMSDashboard = () => {
   };
 
   const moveTripToPosition = (tripId, destColId, targetTripId = null) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
     let sourceColId = null;
     let trip = null;
     

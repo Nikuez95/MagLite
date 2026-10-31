@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, Trash2, Calendar, DollarSign, Tag, TrendingDown, Loader2 } from 'lucide-react';
-import { appAlert } from '../../utils/alerts';
+import { appAlert, appConfirm } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 
 const ExpensesManager = () => {
   const [expenses, setExpenses] = useState([]);
@@ -17,6 +18,7 @@ const ExpensesManager = () => {
   const categories = ['Generale', 'Affitto', 'Utenze', 'Personale', 'Manutenzione', 'Attrezzature', 'Marketing', 'Tasse'];
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageFinance = hasPerm('finance_manage');
 
   const fetchExpenses = async () => {
     setLoading(true);
@@ -39,6 +41,7 @@ const ExpensesManager = () => {
 
   const handleAdd = async (e) => {
     e.preventDefault();
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto.');
     if (!newExpense.description || !newExpense.amount || !newExpense.expense_date) {
       return appAlert('Compila tutti i campi obbligatori');
     }
@@ -57,7 +60,8 @@ const ExpensesManager = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Sei sicuro di voler eliminare questa uscita?')) return;
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto.');
+    if (!await appConfirm('Sei sicuro di voler eliminare questa uscita?')) return;
     try {
       await axios.delete(`http://${window.location.hostname}:3000/api/finances/expenses/${id}`, {
         headers: { Authorization: `Bearer ${getToken()}` }

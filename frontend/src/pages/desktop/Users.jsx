@@ -1,24 +1,30 @@
-import { appAlert } from "../../utils/alerts.js";
+import { appAlert, appToast } from "../../utils/alerts.js";
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import {
-  UserPlus, Shield, User, Trash2, Key, Plus, Check, X, Slash, Lock, Unlock,
-  Crown, Sliders, Search, Building2, Eye, Layers, Sparkles, AlertTriangle,
-  ChevronRight, Save, RotateCcw, Users as UsersIcon, ShieldAlert, ShieldCheck
+  UserPlus, Shield, Trash2, Key, Plus, Check, X, Lock, Unlock,
+  Crown, Sliders, Search, Building2, Layers, Sparkles, AlertTriangle,
+  ChevronRight, ChevronUp, ChevronDown, GripVertical, Save, Users as UsersIcon
 } from 'lucide-react';
 import { refreshUserProfile, hasPerm } from '../../utils/permissions';
 
+// Colori ruoli selezionabili
 const DISCORD_COLORS = [
-  '#a855f7', // Purple (Developer)
-  '#f59e0b', // Amber/Gold (Direzione)
-  '#0ea5e9', // Sky Blue (Backoffice)
-  '#10b981', // Emerald (Qualità)
-  '#6366f1', // Indigo (Responsabile)
+  '#a855f7', // Purple
+  '#f59e0b', // Amber/Gold
+  '#0ea5e9', // Sky Blue
+  '#3b82f6', // Blue
+  '#ef4444', // Red
+  '#f97316', // Orange
+  '#10b981', // Emerald
+  '#6366f1', // Indigo
   '#f43f5e', // Rose
   '#ec4899', // Pink
+  '#8b5cf6', // Violet
   '#14b8a6', // Teal
-  '#eab308', // Yellow
-  '#64748b'  // Slate (Operatore)
+  '#f472b6', // Fuchsia
+  '#64748b'  // Slate
 ];
 
 const UsersManagement = () => {
@@ -34,7 +40,7 @@ const UsersManagement = () => {
   const [userSearch, setUserSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('ALL');
 
-  // Create User Modal / Panel state
+  // Create User Modal state
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -43,7 +49,7 @@ const UsersManagement = () => {
   const [newUserRestrictedCustomers, setNewUserRestrictedCustomers] = useState([]);
   const [showNewUserAdvanced, setShowNewUserAdvanced] = useState(false);
 
-  // Edit Single User Access Modal (Discord 3-state overrides)
+  // Edit Single User Access Modal (3-state overrides)
   const [editingUser, setEditingUser] = useState(null);
   const [editUserRole, setEditUserRole] = useState('');
   const [editUserOverrides, setEditUserOverrides] = useState({});
@@ -51,7 +57,7 @@ const UsersManagement = () => {
   const [editUserUnlockedCustomers, setEditUserUnlockedCustomers] = useState([]);
   const [editUserPermSearch, setEditUserPermSearch] = useState('');
 
-  // Role Editor state (Discord tab)
+  // Role Editor state
   const [selectedRoleId, setSelectedRoleId] = useState(null);
   const [roleDraft, setRoleDraft] = useState(null);
   const [rolePermSearch, setRolePermSearch] = useState('');
@@ -63,7 +69,6 @@ const UsersManagement = () => {
     name: '',
     description: '',
     color: '#10b981',
-    hierarchy_level: 400,
     template: 'full'
   });
 
@@ -74,6 +79,22 @@ const UsersManagement = () => {
   const [isProcessing, setIsProcessing] = useState(false);
 
   const getToken = () => localStorage.getItem('maglite_token');
+
+  // Close active modals on Escape key
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape' && !isProcessing) {
+        if (confirmDeleteUser.show) setConfirmDeleteUser({ show: false, user: null });
+        else if (confirmDeleteRole.show) setConfirmDeleteRole({ show: false, role: null });
+        else if (resetModal.show) setResetModal({ show: false, user: null, newPwd: '' });
+        else if (editingUser) setEditingUser(null);
+        else if (showCreateUserModal) setShowCreateUserModal(false);
+        else if (showCreateRoleModal) setShowCreateRoleModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isProcessing, confirmDeleteUser.show, confirmDeleteRole.show, resetModal.show, editingUser, showCreateUserModal, showCreateRoleModal]);
 
   const fetchAllData = async () => {
     setLoading(true);
@@ -95,7 +116,6 @@ const UsersManagement = () => {
       setCurrentUser(caller);
       setCustomers(Array.isArray(custRes.data) ? custRes.data : []);
 
-      // Seleziona il primo ruolo modificabile o il primo in assoluto
       if (fetchedRoles.length > 0) {
         const currentSelected = fetchedRoles.find(r => r.id === selectedRoleId) || fetchedRoles[0];
         setSelectedRoleId(currentSelected.id);
@@ -103,9 +123,10 @@ const UsersManagement = () => {
         setHasRoleUnsavedChanges(false);
       }
 
-      // Imposta ruolo di default per creazione utente (il più basso disponibile sotto il proprio livello)
-      const assignable = fetchedRoles.filter(r =>
-        caller?.role === 'developer' ? r.code !== 'developer' : r.hierarchy_level < (caller?.hierarchy_level || 0)
+      // Imposta ruolo di default per creazione utente
+      const callerIdx = fetchedRoles.findIndex(r => r.code === caller?.role);
+      const assignable = fetchedRoles.filter((r, idx) =>
+        caller?.role === 'developer' ? true : (callerIdx >= 0 ? idx > callerIdx : r.hierarchy_level < (caller?.hierarchy_level || 0))
       );
       if (assignable.length > 0) {
         const defaultOp = assignable.find(r => r.code === 'operator') || assignable[assignable.length - 1];
@@ -113,7 +134,7 @@ const UsersManagement = () => {
       }
     } catch (err) {
       console.error(err);
-      appAlert(err.response?.data?.error || 'Errore nel caricamento di Utenti e Ruoli');
+      appAlert(err.response?.data?.error || 'Errore nel caricamento di Utenti e Ruoli', 'Errore', 'error');
     } finally {
       setLoading(false);
     }
@@ -123,32 +144,77 @@ const UsersManagement = () => {
     fetchAllData();
   }, []);
 
-  const myLevel = currentUser?.role === 'developer' ? 1000 : (currentUser?.hierarchy_level || 100);
   const isDeveloper = currentUser?.role === 'developer';
   const canManageUsers = isDeveloper || hasPerm('users_manage', currentUser);
 
-  // Ruoli che l'utente corrente può assegnare o modificare (piramide: strettamente inferiori al proprio livello, salvo developer)
-  const assignableRoles = useMemo(() => {
-    return roles.filter(r => {
-      if (r.code === 'developer') return false;
-      if (isDeveloper) return true;
-      return r.hierarchy_level < myLevel;
-    });
-  }, [roles, isDeveloper, myLevel]);
+  // Indice nella lista gerarchica (0 = Software Engineer in cima, 1 = secondo, ecc.)
+  const callerRoleIndex = useMemo(() => {
+    if (!currentUser) return 999;
+    if (currentUser.role === 'developer') return 0;
+    const idx = roles.findIndex(r => r.code === currentUser.role);
+    return idx >= 0 ? idx : 999;
+  }, [roles, currentUser]);
 
+  // Regola di modifica Ruolo:
+  // - Software Engineer può modificare qualsiasi ruolo (incluso se stesso, ma non può spostarlo né eliminarlo)
+  // - Utente X con ruolo Y NON può modificare il proprio ruolo Y né quelli sopra di lui (solo quelli strettamente sotto)
   const canModifyRole = (roleObj) => {
     if (!roleObj || !canManageUsers) return false;
-    if (roleObj.code === 'developer') return false; // Developer ha i poteri massimi ed è immutabile
     if (isDeveloper) return true;
-    return roleObj.hierarchy_level < myLevel;
+    const targetIdx = roles.findIndex(r => r.id === roleObj.id || r.code === roleObj.code);
+    if (targetIdx >= 0 && callerRoleIndex < 999) {
+      return targetIdx > callerRoleIndex;
+    }
+    return (roleObj.hierarchy_level || 0) < (currentUser?.hierarchy_level || 0);
   };
 
+  // Regola di Drag & Drop Ruolo:
+  // - Software Engineer non può MAI essere spostato (resta sempre in cima #1)
+  // - Si può cambiare la gerarchia solo al di sotto del proprio ruolo
+  const canDragRole = (roleObj, idx) => {
+    if (!roleObj || !canManageUsers) return false;
+    if (roleObj.code === 'developer' || idx === 0) return false;
+    if (isDeveloper) return true;
+    return idx > callerRoleIndex;
+  };
+
+  // Minimo indice in cui è permesso rilasciare un ruolo trascinato
+  const minDroppableIndex = isDeveloper ? 1 : callerRoleIndex + 1;
+
+  // Regola di modifica Utente:
+  // - Software Engineer può modificare anche se stesso e chiunque altro
+  // - Utente X con ruolo Y può modificare liberamente tutti gli utenti con ruolo sotto di lui; quelli con ruolo pari o superiore sono bloccati
   const canModifyUser = (targetUser) => {
     if (!targetUser || !canManageUsers) return false;
-    if (targetUser.role === 'developer') return false; // Nessuno può eliminare o degradare il developer
     if (isDeveloper) return true;
-    return targetUser.hierarchy_level < myLevel;
+    if (Number(targetUser.id) === Number(currentUser?.id)) return false;
+    if (targetUser.role === 'developer' || targetUser.role === currentUser?.role) return false;
+    const targetRoleIdx = roles.findIndex(r => r.code === targetUser.role);
+    if (targetRoleIdx >= 0 && callerRoleIndex < 999) {
+      return targetRoleIdx > callerRoleIndex;
+    }
+    return (targetUser.hierarchy_level || 0) < (currentUser?.hierarchy_level || 0);
   };
+
+  // Regola di eliminazione Utente:
+  // - Il Software Engineer non può essere eliminato da nessuno, nemmeno da se stesso
+  // - Nessuno può eliminare se stesso
+  const canDeleteUserAccount = (targetUser) => {
+    if (!targetUser || !canManageUsers) return false;
+    if (targetUser.role === 'developer') return false;
+    if (Number(targetUser.id) === Number(currentUser?.id)) return false;
+    return canModifyUser(targetUser);
+  };
+
+  // Ruoli che l'utente corrente può assegnare:
+  // - Software Engineer può assegnare qualsiasi ruolo (anche pari al suo)
+  // - Gli altri possono assegnare solo ruoli strettamente sotto il proprio
+  const assignableRoles = useMemo(() => {
+    return roles.filter((r, idx) => {
+      if (isDeveloper) return true;
+      return idx > callerRoleIndex;
+    });
+  }, [roles, isDeveloper, callerRoleIndex]);
 
   const allPermKeys = useMemo(() => {
     return catalog.flatMap(cat => cat.items.map(i => i.key));
@@ -159,7 +225,7 @@ const UsersManagement = () => {
     const map = {};
     for (const k of allPermKeys) {
       if (tplName === 'full') {
-        map[k] = isDeveloper ? true : Boolean(currentUser?.permissions?.[k]);
+        map[k] = true;
       } else if (tplName === 'view_only') {
         map[k] = k === 'access_desktop' || (k.startsWith('view_') && k !== 'view_finances' && k !== 'view_billing' && k !== 'view_users' && k !== 'view_settings');
       } else if (tplName === 'quality') {
@@ -179,6 +245,64 @@ const UsersManagement = () => {
     return map;
   };
 
+  // Persistenza ordine ruoli dopo Drag & Drop o frecce Su/Giù
+  const persistRoleOrder = async (newRolesArray) => {
+    const previousRoles = [...roles];
+    const reindexed = newRolesArray.map((r, i) => ({ ...r, rank: i + 1 }));
+    setRoles(reindexed);
+
+    try {
+      await axios.put(
+        `http://${window.location.hostname}:3000/api/users/roles/reorder`,
+        { orderedIds: reindexed.map(r => r.id) },
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+      await refreshUserProfile();
+      await fetchAllData();
+      appToast('Gerarchia ruoli aggiornata');
+    } catch (err) {
+      setRoles(previousRoles);
+      appAlert(err.response?.data?.error || 'Impossibile spostare il ruolo in questa posizione.', 'Gerarchia Bloccata', 'warning');
+    }
+  };
+
+  const handleRoleDragEnd = (result) => {
+    if (!result.destination) return;
+    const srcIdx = result.source.index;
+    const destIdx = result.destination.index;
+    if (srcIdx === destIdx) return;
+
+    const movedRole = roles[srcIdx];
+    if (!canDragRole(movedRole, srcIdx)) return;
+
+    if (destIdx < minDroppableIndex) {
+      appAlert(
+        isDeveloper
+          ? 'Il ruolo Software Engineer non può essere superato e rimane sempre al 1° posto.'
+          : 'Puoi cambiare la gerarchia solo al di sotto del tuo ruolo.',
+        'Posizione Bloccata',
+        'warning'
+      );
+      return;
+    }
+
+    const updated = Array.from(roles);
+    const [removed] = updated.splice(srcIdx, 1);
+    updated.splice(destIdx, 0, removed);
+    persistRoleOrder(updated);
+  };
+
+  const handleMoveRoleStep = (idx, direction) => {
+    const targetIdx = idx + direction;
+    if (targetIdx < minDroppableIndex || targetIdx >= roles.length) return;
+    if (!canDragRole(roles[idx], idx)) return;
+
+    const updated = Array.from(roles);
+    const [removed] = updated.splice(idx, 1);
+    updated.splice(targetIdx, 0, removed);
+    persistRoleOrder(updated);
+  };
+
   // Seleziona un ruolo nella tab Ruoli
   const handleSelectRole = (roleObj) => {
     if (hasRoleUnsavedChanges) {
@@ -196,6 +320,9 @@ const UsersManagement = () => {
 
   const toggleRoleDraftPermission = (permKey) => {
     if (!canModifyRole(roleDraft)) return;
+    if (roleDraft.code === 'developer' && (permKey === 'view_users' || permKey === 'users_manage')) {
+      return; // Software Engineer mantiene sempre accesso alla gestione team
+    }
     setRoleDraft(prev => ({
       ...prev,
       permissions: {
@@ -230,6 +357,10 @@ const UsersManagement = () => {
     if (!canModifyRole(roleDraft)) return;
     const currentRestricted = roleDraft?.permissions?.restricted_customers || [];
     const nextPerms = buildTemplatePermissions(presetType);
+    if (roleDraft.code === 'developer') {
+      nextPerms.view_users = true;
+      nextPerms.users_manage = true;
+    }
     nextPerms.restricted_customers = currentRestricted;
     setRoleDraft(prev => ({
       ...prev,
@@ -248,7 +379,6 @@ const UsersManagement = () => {
           name: roleDraft.name,
           description: roleDraft.description,
           color: roleDraft.color,
-          hierarchy_level: Number(roleDraft.hierarchy_level),
           permissions: roleDraft.permissions
         },
         { headers: { Authorization: `Bearer ${getToken()}` } }
@@ -256,9 +386,9 @@ const UsersManagement = () => {
       setHasRoleUnsavedChanges(false);
       await refreshUserProfile();
       await fetchAllData();
-      appAlert(`Ruolo "${roleDraft.name}" aggiornato con successo!`);
+      appAlert(`Ruolo "${roleDraft.name}" aggiornato con successo!`, 'Salvato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante il salvataggio del ruolo');
+      appAlert(err.response?.data?.error || 'Errore durante il salvataggio del ruolo', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -276,20 +406,20 @@ const UsersManagement = () => {
           name: newRoleForm.name.trim(),
           description: newRoleForm.description.trim(),
           color: newRoleForm.color,
-          hierarchy_level: Number(newRoleForm.hierarchy_level),
           permissions: initialPerms
         },
         { headers: { Authorization: `Bearer ${getToken()}` } }
       );
       setShowCreateRoleModal(false);
-      setNewRoleForm({ name: '', description: '', color: '#10b981', hierarchy_level: Math.min(400, myLevel - 10), template: 'full' });
+      setNewRoleForm({ name: '', description: '', color: '#10b981', template: 'full' });
       await fetchAllData();
       if (res.data?.role_id) {
         setSelectedRoleId(res.data.role_id);
       }
       setActiveTab('roles');
+      appAlert(`Ruolo "${newRoleForm.name.trim()}" creato! Puoi trascinarlo nella lista per regolarne la gerarchia.`, 'Completato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante la creazione del ruolo');
+      appAlert(err.response?.data?.error || 'Errore durante la creazione del ruolo', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -305,8 +435,9 @@ const UsersManagement = () => {
       );
       setConfirmDeleteRole({ show: false, role: null });
       await fetchAllData();
+      appAlert('Ruolo eliminato con successo', 'Completato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione del ruolo');
+      appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione del ruolo', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -343,16 +474,17 @@ const UsersManagement = () => {
       setShowNewUserAdvanced(false);
       setShowCreateUserModal(false);
       await fetchAllData();
-      appAlert('Utente creato con successo!');
+      appAlert('Utente creato con successo!', 'Completato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore nella creazione dell\'utente');
+      appAlert(err.response?.data?.error || 'Errore nella creazione dell\'utente', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Apertura Modal Modifica Permessi Singolo Utente (3-stati Discord)
+  // Apertura Modal Modifica Permessi Singolo Utente
   const openEditUserAccessModal = (u) => {
+    if (!canModifyUser(u)) return;
     setEditingUser(u);
     setEditUserRole(u.role);
     setEditUserOverrides(u.custom_permissions?.overrides ? { ...u.custom_permissions.overrides } : {});
@@ -404,9 +536,9 @@ const UsersManagement = () => {
       setEditingUser(null);
       await refreshUserProfile();
       await fetchAllData();
-      appAlert(`Accessi e permessi di "${editingUser.username}" aggiornati!`);
+      appAlert(`Accessi e permessi di "${editingUser.username}" aggiornati!`, 'Salvato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore salvataggio permessi utente');
+      appAlert(err.response?.data?.error || 'Errore salvataggio permessi utente', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -421,8 +553,9 @@ const UsersManagement = () => {
       });
       setConfirmDeleteUser({ show: false, user: null });
       await fetchAllData();
+      appAlert('Utente eliminato con successo', 'Completato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione');
+      appAlert(err.response?.data?.error || 'Errore durante l\'eliminazione', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -438,9 +571,9 @@ const UsersManagement = () => {
         { headers: { Authorization: `Bearer ${getToken()}` } }
       );
       setResetModal({ show: false, user: null, newPwd: '' });
-      appAlert('Password resettata! Al prossimo accesso dovrà obbligatoriamente cambiarla.');
+      appAlert('Password resettata! Al prossimo accesso dovrà obbligatoriamente cambiarla.', 'Completato', 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante il reset');
+      appAlert(err.response?.data?.error || 'Errore durante il reset', 'Errore', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -485,10 +618,10 @@ const UsersManagement = () => {
               </div>
               <div>
                 <h1 className="text-2xl md:text-3xl font-black text-brand-white tracking-tight">
-                  Team & Piramide Permessi
+                  Team & Gerarchia Ruoli
                 </h1>
                 <p className="text-slate-400 text-sm">
-                  Gestione gerarchica dei ruoli in stile Discord, permessi granulari e restrizioni per singolo cliente.
+                  Ordina i ruoli con Drag & Drop: chi sta più in alto gestisce i ruoli e le persone sotto di sé.
                 </p>
               </div>
             </div>
@@ -502,19 +635,18 @@ const UsersManagement = () => {
                     name: '',
                     description: '',
                     color: '#10b981',
-                    hierarchy_level: Math.max(50, Math.min(850, myLevel - 100)),
                     template: 'full'
                   });
                   setShowCreateRoleModal(true);
                 }}
-                className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white border border-slate-700 font-bold rounded-2xl text-sm flex items-center gap-2 transition-all"
+                className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white border border-slate-700 font-bold rounded-2xl text-sm flex items-center gap-2 transition-all active:scale-95"
               >
                 <Shield size={17} className="text-amber-400" />
                 <span>+ Nuovo Ruolo</span>
               </button>
               <button
                 onClick={() => setShowCreateUserModal(true)}
-                className="px-5 py-3 bg-brand-blue hover:bg-sky-400 text-brand-black font-black rounded-2xl text-sm flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)]"
+                className="px-5 py-3 bg-brand-blue hover:bg-sky-400 text-brand-black font-black rounded-2xl text-sm flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)] active:scale-95"
               >
                 <UserPlus size={18} />
                 <span>+ Nuovo Utente</span>
@@ -526,44 +658,44 @@ const UsersManagement = () => {
         {/* KPI Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-800/80">
           <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Il Tuo Grado Piramide</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Il Tuo Ruolo Attuale</div>
             <div className="flex items-center gap-2 mt-1.5">
               <span
                 className="w-3 h-3 rounded-full shrink-0"
-                style={{ backgroundColor: currentUser?.role_color || '#a855f7' }}
+                style={{ backgroundColor: currentUser?.role_color || '#f59e0b' }}
               />
               <span className="text-lg font-black text-brand-white truncate">
                 {currentUser?.role_name || currentUser?.role}
               </span>
             </div>
-            <div className="text-xs font-mono text-brand-blue mt-1">
-              Livello Gerarchico: <strong>{myLevel}</strong> {isDeveloper && '👑 (Massimo)'}
+            <div className="text-xs font-bold text-brand-blue mt-1">
+              Posizione Gerarchica: <strong>#{callerRoleIndex + 1}</strong> {isDeveloper && '👑 (Grado Massimo)'}
             </div>
           </div>
 
           <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Utenti Attivi</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Membri del Team</div>
             <div className="text-2xl font-black text-brand-white mt-1">{users.length}</div>
             <div className="text-xs text-slate-500 mt-1">
-              {users.filter(u => countUserOverrides(u) > 0 || (u.restricted_customers?.length > 0)).length} con permessi personalizzati
+              {users.filter(u => canModifyUser(u)).length} gestibili dal tuo grado
             </div>
           </div>
 
           <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Ruoli Configurati</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Ruoli in Gerarchia</div>
             <div className="text-2xl font-black text-amber-400 mt-1">{roles.length}</div>
             <div className="text-xs text-slate-500 mt-1">
-              {assignableRoles.length} gestibili dal tuo livello
+              {roles.filter(r => canModifyRole(r)).length} modificabili sotto di te
             </div>
           </div>
 
           <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Protezione Root</div>
-            <div className="flex items-center gap-1.5 text-purple-400 font-black text-sm mt-2">
-              <Crown size={16} /> Developer Protetto
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Vertice Sistema</div>
+            <div className="flex items-center gap-1.5 text-amber-400 font-black text-sm mt-2">
+              <Crown size={16} /> Software Engineer
             </div>
             <div className="text-[11px] text-slate-500 mt-1">
-              Immutabile e non eliminabile da nessuno
+              Fisso al #1 • Non eliminabile
             </div>
           </div>
         </div>
@@ -591,7 +723,7 @@ const UsersManagement = () => {
             }`}
           >
             <Layers size={16} />
-            <span>Piramide Ruoli & Permessi ({roles.length})</span>
+            <span>Gerarchia Ruoli & Permessi ({roles.length})</span>
           </button>
 
           <button
@@ -636,7 +768,7 @@ const UsersManagement = () => {
               >
                 Tutti ({users.length})
               </button>
-              {roles.map(r => (
+              {roles.map((r, idx) => (
                 <button
                   key={r.code}
                   onClick={() => setRoleFilter(r.code)}
@@ -647,7 +779,7 @@ const UsersManagement = () => {
                   }`}
                 >
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: r.color }} />
-                  <span>{r.name}</span>
+                  <span>#{idx + 1} {r.name}</span>
                   <span className="text-[10px] opacity-70">({r.member_count || 0})</span>
                 </button>
               ))}
@@ -661,17 +793,21 @@ const UsersManagement = () => {
               {filteredUsers.map(u => {
                 const isTargetDev = u.role === 'developer';
                 const editable = canModifyUser(u);
+                const deletable = canDeleteUserAccount(u);
                 const overrideCount = countUserOverrides(u);
                 const restrictedCount = u.restricted_customers?.length || 0;
                 const enabledPermsCount = Object.values(u.effective_permissions || {}).filter(Boolean).length;
+                const roleRank = roles.findIndex(r => r.code === u.role) + 1;
 
                 return (
                   <div
                     key={u.id}
                     className={`bg-slate-950/80 border rounded-2xl p-5 flex flex-col justify-between gap-4 transition-all ${
-                      isTargetDev
-                        ? 'border-purple-500/40 shadow-[0_0_20px_rgba(168,85,247,0.08)]'
-                        : 'border-slate-800/90 hover:border-slate-700'
+                      !editable
+                        ? 'border-slate-800/70 opacity-85'
+                        : isTargetDev
+                          ? 'border-amber-500/40 shadow-[0_0_20px_rgba(245,158,11,0.08)]'
+                          : 'border-slate-800/90 hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -708,20 +844,22 @@ const UsersManagement = () => {
                               <Shield size={12} />
                               {u.role_name}
                             </span>
-                            <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                              Lv. {u.hierarchy_level}
-                            </span>
+                            {roleRank > 0 && (
+                              <span className="text-[11px] font-bold text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                Grado #{roleRank}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
 
-                      {isTargetDev ? (
-                        <span className="px-2.5 py-1 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-300 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0">
-                          <Lock size={11} /> Protetto (Root)
+                      {!editable ? (
+                        <span className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700 text-slate-400 text-[10px] font-black uppercase flex items-center gap-1 shrink-0">
+                          <Lock size={11} className="text-amber-400" /> Bloccato
                         </span>
-                      ) : !editable ? (
-                        <span className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-800 text-slate-500 text-[10px] font-bold uppercase flex items-center gap-1 shrink-0">
-                          <Lock size={11} /> Livello Superiore/Pari
+                      ) : isTargetDev ? (
+                        <span className="px-2.5 py-1 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0">
+                          <Crown size={11} /> Grado Massimo
                         </span>
                       ) : null}
                     </div>
@@ -729,7 +867,7 @@ const UsersManagement = () => {
                     {/* Pills riepilogo permessi effettivi */}
                     <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-900">
                       <span className="text-[11px] font-semibold text-slate-400 bg-slate-900/90 px-2.5 py-1 rounded-lg border border-slate-800">
-                        Permessi attivi: <strong className="text-emerald-400">{isTargetDev ? 'TUTTI (Root)' : `${enabledPermsCount}/${allPermKeys.length}`}</strong>
+                        Permessi attivi: <strong className="text-emerald-400">{enabledPermsCount}/{allPermKeys.length}</strong>
                       </span>
 
                       {overrideCount > 0 && (
@@ -756,7 +894,7 @@ const UsersManagement = () => {
                       </span>
 
                       <div className="flex items-center gap-2">
-                        {editable && (
+                        {editable ? (
                           <>
                             <button
                               onClick={() => openEditUserAccessModal(u)}
@@ -773,7 +911,7 @@ const UsersManagement = () => {
                             >
                               <Key size={15} />
                             </button>
-                            {Number(u.id) !== Number(currentUser?.id) && (
+                            {deletable && (
                               <button
                                 onClick={() => setConfirmDeleteUser({ show: true, user: u })}
                                 className="p-2 rounded-xl bg-rose-950/40 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-900/50 transition-colors"
@@ -783,6 +921,10 @@ const UsersManagement = () => {
                               </button>
                             )}
                           </>
+                        ) : (
+                          <span className="text-[11px] text-slate-500 font-semibold flex items-center gap-1">
+                            <Lock size={12} /> Non modificabile dal tuo ruolo
+                          </span>
                         )}
                       </div>
                     </div>
@@ -795,25 +937,25 @@ const UsersManagement = () => {
       )}
 
       {/* ================================================================= */}
-      {/* TAB 2: PIRAMIDE RUOLI & PERMESSI (STILE DISCORD)                  */}
+      {/* TAB 2: GERARCHIA RUOLI DRAG & DROP E PERMESSI                     */}
       {/* ================================================================= */}
       {activeTab === 'roles' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Colonna Sinistra: La Piramide dei Ruoli */}
+          {/* Colonna Sinistra: Gerarchia Ruoli Drag & Drop */}
           <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-black text-brand-white flex items-center gap-2">
-                  <Layers size={18} className="text-brand-blue" /> Piramide Gerarchica
+                  <Layers size={18} className="text-brand-blue" /> Gerarchia Ruoli
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Ogni ruolo può gestire solo i ruoli posti sotto il proprio livello.
+                  Trascina i ruoli sotto il tuo grado per cambiare chi ha più potere. Il ruolo più in alto comanda su quelli sotto.
                 </p>
               </div>
               {canManageUsers && (
                 <button
                   onClick={() => setShowCreateRoleModal(true)}
-                  className="p-2 rounded-xl bg-brand-blue text-brand-black hover:bg-sky-400 transition-colors"
+                  className="p-2 rounded-xl bg-brand-blue text-brand-black hover:bg-sky-400 transition-colors shrink-0"
                   title="Crea Nuovo Ruolo"
                 >
                   <Plus size={18} />
@@ -821,69 +963,151 @@ const UsersManagement = () => {
               )}
             </div>
 
-            <div className="space-y-2">
-              {roles.map((r, idx) => {
-                const isSelected = roleDraft && r.id === roleDraft.id;
-                const modifiable = canModifyRole(r);
-
-                return (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => handleSelectRole(r)}
-                    className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
-                      isSelected
-                        ? 'bg-slate-800/90 border-brand-blue shadow-[0_0_20px_rgba(14,165,233,0.15)]'
-                        : 'bg-slate-950/70 border-slate-800/80 hover:bg-slate-900 hover:border-slate-700'
-                    }`}
+            <DragDropContext onDragEnd={handleRoleDragEnd}>
+              <Droppable droppableId="roles-hierarchy-list">
+                {(provided) => (
+                  <div
+                    ref={provided.innerRef}
+                    {...provided.droppableProps}
+                    className="space-y-2"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex flex-col items-center">
-                        <span
-                          className="w-3.5 h-3.5 rounded-full shrink-0 shadow-sm"
-                          style={{ backgroundColor: r.color || '#38bdf8' }}
-                        />
-                        {idx < roles.length - 1 && (
-                          <div className="w-0.5 h-3 bg-slate-800 mt-1" />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-black text-sm text-brand-white truncate">{r.name}</span>
-                          {r.code === 'developer' && <Crown size={13} className="text-purple-400 shrink-0" />}
-                        </div>
-                        <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
-                          <span className="font-mono text-brand-blue font-bold">Lv. {r.hierarchy_level}</span>
-                          <span>•</span>
-                          <span>{r.member_count || 0} utent{r.member_count === 1 ? 'e' : 'i'}</span>
-                        </div>
-                      </div>
-                    </div>
+                    {roles.map((r, idx) => {
+                      const isSelected = roleDraft && r.id === roleDraft.id;
+                      const modifiable = canModifyRole(r);
+                      const draggable = canDragRole(r, idx);
+                      const isCallerOwnRole = r.code === currentUser?.role;
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {!modifiable && (
-                        <Lock size={14} className="text-slate-500" title="Ruolo protetto o di grado pari/superiore al tuo" />
-                      )}
-                      <ChevronRight size={16} className={isSelected ? 'text-brand-blue' : 'text-slate-600'} />
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                      return (
+                        <Draggable
+                          key={String(r.id)}
+                          draggableId={String(r.id)}
+                          index={idx}
+                          isDragDisabled={!draggable}
+                        >
+                          {(dragProvided, snapshot) => (
+                            <div
+                              ref={dragProvided.innerRef}
+                              {...dragProvided.draggableProps}
+                              onClick={() => handleSelectRole(r)}
+                              className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-2 cursor-pointer select-none ${
+                                snapshot.isDragging
+                                  ? 'bg-slate-800 border-brand-blue shadow-2xl scale-[1.02] z-30'
+                                  : isSelected
+                                    ? 'bg-slate-800/90 border-brand-blue shadow-[0_0_20px_rgba(14,165,233,0.15)]'
+                                    : 'bg-slate-950/70 border-slate-800/80 hover:bg-slate-900 hover:border-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                {/* Drag Handle o Lucchetto */}
+                                <div
+                                  {...dragProvided.dragHandleProps}
+                                  onClick={e => e.stopPropagation()}
+                                  className={`p-1.5 rounded-lg flex items-center justify-center shrink-0 ${
+                                    draggable
+                                      ? 'text-slate-400 hover:text-brand-blue hover:bg-slate-800 cursor-grab active:cursor-grabbing'
+                                      : 'text-slate-600 cursor-not-allowed'
+                                  }`}
+                                  title={
+                                    r.code === 'developer'
+                                      ? 'Il Software Engineer rimane sempre in cima (#1)'
+                                      : draggable
+                                        ? 'Trascina per cambiare ordine gerarchico'
+                                        : 'Bloccato: puoi riordinare solo i ruoli sotto il tuo'
+                                  }
+                                >
+                                  {draggable ? <GripVertical size={16} /> : <Lock size={14} />}
+                                </div>
+
+                                <span
+                                  className="w-3.5 h-3.5 rounded-full shrink-0 shadow-sm"
+                                  style={{ backgroundColor: r.color || '#38bdf8' }}
+                                />
+
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[11px] font-mono font-black text-slate-400">
+                                      #{idx + 1}
+                                    </span>
+                                    <span className="font-black text-sm text-brand-white truncate">{r.name}</span>
+                                    {r.code === 'developer' && (
+                                      <Crown size={13} className="text-amber-400 shrink-0" title="Grado Massimo" />
+                                    )}
+                                    {isCallerOwnRole && (
+                                      <span className="px-1.5 py-0.5 rounded bg-brand-blue/15 text-brand-blue text-[9px] font-black uppercase">
+                                        Tuo Ruolo
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
+                                    <span>{r.member_count || 0} utent{r.member_count === 1 ? 'e' : 'i'}</span>
+                                    {!modifiable && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-amber-400/90 font-semibold">Bloccato</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {draggable && (
+                                  <div className="flex flex-col gap-0.5 mr-1" onClick={e => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      disabled={idx <= minDroppableIndex}
+                                      onClick={() => handleMoveRoleStep(idx, -1)}
+                                      className="p-0.5 rounded hover:bg-slate-700 text-slate-400 hover:text-white disabled:opacity-20"
+                                      title="Sposta più in alto"
+                                    >
+                                      <ChevronUp size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={idx >= roles.length - 1}
+                                      onClick={() => handleMoveRoleStep(idx, 1)}
+                                      className="p-0.5 rounded hover:bg-slate-700 text-slate-400 hover:text-white disabled:opacity-20"
+                                      title="Sposta più in basso"
+                                    >
+                                      <ChevronDown size={13} />
+                                    </button>
+                                  </div>
+                                )}
+                                <ChevronRight size={16} className={isSelected ? 'text-brand-blue' : 'text-slate-600'} />
+                              </div>
+                            </div>
+                          )}
+                        </Draggable>
+                      );
+                    })}
+                    {provided.placeholder}
+                  </div>
+                )}
+              </Droppable>
+            </DragDropContext>
           </div>
 
           {/* Colonna Destra: Configurazione Granulare del Ruolo Selezionato */}
           <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 shadow-xl space-y-6">
             {roleDraft ? (
               <>
-                {/* Banner informativo se non modificabile */}
+                {/* Banner informativo se bloccato */}
                 {!canModifyRole(roleDraft) && (
-                  <div className="p-4 rounded-2xl bg-purple-950/40 border border-purple-500/40 text-purple-200 text-xs font-bold flex items-center gap-3">
-                    <Lock size={18} className="text-purple-400 shrink-0" />
+                  <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/40 text-amber-200 text-xs font-bold flex items-center gap-3">
+                    <Lock size={18} className="text-amber-400 shrink-0" />
                     <div>
-                      {roleDraft.code === 'developer'
-                        ? 'Il ruolo Developer (Root) possiede i poteri massimi assoluti di sistema: ha accesso a tutto e non può essere modificato o eliminato da nessuno.'
-                        : `Questo ruolo ha un livello gerarchico (${roleDraft.hierarchy_level}) pari o superiore al tuo (${myLevel}). Puoi consultarlo in sola lettura.`}
+                      {roleDraft.code === currentUser?.role
+                        ? `Questo è il tuo ruolo attuale (${roleDraft.name}). Per sicurezza gerarchica non puoi modificare il tuo stesso ruolo, ma solo quelli posizionati sotto di te.`
+                        : `Il ruolo "${roleDraft.name}" si trova sopra il tuo grado nella gerarchia ed è bloccato. Puoi consultarlo in sola lettura.`}
+                    </div>
+                  </div>
+                )}
+
+                {roleDraft.code === 'developer' && isDeveloper && (
+                  <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs font-bold flex items-center gap-3">
+                    <Crown size={18} className="text-amber-400 shrink-0" />
+                    <div>
+                      <strong>Software Engineer (Grado Massimo #1):</strong> Rimane sempre in cima alla gerarchia e non può essere eliminato nemmeno da te stesso. Puoi personalizzarne i dettagli e creare anche ruoli pari per capacità.
                     </div>
                   </div>
                 )}
@@ -897,12 +1121,14 @@ const UsersManagement = () => {
                     />
                     <div>
                       <h2 className="text-2xl font-black text-brand-white">{roleDraft.name}</h2>
-                      <p className="text-xs text-slate-400 font-mono">Codice: {roleDraft.code} • Livello Piramide: {roleDraft.hierarchy_level}</p>
+                      <p className="text-xs text-slate-400 font-mono">
+                        Posizione Gerarchia: #{roles.findIndex(r => r.id === roleDraft.id) + 1} • Codice: {roleDraft.code}
+                      </p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {canModifyRole(roleDraft) && !roleDraft.is_system && (
+                    {canModifyRole(roleDraft) && roleDraft.code !== 'developer' && roleDraft.code !== 'operator' && (
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteRole({ show: true, role: roleDraft })}
@@ -925,15 +1151,15 @@ const UsersManagement = () => {
                   </div>
                 </div>
 
-                {/* Campi Nome, Livello Piramide, Colore, Descrizione */}
+                {/* Campi Nome, Descrizione, Colore */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="md:col-span-2">
+                  <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                       Nome del Ruolo
                     </label>
                     <input
                       type="text"
-                      disabled={!canModifyRole(roleDraft)}
+                      disabled={!canModifyRole(roleDraft) || roleDraft.code === 'developer'}
                       value={roleDraft.name || ''}
                       onChange={e => updateRoleDraftField('name', e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-brand-white font-bold text-sm disabled:opacity-60"
@@ -942,21 +1168,6 @@ const UsersManagement = () => {
 
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                      Grado Piramide (1 - {isDeveloper ? 999 : myLevel - 1})
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max={isDeveloper ? 999 : myLevel - 1}
-                      disabled={!canModifyRole(roleDraft)}
-                      value={roleDraft.hierarchy_level || 100}
-                      onChange={e => updateRoleDraftField('hierarchy_level', e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-brand-blue font-mono font-black text-sm disabled:opacity-60"
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                       Descrizione Mansioni
                     </label>
                     <input
@@ -964,7 +1175,7 @@ const UsersManagement = () => {
                       disabled={!canModifyRole(roleDraft)}
                       value={roleDraft.description || ''}
                       onChange={e => updateRoleDraftField('description', e.target.value)}
-                      placeholder="Es. Accesso a tutto tranne Finanza e Amministrazione..."
+                      placeholder="Es. Accesso completo tranne Finanza..."
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 text-sm disabled:opacity-60"
                     />
                   </div>
@@ -994,7 +1205,7 @@ const UsersManagement = () => {
                 {canModifyRole(roleDraft) && (
                   <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
                     <span className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-                      <Sparkles size={14} className="text-amber-400" /> Preset Rapidi Stile Discord:
+                      <Sparkles size={14} className="text-amber-400" /> Preset Rapidi:
                     </span>
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -1002,7 +1213,7 @@ const UsersManagement = () => {
                         onClick={() => applyPresetToRoleDraft('full')}
                         className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-bold transition-colors"
                       >
-                        ✅ Accesso Completo (Tutto)
+                        ✅ Tutti i Permessi (Grado Pieno)
                       </button>
                       <button
                         type="button"
@@ -1043,7 +1254,7 @@ const UsersManagement = () => {
                     type="text"
                     value={rolePermSearch}
                     onChange={e => setRolePermSearch(e.target.value)}
-                    placeholder="Filtra permessi (es. quarantena, elimina, spedizioni, finanza, clienti)..."
+                    placeholder="Filtra permessi (es. zebra, nuova merce, quarantena, elimina, spedizioni, finanza)..."
                     className="w-full bg-slate-950 border border-slate-800 text-brand-white text-sm rounded-xl pl-10 pr-4 py-2.5 focus:border-brand-blue"
                   />
                 </div>
@@ -1067,9 +1278,9 @@ const UsersManagement = () => {
 
                         <div className="divide-y divide-slate-800/60">
                           {visibleItems.map(item => {
-                            const isEnabled = roleDraft.code === 'developer' ? true : Boolean(roleDraft.permissions?.[item.key]);
-                            const callerHasIt = isDeveloper || hasPerm(item.key, currentUser);
-                            const switchDisabled = !canModifyRole(roleDraft) || !callerHasIt;
+                            const isAlwaysOnForDev = roleDraft.code === 'developer' && (item.key === 'view_users' || item.key === 'users_manage');
+                            const isEnabled = isAlwaysOnForDev ? true : Boolean(roleDraft.permissions?.[item.key]);
+                            const switchDisabled = !canModifyRole(roleDraft) || isAlwaysOnForDev;
 
                             return (
                               <div key={item.key} className="py-3.5 flex items-center justify-between gap-4">
@@ -1126,14 +1337,13 @@ const UsersManagement = () => {
                       <Building2 size={16} /> Accesso Merce per Singolo Cliente
                     </h3>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Clicca su un cliente per bloccare o consentire a questo ruolo di toccare (aggiungere, spostare, spedire, modificare o eliminare) la merce di quel cliente.
+                      Clicca su un cliente per bloccare o consentire a questo ruolo di operare sulla merce di quel cliente.
                     </p>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
                     {customers.map(c => {
                       const isBlocked =
-                        roleDraft.code !== 'developer' &&
                         Array.isArray(roleDraft.permissions?.restricted_customers) &&
                         roleDraft.permissions.restricted_customers.map(Number).includes(Number(c.id));
 
@@ -1194,7 +1404,7 @@ const UsersManagement = () => {
                 )}
               </>
             ) : (
-              <div className="text-slate-500 text-center py-12">Seleziona un ruolo dalla piramide a sinistra</div>
+              <div className="text-slate-500 text-center py-12">Seleziona un ruolo dalla gerarchia a sinistra</div>
             )}
           </div>
         </div>
@@ -1210,7 +1420,7 @@ const UsersManagement = () => {
               <Building2 className="text-brand-blue" /> Matrice Accesso Merce Clienti
             </h2>
             <p className="text-sm text-slate-400 mt-1">
-              Panoramica immediata di quali utenti o ruoli hanno blocchi operativi sulla merce di determinati clienti. Clicca su un utente per modificarne le restrizioni.
+              Panoramica immediata di quali utenti hanno blocchi operativi sulla merce di determinati clienti.
             </p>
           </div>
 
@@ -1219,7 +1429,7 @@ const UsersManagement = () => {
               <thead>
                 <tr className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-400">
                   <th className="py-3 px-4">Utente / Ruolo</th>
-                  <th className="py-3 px-4">Grado Piramide</th>
+                  <th className="py-3 px-4">Posizione Gerarchia</th>
                   <th className="py-3 px-4">Clienti Bloccati (Non può toccare la merce)</th>
                   <th className="py-3 px-4 text-right">Azione</th>
                 </tr>
@@ -1230,14 +1440,17 @@ const UsersManagement = () => {
                   const blockedNames = customers
                     .filter(c => blockedIds.map(Number).includes(Number(c.id)))
                     .map(c => c.business_name);
+                  const rRank = roles.findIndex(r => r.code === u.role) + 1;
 
                   return (
                     <tr key={u.id} className="hover:bg-slate-800/30">
                       <td className="py-3.5 px-4">
                         <div className="font-bold text-brand-white">{u.username}</div>
-                        <div className="text-xs" style={{ color: u.role_color }}>{u.role_name}</div>
+                        <div className="text-xs font-bold" style={{ color: u.role_color }}>{u.role_name}</div>
                       </td>
-                      <td className="py-3.5 px-4 font-mono text-xs text-slate-400">Lv. {u.hierarchy_level}</td>
+                      <td className="py-3.5 px-4 font-mono text-xs text-slate-400">
+                        {rRank > 0 ? `Grado #${rRank}` : '-'}
+                      </td>
                       <td className="py-3.5 px-4">
                         {blockedNames.length === 0 ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-xs font-bold">
@@ -1262,7 +1475,9 @@ const UsersManagement = () => {
                             Configura Clienti
                           </button>
                         ) : (
-                          <span className="text-xs text-slate-500">Protetto</span>
+                          <span className="text-xs text-slate-500 inline-flex items-center gap-1">
+                            <Lock size={12} /> Bloccato
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -1278,8 +1493,14 @@ const UsersManagement = () => {
       {/* MODAL CREAZIONE NUOVO UTENTE INTERATTIVA                          */}
       {/* ================================================================= */}
       {showCreateUserModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setShowCreateUserModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 md:p-8 max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-2xl bg-brand-blue/15 text-brand-blue">
@@ -1287,7 +1508,7 @@ const UsersManagement = () => {
                 </div>
                 <div>
                   <h2 className="text-xl font-black text-brand-white">Crea Nuovo Membro del Team</h2>
-                  <p className="text-xs text-slate-400">Assegna un ruolo piramidale e, se vuoi, personalizza subito gli accessi singoli.</p>
+                  <p className="text-xs text-slate-400">Assegna un ruolo della gerarchia e personalizza subito gli accessi singoli.</p>
                 </div>
               </div>
               <button onClick={() => setShowCreateUserModal(false)} className="p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white">
@@ -1323,11 +1544,12 @@ const UsersManagement = () => {
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                  Seleziona Ruolo Piramidale (Sotto il tuo livello {myLevel})
+                  Seleziona Ruolo {isDeveloper ? '(Tutti i ruoli disponibili, incluso pari grado)' : '(Ruoli sotto il tuo grado)'}
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {assignableRoles.map(r => {
                     const isSel = newRoleCode === r.code;
+                    const rankPos = roles.findIndex(x => x.code === r.code) + 1;
                     return (
                       <button
                         key={r.code}
@@ -1344,7 +1566,7 @@ const UsersManagement = () => {
                             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: r.color }} />
                             {r.name}
                           </span>
-                          <span className="text-[10px] font-mono text-brand-blue font-bold">Lv. {r.hierarchy_level}</span>
+                          <span className="text-[10px] font-mono text-brand-blue font-bold">#{rankPos}</span>
                         </div>
                         <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{r.description}</p>
                       </button>
@@ -1402,12 +1624,12 @@ const UsersManagement = () => {
 
                     <div>
                       <div className="text-xs font-black uppercase text-brand-blue mb-2">
-                        Eccezioni Permessi Singoli rispetto al ruolo "{newUserRoleObj?.name}":
+                        Eccezioni Permessi Singoli rispetto al ruolo &quot;{newUserRoleObj?.name}&quot;:
                       </div>
                       <div className="space-y-1.5">
                         {catalog.flatMap(c => c.items).map(it => {
                           const roleDefault = Boolean(newUserRoleObj?.permissions?.[it.key]);
-                          const currentOv = newUserOverrides[it.key]; // 'ALLOW' | 'DENY' | undefined
+                          const currentOv = newUserOverrides[it.key];
                           return (
                             <div key={it.key} className="flex items-center justify-between py-1.5 border-b border-slate-900 text-xs">
                               <span className="text-slate-300 font-semibold">{it.label}</span>
@@ -1469,11 +1691,17 @@ const UsersManagement = () => {
       )}
 
       {/* ================================================================= */}
-      {/* MODAL CREAZIONE NUOVO RUOLO PIRAMIDALE                            */}
+      {/* MODAL CREAZIONE NUOVO RUOLO (SENZA PUNTI POTERE)                  */}
       {/* ================================================================= */}
       {showCreateRoleModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setShowCreateRoleModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-6">
               <h2 className="text-xl font-black text-brand-white flex items-center gap-2">
                 <Shield className="text-amber-400" /> Crea Nuovo Ruolo
@@ -1491,7 +1719,7 @@ const UsersManagement = () => {
                   required
                   value={newRoleForm.name}
                   onChange={e => setNewRoleForm({ ...newRoleForm, name: e.target.value })}
-                  placeholder="Es. Capo Turno, Responsabile Logistica, Auditor..."
+                  placeholder="Es. Direzione, Responsabile Logistica, Capo Turno..."
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-brand-white font-bold"
                 />
               </div>
@@ -1507,35 +1735,18 @@ const UsersManagement = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Livello Piramide (Max {isDeveloper ? 999 : myLevel - 1})
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max={isDeveloper ? 999 : myLevel - 1}
-                    required
-                    value={newRoleForm.hierarchy_level}
-                    onChange={e => setNewRoleForm({ ...newRoleForm, hierarchy_level: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-brand-blue font-mono font-black"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Colore Badge</label>
-                  <div className="flex items-center gap-1.5 flex-wrap bg-slate-950 border border-slate-800 rounded-xl p-3">
-                    {DISCORD_COLORS.map(c => (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => setNewRoleForm({ ...newRoleForm, color: c })}
-                        className={`w-5 h-5 rounded-full ${newRoleForm.color === c ? 'scale-125 ring-2 ring-white' : 'opacity-70'}`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Colore Badge</label>
+                <div className="flex items-center gap-2 flex-wrap bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  {DISCORD_COLORS.map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setNewRoleForm({ ...newRoleForm, color: c })}
+                      className={`w-6 h-6 rounded-full transition-transform ${newRoleForm.color === c ? 'scale-125 ring-2 ring-white' : 'opacity-70 hover:opacity-100'}`}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
                 </div>
               </div>
 
@@ -1546,12 +1757,15 @@ const UsersManagement = () => {
                   onChange={e => setNewRoleForm({ ...newRoleForm, template: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-brand-white text-sm font-bold"
                 >
-                  <option value="full">🌟 Accesso Completo (come Direzione Generale)</option>
-                  <option value="view_only">👁️ Solo Visualizzazione Gestionale (come Responsabile)</option>
+                  <option value="full">🌟 Accesso Completo (Tutti i permessi abilitati)</option>
+                  <option value="view_only">👁️ Solo Visualizzazione Gestionale</option>
                   <option value="quality">🛡️ Controllo Qualità & Quarantena</option>
                   <option value="operator">📱 Operatore Terminale Zebra</option>
                   <option value="none">⚙️ Vuoto (Configura manualmente dopo)</option>
                 </select>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Il nuovo ruolo verrà posizionato subito sotto il tuo grado attuale e potrai spostarlo liberamente con il <strong>Drag &amp; Drop</strong>.
+                </p>
               </div>
 
               <div className="flex gap-3 pt-4">
@@ -1568,11 +1782,17 @@ const UsersManagement = () => {
       )}
 
       {/* ================================================================= */}
-      {/* MODAL DISCORD OVERRIDE SINGOLO UTENTE                             */}
+      {/* MODAL OVERRIDE SINGOLO UTENTE                                     */}
       {/* ================================================================= */}
       {editingUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 max-w-4xl w-full max-h-[92vh] overflow-y-auto shadow-2xl space-y-6">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setEditingUser(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 md:p-8 max-w-4xl w-full max-h-[92vh] overflow-y-auto shadow-2xl space-y-6"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div>
                 <h2 className="text-xl md:text-2xl font-black text-brand-white flex items-center gap-2">
@@ -1590,29 +1810,32 @@ const UsersManagement = () => {
             {/* Scelta Ruolo Base */}
             <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4">
               <label className="block text-xs font-black uppercase tracking-wider text-slate-400 mb-2">
-                Ruolo Piramidale Assegnato
+                Ruolo Gerarchico Assegnato
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {assignableRoles.map(r => (
-                  <button
-                    key={r.code}
-                    type="button"
-                    onClick={() => setEditUserRole(r.code)}
-                    className={`p-3 rounded-xl border text-left transition-all ${
-                      editUserRole === r.code
-                        ? 'bg-slate-800 border-brand-blue'
-                        : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-brand-white flex items-center gap-1.5">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: r.color }} />
-                        {r.name}
-                      </span>
-                      <span className="text-[10px] font-mono text-brand-blue">Lv.{r.hierarchy_level}</span>
-                    </div>
-                  </button>
-                ))}
+                {assignableRoles.map(r => {
+                  const rPos = roles.findIndex(x => x.code === r.code) + 1;
+                  return (
+                    <button
+                      key={r.code}
+                      type="button"
+                      onClick={() => setEditUserRole(r.code)}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        editUserRole === r.code
+                          ? 'bg-slate-800 border-brand-blue'
+                          : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-brand-white flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: r.color }} />
+                          {r.name}
+                        </span>
+                        <span className="text-[10px] font-mono text-brand-blue">#{rPos}</span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1624,7 +1847,7 @@ const UsersManagement = () => {
                     <Building2 size={16} /> Accesso ai Clienti per {editingUser.username}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Clicca per bloccare o sbloccare l'operatività di questo singolo utente sulla merce di ciascun cliente.
+                    Clicca per bloccare o sbloccare l&apos;operatività di questo singolo utente sulla merce di ciascun cliente.
                   </p>
                 </div>
               </div>
@@ -1644,13 +1867,11 @@ const UsersManagement = () => {
                       type="button"
                       onClick={() => {
                         if (isEffectivelyBlocked) {
-                          // Sblocca per questo utente
                           setEditUserRestrictedCustomers(prev => prev.filter(id => id !== cid));
                           if (roleBlocksIt) {
                             setEditUserUnlockedCustomers(prev => [...new Set([...prev, cid])]);
                           }
                         } else {
-                          // Blocca per questo utente
                           setEditUserUnlockedCustomers(prev => prev.filter(id => id !== cid));
                           setEditUserRestrictedCustomers(prev => [...new Set([...prev, cid])]);
                         }
@@ -1671,12 +1892,12 @@ const UsersManagement = () => {
               </div>
             </div>
 
-            {/* Override Singoli Permessi Stile Discord (Nega / Eredita / Consenti) */}
+            {/* Override Singoli Permessi (Nega / Eredita / Consenti) */}
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-black uppercase tracking-wider text-brand-blue">
-                    Permessi Singoli Utente (Override Stile Discord)
+                    Permessi Singoli Utente
                   </h3>
                   <p className="text-xs text-slate-400">
                     Il tasto centrale <strong>⎯</strong> eredita il valore del ruolo ({editingUserRoleObj?.name}). Usa <strong>❌</strong> per negare o <strong>✅</strong> per concedere un permesso solo a {editingUser.username}.
@@ -1687,7 +1908,7 @@ const UsersManagement = () => {
                   onClick={() => setEditUserOverrides({})}
                   className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 shrink-0"
                 >
-                  Ripristina tutti a "Eredita dal Ruolo"
+                  Ripristina tutti a &quot;Eredita dal Ruolo&quot;
                 </button>
               </div>
 
@@ -1713,8 +1934,9 @@ const UsersManagement = () => {
                       <div className="text-xs font-black uppercase tracking-wider text-brand-blue mb-3">{cat.title}</div>
                       <div className="divide-y divide-slate-900">
                         {items.map(it => {
+                          const isProtectedDevPerm = editUserRole === 'developer' && (it.key === 'view_users' || it.key === 'users_manage');
                           const roleHas = Boolean(editingUserRoleObj?.permissions?.[it.key]);
-                          const ov = editUserOverrides[it.key]; // 'ALLOW' | 'DENY' | undefined
+                          const ov = isProtectedDevPerm ? 'ALLOW' : editUserOverrides[it.key];
                           const effective = ov === 'ALLOW' ? true : ov === 'DENY' ? false : roleHas;
 
                           return (
@@ -1731,12 +1953,12 @@ const UsersManagement = () => {
                                 <div className="text-[11px] text-slate-500 truncate">{it.desc}</div>
                               </div>
 
-                              {/* 3-State Discord Button Group */}
                               <div className="inline-flex rounded-xl bg-slate-900 p-1 border border-slate-800 shrink-0">
                                 <button
                                   type="button"
+                                  disabled={isProtectedDevPerm}
                                   onClick={() => setEditUserOverrides(prev => ({ ...prev, [it.key]: 'DENY' }))}
-                                  className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all flex items-center gap-1 ${
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all flex items-center gap-1 disabled:opacity-30 ${
                                     ov === 'DENY'
                                       ? 'bg-rose-600 text-white shadow'
                                       : 'text-slate-500 hover:text-rose-400'
@@ -1747,6 +1969,7 @@ const UsersManagement = () => {
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isProtectedDevPerm}
                                   onClick={() => {
                                     const copy = { ...editUserOverrides };
                                     delete copy[it.key];
@@ -1809,11 +2032,14 @@ const UsersManagement = () => {
       {/* MODAL CONFERMA ELIMINAZIONE UTENTE                                */}
       {/* ================================================================= */}
       {confirmDeleteUser.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setConfirmDeleteUser({ show: false, user: null })}
+        >
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-8 max-w-sm w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h2 className="text-xl font-bold text-brand-white mb-2">Conferma Eliminazione Utente</h2>
             <p className="text-slate-400 text-sm mb-6">
-              Sei sicuro di voler eliminare l'utente <b className="text-rose-400">{confirmDeleteUser.user?.username}</b>? Questa azione è irreversibile.
+              Sei sicuro di voler eliminare l&apos;utente <b className="text-rose-400">{confirmDeleteUser.user?.username}</b>? Questa azione è irreversibile.
             </p>
             <div className="flex gap-4">
               <button onClick={() => setConfirmDeleteUser({ show: false, user: null })} className="flex-1 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold">
@@ -1831,11 +2057,14 @@ const UsersManagement = () => {
       {/* MODAL CONFERMA ELIMINAZIONE RUOLO                                 */}
       {/* ================================================================= */}
       {confirmDeleteRole.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-md w-full shadow-2xl">
-            <h2 className="text-xl font-bold text-brand-white mb-2">Elimina Ruolo "{confirmDeleteRole.role?.name}"</h2>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setConfirmDeleteRole({ show: false, role: null })}
+        >
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-8 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-xl font-bold text-brand-white mb-2">Elimina Ruolo &quot;{confirmDeleteRole.role?.name}&quot;</h2>
             <p className="text-slate-400 text-sm mb-6">
-              Sei sicuro di voler eliminare questo ruolo dalla piramide? Gli eventuali utenti associati passeranno automaticamente al ruolo base Operatore.
+              Sei sicuro di voler eliminare questo ruolo dalla gerarchia? Gli eventuali utenti associati passeranno automaticamente al ruolo base Operatore.
             </p>
             <div className="flex gap-4">
               <button onClick={() => setConfirmDeleteRole({ show: false, role: null })} className="flex-1 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold">
@@ -1853,8 +2082,11 @@ const UsersManagement = () => {
       {/* MODAL RESET PASSWORD                                              */}
       {/* ================================================================= */}
       {resetModal.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/90 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-brand-black/80 backdrop-blur-md"
+          onClick={() => !isProcessing && setResetModal({ show: false, user: null, newPwd: '' })}
+        >
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-8 max-w-sm w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h2 className="text-xl font-bold text-brand-white mb-2">Reset Password</h2>
             <p className="text-slate-400 text-sm mb-6">
               Inserisci la nuova password provvisoria per <b className="text-brand-blue">{resetModal.user?.username}</b>. Al prossimo accesso dovrà cambiarla obbligatoriamente.

@@ -1,14 +1,18 @@
 const db = require('../config/db');
+const { hasPermission } = require('../utils/permissions');
 
 async function tmsRoutes(fastify, options) {
     
     // GET all TMS data
     fastify.get('/', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        if (!hasPermission(request.user, 'view_tms') && !hasPermission(request.user, 'tms_manage')) {
+            return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare il modulo TMS.' });
+        }
+
         try {
             const [drivers] = await db.query('SELECT * FROM TMS_DRIVERS ORDER BY sort_order ASC');
             const [trips] = await db.query('SELECT * FROM TMS_TRIPS ORDER BY sort_order ASC');
             
-            // Map notes from JSON string back to array
             trips.forEach(t => {
                 if (t.notes) {
                     try { t.notes = JSON.parse(t.notes); } catch(e) { t.notes = []; }
@@ -17,7 +21,6 @@ async function tmsRoutes(fastify, options) {
                 }
             });
 
-            // Group trips by driver_id
             const columns = { unassigned: [] };
             drivers.forEach(d => columns[d.id] = []);
 
@@ -38,6 +41,10 @@ async function tmsRoutes(fastify, options) {
 
     // POST sync TMS state
     fastify.post('/sync', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        if (!hasPermission(request.user, 'tms_manage')) {
+            return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare i viaggi o gli autisti TMS.' });
+        }
+
         const { drivers, columns } = request.body;
         const connection = await db.getConnection();
         try {
@@ -80,7 +87,6 @@ async function tmsRoutes(fastify, options) {
 
                 for (const t of allTrips) {
                     const notesStr = JSON.stringify(t.notes || []);
-                    // Formatting dates safely for MySQL
                     const pTime = (t.pickupTime && t.pickupTime.trim() !== '') ? new Date(t.pickupTime).toISOString().slice(0, 19).replace('T', ' ') : null;
                     const dTime = (t.deliveryTime && t.deliveryTime.trim() !== '') ? new Date(t.deliveryTime).toISOString().slice(0, 19).replace('T', ' ') : null;
 

@@ -4,6 +4,7 @@ import Select from 'react-select';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Save, Loader2, Coins, GitBranch, Building2, Copy, ArrowLeft, ReceiptText, RotateCcw } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 
 const ClientTariffManager = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -16,6 +17,7 @@ const ClientTariffManager = () => {
   const [isSaving, setIsSaving] = useState(false);
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageFinance = hasPerm('finance_manage');
 
   const fetchTariffs = async (clientId) => {
     if (!clientId) return;
@@ -123,6 +125,7 @@ const ClientTariffManager = () => {
   };
 
   const handleSave = async () => {
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto per salvare listini.');
     if (!selectedCustomer) return;
     setIsSaving(true);
     try {

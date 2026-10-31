@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Route, Save, GripVertical, Plus, Trash2, ArrowLeft } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 import { useNavigate } from 'react-router-dom';
 
 const RoutingManager = () => {
@@ -11,6 +12,7 @@ const RoutingManager = () => {
   const [isSaving, setIsSaving] = useState(false);
   const navigate = useNavigate();
   const token = localStorage.getItem('maglite_token');
+  const canManageRouting = hasPerm(['settings_manage', 'pallet_move']);
 
   useEffect(() => {
     fetchSettingsAndZones();
@@ -49,6 +51,7 @@ const RoutingManager = () => {
   };
 
   const handleSave = async () => {
+    if (!canManageRouting) return appAlert('Non hai i permessi per modificare le regole di instradamento.');
     setIsSaving(true);
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/settings`, {

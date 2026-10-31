@@ -32,14 +32,11 @@ async function locationRoutes(fastify, options) {
   // GET /api/locations/routing-zones
   fastify.get('/routing-zones', async (request, reply) => {
     try {
-      // Zone classiche
       const [classicZones] = await db.query('SELECT DISTINCT zone FROM LOCATIONS WHERE zone IS NOT NULL');
       const zones = classicZones.map(z => z.zone);
 
-      // Free Locations dalla tabella
       const [freeLocRows] = await db.query('SELECT name FROM FREE_LOCATIONS');
-      
-      // Free Locations (nomi location legacy dalle palette che non sono in LOCATIONS, escludendo ZONA CARICO temporanea)
+
       const [legacyFreeLocations] = await db.query(`
         SELECT DISTINCT p.location 
         FROM PALLETS p 
@@ -61,6 +58,10 @@ async function locationRoutes(fastify, options) {
 
   // POST /api/locations/bulk - Generatore massivo
   fastify.post('/bulk', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move') && !hasPermission(request.user, 'settings_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare posizioni o scaffali.' });
+    }
+
     const { zone, rack, levels } = request.body;
     
     if (!zone || !rack || !levels || levels.length === 0) {
@@ -72,7 +73,6 @@ async function locationRoutes(fastify, options) {
       await connection.beginTransaction();
       let created = 0;
 
-      // Recuperiamo i PIN già in uso per questa zona per garantire l'univocità
       const [existing] = await connection.query('SELECT pin FROM LOCATIONS WHERE zone = ?', [zone.toUpperCase()]);
       const usedPins = new Set(existing.map(r => r.pin));
 
@@ -80,7 +80,6 @@ async function locationRoutes(fastify, options) {
         const barcode = `${zone.toUpperCase()}-${rack.toUpperCase()}-${pos}`;
         
         let pin;
-        // Genera un PIN univoco (da 100 a 999 per avere più combinazioni disponibili)
         do {
           pin = Math.floor(100 + Math.random() * 900).toString();
         } while (usedPins.has(pin));
@@ -98,7 +97,6 @@ async function locationRoutes(fastify, options) {
           );
           created++;
         } catch (e) {
-          // Se esiste già (Duplicate entry), ignora
           if (e.code !== 'ER_DUP_ENTRY') throw e;
         }
       }
@@ -124,7 +122,7 @@ async function locationRoutes(fastify, options) {
   fastify.delete('/:id', async (request, reply) => {
     const { id } = request.params;
     
-    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage')) {
+    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage') && !hasPermission(request.user, 'pallet_move')) {
       return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
@@ -153,12 +151,11 @@ async function locationRoutes(fastify, options) {
   fastify.delete('/zone/:zoneName', async (request, reply) => {
     const { zoneName } = request.params;
     
-    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage')) {
+    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage') && !hasPermission(request.user, 'pallet_move')) {
       return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
     try {
-      // Controllo se ci sono palette nella zona (attraverso la foreign key fittizia o la join)
       const [occupied] = await db.query(`
         SELECT p.id 
         FROM PALLETS p
@@ -185,6 +182,10 @@ async function locationRoutes(fastify, options) {
 
   // GET /api/locations/zone/:zoneName/print
   fastify.get('/zone/:zoneName/print', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_locations') && !hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di stampare i PIN di magazzino.' });
+    }
+
     const { zoneName } = request.params;
     try {
       const [locations] = await db.query('SELECT * FROM LOCATIONS WHERE zone = ? ORDER BY col ASC, pos ASC', [zoneName]);
@@ -200,8 +201,8 @@ async function locationRoutes(fastify, options) {
 
       const labelsPerRow = 2;
       const labelsPerCol = 4;
-      const labelWidth = (doc.page.width - 40) / labelsPerRow; // ~277
-      const labelHeight = (doc.page.height - 40) / labelsPerCol; // ~200
+      const labelWidth = (doc.page.width - 40) / labelsPerRow;
+      const labelHeight = (doc.page.height - 40) / labelsPerCol;
 
       for (let i = 0; i < locations.length; i++) {
         const loc = locations[i];
@@ -216,21 +217,17 @@ async function locationRoutes(fastify, options) {
         const x = 20 + (col * labelWidth);
         const y = 20 + (row * labelHeight);
 
-        // Bordo etichetta
         doc.rect(x + 5, y + 5, labelWidth - 10, labelHeight - 10).stroke('#cccccc');
 
-        // Logo
         if (fs.existsSync(logoPath)) {
           doc.image(logoPath, x + 10, y + 10, { fit: [60, 20] });
         }
 
-        // Scaffale/Posizione (In alto)
         doc.font('Helvetica-Bold').fontSize(16).fillColor('#333333').text(String(loc.barcode || ''), x, y + 35, {
           width: labelWidth,
           align: 'center'
         });
 
-        // PIN Gigantesco (Centro) (Auto-shrink text se per assurdo fosse lunghissimo)
         let pinStr = String(loc.pin || '');
         let pinSize = 90;
         doc.font('Helvetica-Bold').fontSize(pinSize);
@@ -244,7 +241,6 @@ async function locationRoutes(fastify, options) {
           align: 'center'
         });
         
-        // Info testuale aggiuntiva (In basso)
         doc.font('Helvetica').fontSize(10).fillColor('#666666').text(`Zona: ${loc.zone || ''} | Col: ${loc.col || ''} | Liv: ${loc.pos || ''}`, x, y + 175, {
           width: labelWidth,
           align: 'center'
@@ -270,6 +266,9 @@ async function locationRoutes(fastify, options) {
   });
 
   fastify.post('/free', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move') && !hasPermission(request.user, 'settings_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare posizioni libere.' });
+    }
     const { name } = request.body;
     if (!name || name.trim() === '') return reply.code(400).send({ error: 'Nome obbligatorio' });
     try {
@@ -282,6 +281,9 @@ async function locationRoutes(fastify, options) {
   });
 
   fastify.delete('/free/:id', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage') && !hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di eliminare posizioni libere.' });
+    }
     const { id } = request.params;
     try {
       await db.query('DELETE FROM FREE_LOCATIONS WHERE id = ?', [id]);

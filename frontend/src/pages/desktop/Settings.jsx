@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Save, Loader2, Building, Building2, MapPin, FileText } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 
 const Settings = () => {
   const [settings, setSettings] = useState({
@@ -17,6 +18,7 @@ const Settings = () => {
   const [isSaving, setIsSaving] = useState(false);
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageSettings = hasPerm('settings_manage');
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -40,6 +42,7 @@ const Settings = () => {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    if (!canManageSettings) return appAlert('Permesso Gestione Impostazioni richiesto.');
     setIsSaving(true);
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/settings`, settings, {

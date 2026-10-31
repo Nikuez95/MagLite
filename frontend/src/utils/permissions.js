@@ -11,37 +11,77 @@ export function getCurrentUser() {
 export function hasPerm(permKey, customUser = null) {
   const user = customUser || getCurrentUser();
   if (!user || !user.role) return false;
-  if (user.role === 'developer') return true;
+
+  if (Array.isArray(permKey)) {
+    return permKey.some(k => hasPerm(k, user));
+  }
+
+  // Il Software Engineer mantiene sempre accesso alla pagina Team & Permessi per non auto-bloccarsi mai
+  if (user.role === 'developer' && (permKey === 'view_users' || permKey === 'users_manage')) {
+    return true;
+  }
 
   if (user.permissions && typeof user.permissions[permKey] === 'boolean') {
     return user.permissions[permKey];
   }
 
-  // Fallback di compatibilità per sessioni prima del refresh /api/auth/me
-  if (user.role === 'backoffice' || user.role === 'direzione_generale' || user.role === 'admin') {
-    return true;
-  }
-  if (user.role === 'operator') {
-    return ['access_zebra', 'inbound_create', 'pallet_move', 'outbound_pick'].includes(permKey);
-  }
+  if (user.role === 'developer') return true;
   return false;
 }
 
 export function canTouchCustomer(customerId, customUser = null) {
   if (!customerId) return true;
   const user = customUser || getCurrentUser();
-  if (!user || user.role === 'developer') return true;
+  if (!user) return false;
   const restricted = user.restricted_customers;
   if (!Array.isArray(restricted) || restricted.length === 0) return true;
   return !restricted.map(Number).includes(Number(customerId));
 }
 
 export function canAccessDesktop(customUser = null) {
-  return hasPerm('access_desktop', customUser);
+  const user = customUser || getCurrentUser();
+  // Il Software Engineer può sempre accedere al Desktop per gestire i permessi se anche disattivasse access_zebra
+  if (user?.role === 'developer' && hasPerm('access_desktop', user)) return true;
+  return hasPerm('access_desktop', user);
 }
 
 export function canAccessZebra(customUser = null) {
   return hasPerm('access_zebra', customUser);
+}
+
+export const DESKTOP_ROUTE_RULES = [
+  { path: '/desktop', perm: 'view_dashboard', label: 'Dashboard' },
+  { path: '/desktop/inbound', perm: 'view_inbound', label: 'Nuova Merce (Inbound)' },
+  { path: '/desktop/documents', perm: 'view_documents', label: 'DDT Entrata (Spunta)' },
+  { path: '/desktop/outbound', perm: 'view_outbound', label: 'Spedizioni (Outbound)' },
+  { path: '/desktop/outbound/history', perm: 'view_outbound', label: 'Storico Uscite' },
+  { path: '/desktop/outbound/returns', perm: ['view_outbound', 'outbound_return'], label: 'Storico Resi' },
+  { path: '/desktop/products', perm: 'view_products', label: 'Prodotti & Stock' },
+  { path: '/desktop/inventory', perm: 'view_inventory', label: 'Inventario Globale' },
+  { path: '/desktop/quarantine', perm: 'view_quarantine', label: 'Quarantena & Qualità' },
+  { path: '/desktop/customers', perm: 'view_customers', label: 'Anagrafica Clienti' },
+  { path: '/desktop/locations', perm: 'view_locations', label: 'Mappa Magazzino' },
+  { path: '/desktop/tms', perm: ['view_tms', 'tms_manage'], label: 'TMS (Trasporti)' },
+  { path: '/desktop/finances', perm: ['view_finances', 'finance_manage'], label: 'Dashboard Finanza' },
+  { path: '/desktop/expenses', perm: ['view_finances', 'finance_manage'], label: 'Gestione Uscite' },
+  { path: '/desktop/invoices-history', perm: ['view_finances', 'finance_manage'], label: 'Archivio Proforme' },
+  { path: '/desktop/billing-rules', perm: ['view_billing', 'finance_manage'], label: 'Regole Base Fatturazione' },
+  { path: '/desktop/billing-tariffs', perm: ['view_billing', 'finance_manage'], label: 'Tariffe Clienti' },
+  { path: '/desktop/billing-dashboard', perm: ['view_billing', 'finance_manage'], label: 'Pre-Fatturazione' },
+  { path: '/desktop/users', perm: ['view_users', 'users_manage'], label: 'Utenti & Ruoli (Team)' },
+  { path: '/desktop/audit', perm: 'view_audit', label: 'Audit Logs' },
+  { path: '/desktop/settings', perm: ['view_settings', 'settings_manage'], label: 'Impostazioni Aziendali' },
+  { path: '/desktop/settings/routing', perm: ['view_settings', 'settings_manage', 'pallet_move'], label: 'Regole di Prelievo' }
+];
+
+export function getFirstAllowedDesktopRoute(customUser = null) {
+  const user = customUser || getCurrentUser();
+  for (const rule of DESKTOP_ROUTE_RULES) {
+    if (hasPerm(rule.perm, user)) {
+      return rule.path;
+    }
+  }
+  return null;
 }
 
 export async function refreshUserProfile() {

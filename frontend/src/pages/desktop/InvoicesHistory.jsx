@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Archive, Search, Loader2, Trash2, FileText, CheckCircle, XCircle, GitBranch } from 'lucide-react';
-import { appAlert } from '../../utils/alerts';
+import { appAlert, appConfirm } from '../../utils/alerts';
+import { hasPerm } from '../../utils/permissions';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -13,6 +14,7 @@ const InvoicesHistory = () => {
   const [filterStatus, setFilterStatus] = useState('ALL'); // ALL, PAID, UNPAID
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canManageFinance = hasPerm('finance_manage');
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -35,7 +37,8 @@ const InvoicesHistory = () => {
   }, []);
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Sei sicuro di voler eliminare questa proforma? L'operazione aggiornerà la Dashboard Finanza.")) return;
+    if (!canManageFinance) return appAlert("Permesso Gestione Finanza richiesto per eliminare proforme.");
+    if (!await appConfirm("Sei sicuro di voler eliminare questa proforma? L'operazione aggiornerà la Dashboard Finanza.")) return;
     try {
       await axios.delete(`http://${window.location.hostname}:3000/api/finances/invoices/${id}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
@@ -49,6 +52,7 @@ const InvoicesHistory = () => {
   };
 
   const togglePayment = async (id) => {
+    if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto per cambiare lo stato di pagamento.');
     try {
       await axios.put(`http://${window.location.hostname}:3000/api/finances/invoices/${id}/payment`, {}, {
         headers: { Authorization: `Bearer ${getToken()}` }

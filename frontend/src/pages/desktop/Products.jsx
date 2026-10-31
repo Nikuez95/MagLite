@@ -293,7 +293,7 @@ const ProductsManagement = () => {
   const getToken = () => localStorage.getItem('maglite_token');
   
   const canManageProducts = hasPerm('product_manage');
-  const canDeleteProducts = hasPerm('product_delete');
+  const canDeleteProducts = hasPerm('pallet_delete');
   const canEditPallet = hasPerm('pallet_edit');
   const canDeletePallet = hasPerm('pallet_delete');
   const canManageQuarantine = hasPerm('quarantine_manage');
@@ -349,31 +349,41 @@ const ProductsManagement = () => {
     setQuarantineModal(prev => ({ ...prev, error: null }));
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
+      let resMessage = '';
       if (quarantineModal.mode === 'BLOCK') {
         if (quarantineModal.isBulk) {
           const eligibleIds = selectedPallets.filter(id => {
             const p = pallets.find(pal => pal.id === id);
             return p && !p.is_quarantined && canTouchCustomer(p.customer_id);
           });
-          await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
+          const res = await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
             pallet_ids: eligibleIds,
             reason: finalReason,
             notes: quarantineModal.notes.trim() || null
           }, { headers });
           setSelectedPallets([]);
+          resMessage = res.data?.message || 'Palette messe in quarantena con successo.';
         } else {
-          await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
+          const res = await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
             pallet_id: quarantineModal.pallet.id,
+            pallet_ids: [quarantineModal.pallet.id],
+            pallet_code: quarantineModal.pallet.pallet_code,
             reason: finalReason,
             notes: quarantineModal.notes.trim() || null
           }, { headers });
+          resMessage = res.data?.message || `Paletta ${quarantineModal.pallet.pallet_code} posta in quarantena.`;
         }
       } else {
-        await axios.post(`http://${window.location.hostname}:3000/api/quarantine/unblock`, {
+        const res = await axios.post(`http://${window.location.hostname}:3000/api/quarantine/unblock`, {
           pallet_id: quarantineModal.pallet.id,
+          pallet_ids: [quarantineModal.pallet.id],
+          pallet_code: quarantineModal.pallet.pallet_code,
+          unblock_reason: finalReason,
           reason: finalReason,
+          unblock_notes: quarantineModal.notes.trim() || null,
           notes: quarantineModal.notes.trim() || null
         }, { headers });
+        resMessage = res.data?.message || `Paletta ${quarantineModal.pallet.pallet_code} sbloccata dalla quarantena.`;
       }
       setQuarantineModal({
         show: false,
@@ -385,7 +395,8 @@ const ProductsManagement = () => {
         notes: '',
         error: null
       });
-      fetchData();
+      await fetchData();
+      appAlert(resMessage, 'Operazione Completata', 'success');
     } catch (err) {
       setQuarantineModal(prev => ({
         ...prev,
@@ -1705,9 +1716,9 @@ const ProductsManagement = () => {
                               <button onClick={() => setEditProductModal({ show: true, product: { ...p, flags: parsedFlags.map(f => ({ label: f, value: f })), original_flags: parsedFlags } })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica Anagrafica">
                                 <Edit3 size={17} />
                               </button>
-                              <button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
+                              {canDeleteProducts && canTouchCustomer(p.customer_id) && (<button onClick={() => handleDeleteProduct(p.id, p.name)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Anagrafica">
                                 <Trash2 size={17} />
-                              </button>
+                              </button>)}
                             </div>
                           </td>
                         )}

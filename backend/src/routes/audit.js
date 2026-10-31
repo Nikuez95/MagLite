@@ -1,7 +1,13 @@
+const { hasPermission } = require('../utils/permissions');
 const db = require('../config/db');
 
 async function auditRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_audit')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare gli Audit Logs.' });
+    }
+  });
 
   // 1. GET /api/audit - Registro Globale Operazioni Arricchito
   fastify.get('/', async (request, reply) => {

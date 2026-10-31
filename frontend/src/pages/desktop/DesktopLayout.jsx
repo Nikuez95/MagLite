@@ -169,7 +169,7 @@ const DesktopLayout = () => {
       submenu: [
         { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus, perm: 'view_inbound' },
         { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
-        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: 'view_returns' },
+        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
         { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
         { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
         { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' },
@@ -177,29 +177,29 @@ const DesktopLayout = () => {
     },
     { name: 'Clienti', path: '/desktop/customers', icon: Users, perm: 'view_customers' },
     { name: 'Magazzino', path: '/desktop/locations', icon: Map, perm: 'view_locations' },
-    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_inbound' },
-    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: 'view_tms' },
+    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_documents' },
+    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: ['view_tms', 'tms_manage'] },
     {
       name: 'Finanza',
       icon: DollarSign,
-      perm: 'view_finance',
+      perm: ['view_finances', 'finance_manage'],
       submenu: [
-        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, perm: 'view_finance' },
-        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, perm: 'view_finance' },
-        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, perm: 'view_finance' }
+        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, perm: ['view_finances', 'finance_manage'] },
+        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, perm: ['view_finances', 'finance_manage'] },
+        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, perm: ['view_finances', 'finance_manage'] }
       ]
     },
     {
       name: 'Amministrazione',
       icon: Calculator,
-      perm: 'view_billing',
+      perm: ['view_billing', 'finance_manage'],
       submenu: [
-        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: 'view_billing' },
-        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: 'view_billing' },
-        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: 'view_billing' }
+        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: ['view_billing', 'finance_manage'] },
+        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: ['view_billing', 'finance_manage'] },
+        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: ['view_billing', 'finance_manage'] }
       ]
     },
-    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: 'view_users' },
+    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: ['view_users', 'users_manage'] },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History, perm: 'view_audit' },
   ];
 
@@ -221,21 +221,21 @@ const DesktopLayout = () => {
     { name: 'Nuova Merce (Inbound)', path: '/desktop/inbound', icon: PackagePlus, group: 'Merce', perm: 'view_inbound' },
     { name: 'Spedizioni (Outbound)', path: '/desktop/outbound', icon: PackageMinus, group: 'Merce', perm: 'view_outbound' },
     { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce', perm: 'view_outbound' },
-    { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: 'view_returns' },
+    { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: ['view_outbound', 'outbound_return'] },
     { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce', perm: 'view_products' },
     { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, group: 'Merce', perm: 'view_quarantine' },
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },
     { name: 'Anagrafica Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
     { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: Map, group: 'Magazzino', perm: 'view_locations' },
-    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce', perm: 'view_inbound' },
-    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica', perm: 'view_tms' },
-    { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza', perm: 'view_finance' },
-    { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, group: 'Finanza', perm: 'view_finance' },
-    { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, group: 'Finanza', perm: 'view_finance' },
-    { name: 'Regole Base Fatturazione', path: '/desktop/billing-rules', icon: Settings2, group: 'Amministrazione', perm: 'view_billing' },
-    { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, group: 'Amministrazione', perm: 'view_billing' },
-    { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione', perm: 'view_billing' },
-    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema', perm: 'view_users' },
+    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce', perm: 'view_documents' },
+    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica', perm: ['view_tms', 'tms_manage'] },
+    { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza', perm: ['view_finances', 'finance_manage'] },
+    { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, group: 'Finanza', perm: ['view_finances', 'finance_manage'] },
+    { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, group: 'Finanza', perm: ['view_finances', 'finance_manage'] },
+    { name: 'Regole Base Fatturazione', path: '/desktop/billing-rules', icon: Settings2, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
+    { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
+    { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
+    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema', perm: ['view_users', 'users_manage'] },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History, group: 'Sistema', perm: 'view_audit' },
     { name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, group: 'Configurazione', perm: 'view_settings' },
     { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: Map, group: 'Configurazione', perm: 'view_settings' }
@@ -542,7 +542,7 @@ const DesktopLayout = () => {
 
         {/* Footer Sidebar */}
         <div className="p-3 border-t border-slate-800/80 flex flex-col gap-1.5 bg-slate-950/40">
-          {hasPerm('view_settings', user) && (
+          {hasPerm(['view_settings', 'settings_manage', 'pallet_move'], user) && (
             <>
               <button
                 onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}

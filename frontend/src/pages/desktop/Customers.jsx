@@ -1,4 +1,5 @@
 import { appAlert } from "../../utils/alerts.js";
+import { hasPerm, canTouchCustomer } from "../../utils/permissions.js";
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
@@ -40,7 +41,7 @@ const CustomersManagement = () => {
 
   const getToken = () => localStorage.getItem('maglite_token');
   const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
-  const isDeveloperOrBackoffice = user.role === 'developer' || user.role === 'backoffice';
+  const isDeveloperOrBackoffice = hasPerm('customer_manage');
 
   const fetchCustomers = async () => {
     try {
@@ -279,16 +280,18 @@ Email: ${customer.email || 'Non specificata'}`;
               <Coins size={18} />
               Listini Prezzi
             </button>
-            <button
-              onClick={() => {
-                setNewCustomer({ unique_id: '', business_name: '', vat_number: '', address: '', phone: '', email: '', parent_id: '' });
-                setShowAddModal(true);
-              }}
-              className="flex items-center gap-2 px-5 py-3 bg-brand-blue text-brand-black font-bold rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95"
-            >
-              <Plus size={20} />
-              Nuovo Cliente
-            </button>
+            {isDeveloperOrBackoffice && (
+              <button
+                onClick={() => {
+                  setNewCustomer({ unique_id: '', business_name: '', vat_number: '', address: '', phone: '', email: '', parent_id: '' });
+                  setShowAddModal(true);
+                }}
+                className="flex items-center gap-2 px-5 py-3 bg-brand-blue text-brand-black font-bold rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95"
+              >
+                <Plus size={20} />
+                Nuovo Cliente
+              </button>
+            )}
           </div>
         </div>
 

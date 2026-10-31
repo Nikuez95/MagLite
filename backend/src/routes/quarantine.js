@@ -64,7 +64,7 @@ async function quarantineRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: il tuo ruolo non possiede il permesso di bloccare merce in quarantena.' });
     }
 
-    const { pallet_ids, pallet_code, product_id, batch, reason, notes } = request.body;
+    const { pallet_ids, pallet_id, pallet_code, pallet_codes, product_id, batch, reason, notes } = request.body || {};
     const cleanReason = String(reason || '').trim();
     const cleanNotes = notes && String(notes).trim() !== '' ? String(notes).trim() : null;
 
@@ -77,23 +77,38 @@ async function quarantineRoutes(fastify, options) {
       await connection.beginTransaction();
 
       let targetPallets = [];
+
+      const effectiveIds = [];
       if (Array.isArray(pallet_ids) && pallet_ids.length > 0) {
+        effectiveIds.push(...pallet_ids);
+      } else if (pallet_id !== undefined && pallet_id !== null && pallet_id !== '') {
+        effectiveIds.push(pallet_id);
+      }
+
+      const effectiveCodes = [];
+      if (Array.isArray(pallet_codes) && pallet_codes.length > 0) {
+        effectiveCodes.push(...pallet_codes);
+      } else if (pallet_code && String(pallet_code).trim() !== '') {
+        effectiveCodes.push(String(pallet_code).trim());
+      }
+
+      if (effectiveIds.length > 0) {
         const [rows] = await connection.query(`
           SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
           FROM PALLETS p
           JOIN PRODUCTS pr ON p.product_id = pr.id
           JOIN CUSTOMERS c ON p.customer_id = c.id
-          WHERE p.id IN (?) AND p.status != 'SHIPPED'
-        `, [pallet_ids]);
+          WHERE p.id IN (?) AND (p.status IS NULL OR p.status != 'SHIPPED')
+        `, [effectiveIds]);
         targetPallets = rows;
-      } else if (pallet_code) {
+      } else if (effectiveCodes.length > 0) {
         const [rows] = await connection.query(`
           SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
           FROM PALLETS p
           JOIN PRODUCTS pr ON p.product_id = pr.id
           JOIN CUSTOMERS c ON p.customer_id = c.id
-          WHERE p.pallet_code = ? AND p.status != 'SHIPPED'
-        `, [pallet_code]);
+          WHERE p.pallet_code IN (?) AND (p.status IS NULL OR p.status != 'SHIPPED')
+        `, [effectiveCodes]);
         targetPallets = rows;
       } else if (product_id) {
         let q = `
@@ -101,7 +116,7 @@ async function quarantineRoutes(fastify, options) {
           FROM PALLETS p
           JOIN PRODUCTS pr ON p.product_id = pr.id
           JOIN CUSTOMERS c ON p.customer_id = c.id
-          WHERE p.product_id = ? AND p.status != 'SHIPPED' AND p.quantity > 0
+          WHERE p.product_id = ? AND (p.status IS NULL OR p.status != 'SHIPPED') AND p.quantity > 0
         `;
         const qParams = [product_id];
         if (batch && batch !== 'TUTTI') {
@@ -214,9 +229,9 @@ async function quarantineRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: il tuo ruolo non possiede il permesso di sbloccare merce dalla quarantena.' });
     }
 
-    const { pallet_ids, pallet_code, log_id, unblock_reason, unblock_notes } = request.body;
-    const cleanUnblockReason = String(unblock_reason || '').trim();
-    const cleanUnblockNotes = unblock_notes && String(unblock_notes).trim() !== '' ? String(unblock_notes).trim() : null;
+    const { pallet_ids, pallet_id, pallet_code, pallet_codes, log_id, unblock_reason, reason, unblock_notes, notes } = request.body || {};
+    const cleanUnblockReason = String(unblock_reason || reason || '').trim();
+    const cleanUnblockNotes = (unblock_notes || notes) && String(unblock_notes || notes).trim() !== '' ? String(unblock_notes || notes).trim() : null;
 
     if (!cleanUnblockReason) {
       return reply.code(400).send({ error: 'Il motivo di sblocco dalla quarantena è obbligatorio.' });
@@ -227,6 +242,21 @@ async function quarantineRoutes(fastify, options) {
       await connection.beginTransaction();
 
       let targetPallets = [];
+
+      const effectiveIds = [];
+      if (Array.isArray(pallet_ids) && pallet_ids.length > 0) {
+        effectiveIds.push(...pallet_ids);
+      } else if (pallet_id !== undefined && pallet_id !== null && pallet_id !== '') {
+        effectiveIds.push(pallet_id);
+      }
+
+      const effectiveCodes = [];
+      if (Array.isArray(pallet_codes) && pallet_codes.length > 0) {
+        effectiveCodes.push(...pallet_codes);
+      } else if (pallet_code && String(pallet_code).trim() !== '') {
+        effectiveCodes.push(String(pallet_code).trim());
+      }
+
       if (log_id) {
         const [[logRow]] = await connection.query('SELECT * FROM QUARANTINE_LOGS WHERE id = ?', [log_id]);
         if (logRow && logRow.pallet_id) {
@@ -246,21 +276,21 @@ async function quarantineRoutes(fastify, options) {
           `, [logRow.pallet_code]);
           targetPallets = rows;
         }
-      } else if (Array.isArray(pallet_ids) && pallet_ids.length > 0) {
+      } else if (effectiveIds.length > 0) {
         const [rows] = await connection.query(`
           SELECT p.*, c.business_name as customer_name
           FROM PALLETS p
           JOIN CUSTOMERS c ON p.customer_id = c.id
           WHERE p.id IN (?)
-        `, [pallet_ids]);
+        `, [effectiveIds]);
         targetPallets = rows;
-      } else if (pallet_code) {
+      } else if (effectiveCodes.length > 0) {
         const [rows] = await connection.query(`
           SELECT p.*, c.business_name as customer_name
           FROM PALLETS p
           JOIN CUSTOMERS c ON p.customer_id = c.id
-          WHERE p.pallet_code = ?
-        `, [pallet_code]);
+          WHERE p.pallet_code IN (?)
+        `, [effectiveCodes]);
         targetPallets = rows;
       }
 

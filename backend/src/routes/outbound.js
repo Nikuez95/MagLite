@@ -809,6 +809,9 @@ async function outboundRoutes(fastify, options) {
 
   // GET /api/outbound/zebra/:code - Fetch order details for Zebra
   fastify.get('/zebra/:code', async (request, reply) => {
+    if (!hasPermission(request.user, 'access_zebra') || !hasPermission(request.user, 'outbound_pick')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di effettuare il Picking su Zebra.' });
+    }
     const { code } = request.params;
     try {
       const [orders] = await db.query(`
@@ -879,6 +882,9 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound/zebra/pick - Zebra confirms a pick step
   fastify.post('/zebra/pick', async (request, reply) => {
+    if (!hasPermission(request.user, 'access_zebra') || !hasPermission(request.user, 'outbound_pick')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di effettuare il Picking su Zebra.' });
+    }
     const { order_id, item_id, pin, pallet_code, qty_picked } = request.body;
     try {
       // Verifica item
@@ -1029,6 +1035,9 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound/:code/confirm - Finalize order from PC
   fastify.post('/:code/confirm', async (request, reply) => {
+    if (!hasPermission(request.user, 'outbound_pick') && !hasPermission(request.user, 'outbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di confermare l\'uscita della spedizione.' });
+    }
     const { code } = request.params;
     const connection = await db.getConnection();
     
@@ -1243,6 +1252,9 @@ async function outboundRoutes(fastify, options) {
 
   // POST /api/outbound/:id/return - Registra reso spedizione e rientro merce
   fastify.post('/:id/return', async (request, reply) => {
+    if (!hasPermission(request.user, 'outbound_return')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di registrare resi di merce spedita.' });
+    }
     const { id } = request.params;
     const { reason, notes } = request.body || {};
 

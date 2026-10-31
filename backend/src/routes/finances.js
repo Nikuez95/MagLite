@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 
 async function financesRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -6,7 +7,15 @@ async function financesRoutes(fastify, options) {
   // --- INVOICES (PROFORME SALVATE) ---
   
   fastify.post('/invoices', async (request, reply) => {
+    if (!hasPermission(request.user, 'finance_manage') && !hasPermission(request.user, 'view_billing')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di emettere o salvare proforme.' });
+    }
+
     const { customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data } = request.body;
+    if (customer_id && !canAccessCustomer(request.user, customer_id)) {
+      return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+    }
+
     try {
       await db.query(`
         INSERT INTO invoices (customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data)
@@ -31,6 +40,10 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.get('/invoices', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_finances') && !hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare le proforme.' });
+    }
+
     try {
       const [rows] = await db.query(`
         SELECT i.*, c.business_name, c.address, c.vat_number, c.unique_id
@@ -38,7 +51,7 @@ async function financesRoutes(fastify, options) {
         JOIN CUSTOMERS c ON i.customer_id = c.id
         ORDER BY i.period_year DESC, i.period_month DESC, i.created_at DESC
       `);
-      return rows;
+      return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore fetch fatture' });
@@ -46,6 +59,10 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.delete('/invoices/:id', async (request, reply) => {
+    if (!hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di eliminare proforme.' });
+    }
+
     try {
       await db.query('DELETE FROM invoices WHERE id = ?', [request.params.id]);
       await db.query(
@@ -60,9 +77,12 @@ async function financesRoutes(fastify, options) {
   });
 
   // --- EXPENSES (USCITE) ---
-
   
   fastify.put('/invoices/:id/payment', async (request, reply) => {
+    if (!hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare lo stato pagamento.' });
+    }
+
     try {
       const [rows] = await db.query('SELECT is_paid FROM invoices WHERE id = ?', [request.params.id]);
       if (rows.length === 0) return reply.code(404).send({ error: 'Fattura non trovata' });
@@ -83,6 +103,10 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.get('/expenses', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_finances') && !hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare le uscite.' });
+    }
+
     try {
       const [rows] = await db.query('SELECT * FROM expenses ORDER BY expense_date DESC');
       return rows;
@@ -93,6 +117,10 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.post('/expenses', async (request, reply) => {
+    if (!hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di registrare uscite.' });
+    }
+
     const { description, amount, expense_date, category } = request.body;
     try {
       await db.query(`
@@ -113,6 +141,10 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.delete('/expenses/:id', async (request, reply) => {
+    if (!hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di eliminare uscite.' });
+    }
+
     try {
       await db.query('DELETE FROM expenses WHERE id = ?', [request.params.id]);
       
@@ -131,6 +163,10 @@ async function financesRoutes(fastify, options) {
   // --- ANALYTICS & FORECAST ---
 
   fastify.get('/analytics', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_finances') && !hasPermission(request.user, 'finance_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare la Dashboard Finanza.' });
+    }
+
     try {
       const [incomes] = await db.query(`
         SELECT period_year as year, period_month as month, 
@@ -175,7 +211,7 @@ async function financesRoutes(fastify, options) {
       `);
 
       const customersMap = {};
-      invoices.forEach(inv => {
+      invoices.filter(inv => canAccessCustomer(request.user, inv.customer_id)).forEach(inv => {
         if (!customersMap[inv.customer_id]) {
           customersMap[inv.customer_id] = {
             id: inv.customer_id,

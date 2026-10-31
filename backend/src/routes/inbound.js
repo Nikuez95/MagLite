@@ -1,20 +1,28 @@
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   // 1. Create Inbound DDT
   fastify.post('/ddt', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare DDT o aggiungere merce in ingresso.' });
+    }
+
     const { cart } = request.body;
     if (!cart || cart.length === 0) return reply.code(400).send({ error: 'Carrello vuoto' });
+
+    const customer_id = cart[0].customer_id;
+    if (!canAccessCustomer(request.user, customer_id)) {
+      return reply.code(403).send({ error: 'Accesso negato: questo cliente è limitato per il tuo profilo.' });
+    }
 
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
 
-      const customer_id = cart[0].customer_id;
-      
       // Generate DDT Number
       const [rows] = await connection.query('SELECT COUNT(*) as count FROM INBOUND_DDTS WHERE YEAR(created_at) = YEAR(CURRENT_DATE)');
       const nextId = rows[0].count + 1;
@@ -56,8 +64,12 @@ async function inboundRoutes(fastify, options) {
 
   // 2. Get all Inbound DDTs (with items summary & discrepancy info)
   fastify.get('/ddt', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_documents') && !hasPermission(request.user, 'view_inbound') && !hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare i DDT Entrata.' });
+    }
+
     try {
-      const [rows] = await db.query(`
+      const [allRows] = await db.query(`
         SELECT d.*, 
                c.business_name, 
                c.business_name AS customer_name,
@@ -69,6 +81,8 @@ async function inboundRoutes(fastify, options) {
         LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
         ORDER BY d.created_at DESC
       `);
+
+      const rows = allRows.filter(r => canAccessCustomer(request.user, r.customer_id));
 
       if (rows.length > 0) {
         const ddtIds = rows.map(r => r.id);
@@ -129,6 +143,10 @@ async function inboundRoutes(fastify, options) {
 
   // 2b. Get Discrepancies History (Storico Discrepanze & Motivi Accettazione/Rifiuto)
   fastify.get('/discrepancies/history', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_documents') && !hasPermission(request.user, 'view_inbound') && !hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare i DDT Entrata.' });
+    }
+
     try {
       const [rows] = await db.query(`
         SELECT l.*, 
@@ -147,18 +165,20 @@ async function inboundRoutes(fastify, options) {
         LIMIT 500
       `);
 
-      const formatted = rows.map(r => {
-        let parsedSnap = [];
-        try {
-          parsedSnap = r.items_snapshot ? (typeof r.items_snapshot === 'string' ? JSON.parse(r.items_snapshot) : r.items_snapshot) : [];
-        } catch (e) {
-          parsedSnap = [];
-        }
-        return {
-          ...r,
-          items_snapshot: parsedSnap
-        };
-      });
+      const formatted = rows
+        .filter(r => canAccessCustomer(request.user, r.customer_id))
+        .map(r => {
+          let parsedSnap = [];
+          try {
+            parsedSnap = r.items_snapshot ? (typeof r.items_snapshot === 'string' ? JSON.parse(r.items_snapshot) : r.items_snapshot) : [];
+          } catch (e) {
+            parsedSnap = [];
+          }
+          return {
+            ...r,
+            items_snapshot: parsedSnap
+          };
+        });
 
       return formatted;
     } catch (err) {
@@ -169,6 +189,10 @@ async function inboundRoutes(fastify, options) {
 
   // 3. Get Single DDT Details (for Zebra & Desktop)
   fastify.get('/ddt/:identifier', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_documents') && !hasPermission(request.user, 'view_inbound') && !hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di accedere ai DDT Entrata.' });
+    }
+
     const { identifier } = request.params;
     try {
       const isId = !isNaN(identifier);
@@ -179,6 +203,10 @@ async function inboundRoutes(fastify, options) {
       
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
       const ddt = ddts[0];
+
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        return reply.code(403).send({ error: 'Accesso negato: il cliente di questo DDT è limitato per il tuo profilo.' });
+      }
 
       const [items] = await db.query(`
         SELECT i.*, 
@@ -200,6 +228,10 @@ async function inboundRoutes(fastify, options) {
 
   // 4. Zebra: Generate Pallet for DDT Item
   fastify.post('/ddt/:id/scan', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di effettuare spunta in entrata.' });
+    }
+
     const { item_id, quantity, warehouse, location, expiration_date } = request.body;
     const ddt_id = request.params.id;
     const connection = await db.getConnection();
@@ -213,6 +245,10 @@ async function inboundRoutes(fastify, options) {
 
       const [ddts] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddt_id]);
       if (ddts.length === 0) throw new Error('DDT non trovato');
+      if (!canAccessCustomer(request.user, ddts[0].customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+      }
       if (ddts[0].status === 'PENDING') {
         await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
       }
@@ -249,7 +285,7 @@ async function inboundRoutes(fastify, options) {
         palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
       }
 
-      // Insert Pallet (Nota: finché il DDT non è in stato COMPLETED, la paletta non viene conteggiata nell'inventario attivo)
+      // Insert Pallet
       await connection.query(`
         INSERT INTO PALLETS 
         (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id)
@@ -282,6 +318,10 @@ async function inboundRoutes(fastify, options) {
 
   // 5. Complete DDT (from Zebra)
   fastify.post('/ddt/:id/complete', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di completare la spunta DDT.' });
+    }
+
     const ddtId = request.params.id;
     const connection = await db.getConnection();
     try {
@@ -291,6 +331,10 @@ async function inboundRoutes(fastify, options) {
       if (!ddt) {
         await connection.rollback();
         return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
       }
 
       const [items] = await connection.query(`
@@ -378,8 +422,12 @@ async function inboundRoutes(fastify, options) {
     }
   });
 
-  // 5b. Accept Discrepancy (from Desktop Backoffice) -> Merce entra in inventario, DDT diventa COMPLETED, sblocca stampa Barcode
+  // 5b. Accept Discrepancy (from Desktop Backoffice)
   fastify.post('/ddt/:id/discrepancy/accept', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di gestire e confermare discrepanze DDT.' });
+    }
+
     const ddtId = request.params.id;
     const { reason } = request.body || {};
 
@@ -398,6 +446,10 @@ async function inboundRoutes(fastify, options) {
       if (!ddt) {
         await connection.rollback();
         return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
       }
 
       const [items] = await connection.query(`
@@ -472,8 +524,12 @@ async function inboundRoutes(fastify, options) {
     }
   });
 
-  // 5c. Reject Discrepancy (from Desktop Backoffice) -> Azzera spunta e rimanda a Zebra per ri-fare la spunta
+  // 5c. Reject Discrepancy (from Desktop Backoffice)
   fastify.post('/ddt/:id/discrepancy/reject', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di rifiutare discrepanze DDT.' });
+    }
+
     const ddtId = request.params.id;
     const { reason } = request.body || {};
     const cleanReason = reason && String(reason).trim() ? String(reason).trim() : 'Richiesta nuova spunta da Backoffice';
@@ -487,6 +543,10 @@ async function inboundRoutes(fastify, options) {
       if (!ddt) {
         await connection.rollback();
         return reply.code(404).send({ error: 'DDT non trovato' });
+      }
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
       }
 
       const [items] = await connection.query(`
@@ -515,10 +575,7 @@ async function inboundRoutes(fastify, options) {
         };
       });
 
-      // Elimina le palette provvisorie create durante la spunta rifiutata
       await connection.query('DELETE FROM PALLETS WHERE inbound_ddt_id = ?', [ddtId]);
-
-      // Azzera le quantità effettive sulle righe del DDT affinché l'operatore Zebra possa rifare la spunta da zero
       await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = 0 WHERE inbound_ddt_id = ?', [ddtId]);
 
       const rejectNote = `Discrepanza RIFIUTATA da ${username} (${cleanReason}) — Da rispuntare su Zebra`;
@@ -570,6 +627,10 @@ async function inboundRoutes(fastify, options) {
 
   // 6. Get DDT PDF
   fastify.get('/ddt/:identifier/pdf', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_documents') && !hasPermission(request.user, 'view_inbound') && !hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare i PDF dei DDT.' });
+    }
+
     const { identifier } = request.params;
     try {
       const PDFDocument = require('pdfkit');
@@ -582,6 +643,10 @@ async function inboundRoutes(fastify, options) {
       
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
       const ddt = ddts[0];
+
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+      }
 
       const [items] = await db.query(`
         SELECT i.*, 
@@ -667,12 +732,19 @@ async function inboundRoutes(fastify, options) {
 
   // 7. Get Barcodes for generated pallets (Solo quando COMPLETED)
   fastify.get('/ddt/:identifier/barcodes', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_documents') && !hasPermission(request.user, 'view_inbound') && !hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di stampare i barcode del DDT.' });
+    }
+
     const { identifier } = request.params;
     try {
       const isId = !isNaN(identifier);
       const queryStr = isId ? 'SELECT d.* FROM INBOUND_DDTS d WHERE d.id = ?' : 'SELECT d.* FROM INBOUND_DDTS d WHERE d.ddt_number = ?';
       const [ddts] = await db.query(queryStr, [identifier]);
       if (ddts.length === 0) return reply.code(404).send({ error: 'DDT non trovato' });
+      if (!canAccessCustomer(request.user, ddts[0].customer_id)) {
+        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+      }
       if (ddts[0].status !== 'COMPLETED') {
         return reply.code(400).send({ error: 'Impossibile stampare i barcode finché il DDT non è Completato (o la discrepanza non è stata accettata).' });
       }

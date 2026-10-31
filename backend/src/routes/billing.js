@@ -1,7 +1,20 @@
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 
 async function billingRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
+  fastify.addHook('preHandler', async (request, reply) => {
+    const isRead = request.method === 'GET' || request.url.includes('/calculate');
+    if (isRead) {
+      if (!hasPermission(request.user, 'view_billing') && !hasPermission(request.user, 'finance_manage')) {
+        return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di accedere al modulo Amministrazione/Fatturazione.' });
+      }
+    } else {
+      if (!hasPermission(request.user, 'finance_manage')) {
+        return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare regole o listini di fatturazione.' });
+      }
+    }
+  });
 
   // GET Rules
   fastify.get('/rules', async (request, reply) => {

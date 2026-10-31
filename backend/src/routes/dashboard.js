@@ -1,9 +1,13 @@
+const { hasPermission } = require('../utils/permissions');
 const db = require('../config/db');
 
 async function dashboardRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   fastify.get('/stats', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_dashboard')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare la Dashboard.' });
+    }
     try {
       // Calcolo Saturazione Posizioni
       const [[{ total }]] = await db.query('SELECT COUNT(*) as total FROM LOCATIONS');

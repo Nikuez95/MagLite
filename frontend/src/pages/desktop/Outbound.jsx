@@ -1,4 +1,5 @@
 import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
+import { hasPerm, canTouchCustomer } from "../../utils/permissions.js";
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -272,6 +273,10 @@ const Outbound = () => {
 
   const token = localStorage.getItem('maglite_token');
   const userRole = token ? jwtDecode(token).role : '';
+  const canCreateOutbound = hasPerm('outbound_create');
+  const canPickOutbound = hasPerm(['outbound_pick', 'outbound_create']);
+  const canReturnOutbound = hasPerm('outbound_return');
+  const canDeleteOutbound = hasPerm('outbound_delete');
 
   const fetchOrders = async () => {
     try {
@@ -757,7 +762,7 @@ const Outbound = () => {
           >
             <History size={18} className="text-brand-blue" /> Storico Articoli Usciti
           </button>
-          <button
+          {canCreateOutbound && (<button
             onClick={() => {
               setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
               setCart([]);
@@ -768,7 +773,7 @@ const Outbound = () => {
             className="bg-brand-blue hover:bg-sky-400 text-brand-black font-black py-2.5 px-6 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)] text-sm"
           >
             <Plus size={18} /> Nuova Spedizione
-          </button>
+          </button>)}
         </div>
       </div>
 
@@ -1070,7 +1075,7 @@ const Outbound = () => {
                       </div>
                     )}
 
-                    {o.status === 'SHIPPED' && (
+                    {o.status === 'SHIPPED' && canReturnOutbound && canTouchCustomer(o.customer_id) && (
                       <div
                         onClick={() => setTimelineModal(o)}
                         className="flex flex-col gap-1 items-start cursor-pointer"
@@ -1113,25 +1118,25 @@ const Outbound = () => {
                           <span>Reso Merce</span>
                         </button>
                       )}
-                      {(userRole === 'admin' || userRole === 'developer' || userRole === 'backoffice') && o.status !== 'SHIPPED' && (
+                      {o.status !== 'SHIPPED' && canTouchCustomer(o.customer_id) && (
                         <>
-                          <button 
+                          {canCreateOutbound && (<button 
                             onClick={() => editOrder(o.id)}
                             className="bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-brand-black p-2 rounded-xl transition-colors"
                             title="Modifica Spedizione"
                           >
                             <Edit3 size={17} />
-                          </button>
-                          <button 
+                          </button>)}
+                          {canDeleteOutbound && (<button 
                             onClick={() => setDeleteConfirm({show: true, id: o.id, code: o.order_code, expected: Math.floor(1000 + Math.random() * 9000).toString(), input: ''})}
                             className="bg-rose-500/15 hover:bg-rose-500 text-rose-400 hover:text-white p-2 rounded-xl transition-colors"
                             title="Elimina Spedizione"
                           >
                             <Trash2 size={17} />
-                          </button>
+                          </button>)}
                         </>
                       )}
-                      {o.status !== 'SHIPPED' && (
+                      {o.status !== 'SHIPPED' && canPickOutbound && canTouchCustomer(o.customer_id) && (
                         <button 
                           onClick={() => confirmOrder(o.order_code)}
                           className={`px-3 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 ${

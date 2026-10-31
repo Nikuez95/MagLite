@@ -1,4 +1,5 @@
 import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
+import { hasPerm, canTouchCustomer } from "../../utils/permissions.js";
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -71,6 +72,7 @@ const Inbound = () => {
   });
 
   const getToken = () => localStorage.getItem('maglite_token');
+  const canCreateInbound = hasPerm('inbound_create');
 
   const [freeLocations, setFreeLocations] = useState([]);
   const [mappedLocations, setMappedLocations] = useState([]);
@@ -85,7 +87,7 @@ const Inbound = () => {
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/products/flags`, { headers }).catch(() => ({ data: [] }))
       ]);
-      setCustomers(custRes.data.map(c => ({ value: c.id, label: c.business_name, raw: c })));
+      setCustomers(custRes.data.filter(c => canTouchCustomer(c.id)).map(c => ({ value: c.id, label: c.business_name, raw: c })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
       setFreeLocations(freeRes.data.map(fl => ({ value: fl.name, label: fl.name })));
       setMappedLocations(locRes.data || []);
@@ -793,6 +795,7 @@ const Inbound = () => {
 
   const handleAddToCart = async (e) => {
     e.preventDefault();
+    if (!canCreateInbound) return appAlert('Non disponi dei permessi per registrare merce in entrata.');
     if (!formData.customer_id || !formData.product_id || !formData.quantity || formData.num_pallets < 1) {
       appAlert('Compila tutti i campi obbligatori');
       return;
@@ -955,6 +958,7 @@ const Inbound = () => {
   };
 
   const handleGenerate = async () => {
+    if (!canCreateInbound) return appAlert('Permesso Operatività IN richiesto per generare DDT o etichette.');
     if (cart.length === 0) return;
 
     const invalidRow = cart.find(item => !item.quantity || isNaN(parseFloat(item.quantity)) || parseFloat(item.quantity) <= 0);
