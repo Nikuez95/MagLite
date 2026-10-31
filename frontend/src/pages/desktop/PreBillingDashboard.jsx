@@ -23,7 +23,7 @@ const PreBillingDashboard = () => {
 
   // Opzioni di calcolo e stampa PDF
   const [includeDeposit, setIncludeDeposit] = useState(true);
-  const [includeStorage, setIncludeStorage] = useState(true);
+  const [includeStorage, setIncludeStorage] = useState(false);
   const [includeHistorical, setIncludeHistorical] = useState(true);
   const [includeNotesInPdf, setIncludeNotesInPdf] = useState(true);
   const [vatRate, setVatRate] = useState(22);
@@ -115,7 +115,8 @@ const PreBillingDashboard = () => {
         year,
         includeHistorical,
         includeDeposit,
-        includeStorage
+        includeStorage,
+        storageMode: includeDeposit ? 'DEPOSITO_FINE_MESE' : (includeStorage ? 'QUINDICINA' : 'NESSUNO')
       }, { headers: { Authorization: `Bearer ${getToken()}` } });
 
       setReportData(res.data);
@@ -641,16 +642,20 @@ const PreBillingDashboard = () => {
                 type="checkbox"
                 id="chkDeposit"
                 checked={includeDeposit}
-                onChange={e => setIncludeDeposit(e.target.checked)}
+                onChange={e => {
+                  const val = e.target.checked;
+                  setIncludeDeposit(val);
+                  if (val) setIncludeStorage(false);
+                }}
                 className="mt-0.5 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500"
               />
               <div>
                 <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
                   <Boxes size={14} className="text-emerald-400" />
-                  Pre-Fattura per Deposito
+                  Pre-Fattura per Deposito (Fine Mese)
                 </div>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Fattura le palette rimaste in deposito a listino cliente/frammentazione.
+                  Fattura le palette rimaste in deposito a listino. Disattiva la sosta quindicina per evitare doppio addebito.
                 </p>
               </div>
             </label>
@@ -667,7 +672,11 @@ const PreBillingDashboard = () => {
                 type="checkbox"
                 id="chkStorage"
                 checked={includeStorage}
-                onChange={e => setIncludeStorage(e.target.checked)}
+                onChange={e => {
+                  const val = e.target.checked;
+                  setIncludeStorage(val);
+                  if (val) setIncludeDeposit(false);
+                }}
                 className="mt-0.5 rounded border-slate-700 bg-slate-800 text-brand-blue focus:ring-brand-blue"
               />
               <div>
@@ -676,7 +685,7 @@ const PreBillingDashboard = () => {
                   Includi Soste Quindicina
                 </div>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Calcola le regole di sosta mensile (<span className="font-mono">SOSTA_15</span> / <span className="font-mono">&gt;15</span>).
+                  Calcola le regole di sosta a scaglioni (<span className="font-mono">SOSTA_15</span> / <span className="font-mono">&gt;15</span>).
                 </p>
               </div>
             </label>

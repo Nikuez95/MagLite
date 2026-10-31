@@ -27,7 +27,7 @@ async function productRoutes(fastify, options) {
         JOIN CUSTOMERS c ON p.customer_id = c.id 
         ORDER BY p.name ASC
       `);
-      return rows;
+      return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante il recupero dei prodotti' });

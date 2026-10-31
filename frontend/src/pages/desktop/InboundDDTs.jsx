@@ -3,7 +3,7 @@ import axios from 'axios';
 import {
   Package, Search, Printer, CheckCircle, Clock, FileText, AlertTriangle,
   XCircle, Eye, ChevronDown, ChevronUp, History, User, Calendar, ShieldCheck,
-  RotateCcw, Check, X, Layers
+  RotateCcw, Check, X, Layers, Trash2
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { appAlert } from '../../utils/alerts';
@@ -36,8 +36,18 @@ const InboundDDTs = () => {
     isSubmitting: false
   });
 
+  // Modale Eliminazione DDT con codice randomico di sicurezza
+  const [deleteModal, setDeleteModal] = useState({
+    show: false,
+    ddt: null,
+    verificationCode: '',
+    userInputCode: '',
+    isDeleting: false
+  });
+
   const getToken = () => localStorage.getItem('maglite_token');
   const canManageDiscrepancy = hasPerm('inbound_create');
+  const canDeleteDdt = hasPerm('delete_inbound_ddt');
 
   const fetchAllData = async () => {
     try {
@@ -189,6 +199,39 @@ const InboundDDTs = () => {
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore durante il rifiuto della discrepanza');
       setDiscrepancyModal(prev => ({ ...prev, isSubmitting: false }));
+    }
+  };
+
+  const handleOpenDeleteModal = (ddt) => {
+    // Genera un codice randomico alfanumerico di 6 caratteri maiuscoli (es. "7X4KP2")
+    const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setDeleteModal({
+      show: true,
+      ddt,
+      verificationCode: randomCode,
+      userInputCode: '',
+      isDeleting: false
+    });
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteModal.ddt || deleteModal.userInputCode.trim() !== deleteModal.verificationCode || deleteModal.isDeleting) {
+      return;
+    }
+
+    setDeleteModal(prev => ({ ...prev, isDeleting: true }));
+    try {
+      const res = await axios.delete(
+        `http://${window.location.hostname}:3000/api/inbound/ddt/${deleteModal.ddt.id}`,
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+      setDeleteModal({ show: false, ddt: null, verificationCode: '', userInputCode: '', isDeleting: false });
+      await fetchAllData();
+      appAlert(res.data?.message || 'DDT Entrata eliminato con successo', 'Eliminazione Completata', 'success');
+    } catch (err) {
+      const msg = err.response?.data?.error || 'Errore durante l\'eliminazione del DDT';
+      appAlert(msg, 'Errore Eliminazione', 'error');
+      setDeleteModal(prev => ({ ...prev, isDeleting: false }));
     }
   };
 
@@ -569,6 +612,18 @@ const InboundDDTs = () => {
                                 title="Stampa Barcode Palette Generate"
                               >
                                 <Printer size={16} /> Barcode
+                              </button>
+                            )}
+
+                            {/* Eliminazione Protetta con Permessi e Codice Randomico */}
+                            {canDeleteDdt && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenDeleteModal(d)}
+                                className="p-2 bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 hover:border-rose-500/60 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold shadow-sm"
+                                title="Elimina definitivamente DDT Entrata"
+                              >
+                                <Trash2 size={16} />
                               </button>
                             )}
                           </div>
@@ -968,6 +1023,104 @@ const InboundDDTs = () => {
               >
                 <CheckCircle size={18} />
                 Accetta Discrepanza e Carica in Inventario
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modale Eliminazione Sicura DDT Entrata con Codice Randomico */}
+      {deleteModal.show && deleteModal.ddt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className="bg-slate-900 border border-rose-500/40 rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-[0_0_50px_rgba(244,63,94,0.25)] flex flex-col gap-5">
+            {/* Header Modale */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0">
+                  <AlertTriangle size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-white">Elimina DDT Entrata</h3>
+                  <p className="text-slate-400 text-xs mt-0.5">Procedura protetta di eliminazione irreversibile</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteModal({ show: false, ddt: null, verificationCode: '', userInputCode: '', isDeleting: false })}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Riepilogo DDT da eliminare */}
+            <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 text-xs space-y-2">
+              <div className="flex justify-between items-center py-1 border-b border-slate-800/60">
+                <span className="text-slate-400">Numero DDT:</span>
+                <span className="font-mono font-bold text-white text-sm">{deleteModal.ddt.ddt_number}</span>
+              </div>
+              <div className="flex justify-between items-center py-1 border-b border-slate-800/60">
+                <span className="text-slate-400">Cliente:</span>
+                <span className="font-bold text-brand-blue">{deleteModal.ddt.customer_name || deleteModal.ddt.business_name}</span>
+              </div>
+              <div className="flex justify-between items-center py-1 border-b border-slate-800/60">
+                <span className="text-slate-400">Stato Spunta:</span>
+                <span className="font-bold text-slate-200">{deleteModal.ddt.status}</span>
+              </div>
+              <div className="flex justify-between items-center py-1">
+                <span className="text-slate-400">Palette create in magazzino:</span>
+                <span className={`font-mono font-bold ${Number(deleteModal.ddt.pallets_count) > 0 ? 'text-rose-400' : 'text-slate-300'}`}>
+                  {deleteModal.ddt.pallets_count || 0} palette
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-3.5 text-xs text-rose-200/90 leading-relaxed">
+              <strong>Attenzione:</strong> L&apos;eliminazione cancellerà definitivamente il documento di trasporto, le righe di spunta associate e rimuoverà dall&apos;inventario tutte le palette caricate con questo DDT.
+            </div>
+
+            {/* Verifica Codice Randomico */}
+            <div className="space-y-2.5">
+              <label className="block text-xs font-black uppercase tracking-wider text-slate-300">
+                Verifica di sicurezza anti-eliminazione:
+              </label>
+              <p className="text-[11px] text-slate-400">
+                Per confermare, digita esattamente il seguente codice generato nel campo sottostante:
+              </p>
+              
+              <div className="flex items-center justify-center gap-2 py-3 px-4 bg-slate-950 border border-rose-500/40 rounded-2xl">
+                <span className="text-2xl font-mono font-black tracking-widest text-rose-400 select-all">
+                  {deleteModal.verificationCode}
+                </span>
+              </div>
+
+              <input
+                type="text"
+                autoFocus
+                value={deleteModal.userInputCode}
+                onChange={e => setDeleteModal(prev => ({ ...prev, userInputCode: e.target.value.toUpperCase() }))}
+                placeholder={`Scrivi "${deleteModal.verificationCode}" per sbloccare`}
+                className="w-full bg-slate-950 border border-slate-700 focus:border-rose-500 rounded-2xl p-3.5 text-center font-mono text-base font-black tracking-widest text-white placeholder-slate-600 focus:outline-none uppercase"
+              />
+            </div>
+
+            {/* Pulsanti Azione */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeleteModal({ show: false, ddt: null, verificationCode: '', userInputCode: '', isDeleting: false })}
+                className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                disabled={deleteModal.userInputCode.trim() !== deleteModal.verificationCode || deleteModal.isDeleting}
+                onClick={handleConfirmDelete}
+                className="px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs transition-all flex items-center gap-2 shadow-[0_0_20px_rgba(225,29,72,0.35)] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Trash2 size={16} />
+                {deleteModal.isDeleting ? 'Eliminazione in corso...' : 'Elimina Definitivamente'}
               </button>
             </div>
           </div>

@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock } from 'lucide-react';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import InboundZebra from './InboundZebra';
 import OutboundZebra from './OutboundZebra';
 import Handling from './Handling';
+import ZebraCheckinWizard from './ZebraCheckinWizard';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
 
 const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabled = false, onClick }) => {
@@ -25,8 +26,27 @@ const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabl
       border: 'border-slate-800 hover:border-emerald-400 active:border-emerald-400',
       iconBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
       badgeBg: 'bg-emerald-400 text-brand-black'
+    },
+    cyan: {
+      border: 'border-slate-800 hover:border-cyan-400 active:border-cyan-400',
+      iconBg: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
+      badgeBg: 'bg-cyan-400 text-brand-black'
+    },
+    purple: {
+      border: 'border-slate-800 hover:border-purple-400 active:border-purple-400',
+      iconBg: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+      badgeBg: 'bg-purple-400 text-brand-black'
+    },
+    rose: {
+      border: 'border-slate-800 hover:border-rose-400 active:border-rose-400',
+      iconBg: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+      badgeBg: 'bg-rose-400 text-brand-black'
     }
-  }[accent];
+  }[accent] || {
+    border: 'border-slate-800 hover:border-brand-blue active:border-brand-blue',
+    iconBg: 'bg-brand-blue/15 text-brand-blue border-brand-blue/30',
+    badgeBg: 'bg-brand-blue text-brand-black'
+  };
 
   if (disabled) {
     return (
@@ -141,9 +161,22 @@ const TopBar = ({ user }) => {
   );
 };
 
+const iconComponentMap = {
+  Truck: Truck,
+  Box: Box,
+  ClipboardList: ClipboardList,
+  Thermometer: Thermometer,
+  ShieldAlert: ShieldAlert,
+  Sparkles: Sparkles,
+  Smartphone: Scan,
+  Download: Download
+};
+
 const Dashboard = ({ user }) => {
   const navigate = useNavigate();
   const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0 });
+  const [customForms, setCustomForms] = useState([]);
+  const [showFormsModal, setShowFormsModal] = useState(false);
 
   const canInbound = hasPerm('inbound_create', user);
   const canHandling = hasPerm('pallet_move', user);
@@ -166,6 +199,14 @@ const Dashboard = ({ user }) => {
         const inboundPending = (inRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS').length;
         const outboundActive = (outRes.data || []).filter(o => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'PARTIAL').length;
         setCounts({ inboundPending, outboundActive });
+
+        // Recupera moduli attivi per Zebra
+        try {
+          const formsRes = await axios.get(`http://${window.location.hostname}:3000/api/custom-forms?target=ZEBRA&active_only=true`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setCustomForms(formsRes.data || []);
+        } catch (fErr) {}
       } catch (e) {
         // Ignora errori di rete silenziosi sulla home
       }
@@ -204,34 +245,136 @@ const Dashboard = ({ user }) => {
           </p>
         </div>
 
-        <div className="flex flex-col gap-4">
-          <TouchCard 
-            icon={Download} 
-            label="SPUNTA ENTRATA" 
-            subtitle="Controlla DDT in arrivo e genera bancali"
-            badge={counts.inboundPending}
-            accent="blue"
-            disabled={!canInbound}
-            onClick={() => canInbound && navigate('/zebra/inbound')} 
-          />
-          <TouchCard 
-            icon={ArrowRightLeft} 
-            label="HANDLING (Spostamento)" 
-            subtitle="Stiva nuove palette, sposta o unisci sugli scaffali"
-            accent="amber"
-            disabled={!canHandling}
-            onClick={() => canHandling && navigate('/zebra/handling')} 
-          />
-          <TouchCard 
-            icon={PackageMinus} 
-            label="PICKING (Prelievo)" 
-            subtitle="Preleva bancali e scatole per le spedizioni"
-            badge={counts.outboundActive}
-            accent="emerald"
-            disabled={!canPicking}
-            onClick={() => canPicking && navigate('/zebra/outbound')} 
-          />
-        </div>
+        {/* Calcolo form predefinito di arrivo e form extra */}
+        {(() => {
+          const defaultArrivalForm = customForms.find(f => f.is_default) || customForms.find(f => f.code === 'ARRIVO_MERCE') || customForms[0];
+          const homeExtraForms = customForms.filter(f => f.display_mode === 'SHOW_ON_HOME' && f.code !== defaultArrivalForm?.code && f.code !== 'ARRIVO_MERCE');
+          const DefaultIcon = iconComponentMap[defaultArrivalForm?.icon] || Truck;
+
+          return (
+            <div className="flex flex-col gap-4">
+              {/* Form Principale Arrivo Merce */}
+              <TouchCard 
+                icon={DefaultIcon} 
+                label={defaultArrivalForm ? defaultArrivalForm.title.toUpperCase() : "ARRIVO MERCE"} 
+                subtitle={defaultArrivalForm?.description || "Check-in camion/container, sigillo e temperatura"}
+                accent={defaultArrivalForm?.color_accent || "cyan"}
+                onClick={() => navigate(defaultArrivalForm ? `/zebra/checkin/${defaultArrivalForm.code}` : '/zebra/checkin')} 
+              />
+
+              {/* Eventuali altri Moduli personalizzati impostati su SHOW_ON_HOME */}
+              {homeExtraForms.map(f => {
+                const IconComp = iconComponentMap[f.icon] || ClipboardList;
+                return (
+                  <TouchCard
+                    key={f.id}
+                    icon={IconComp}
+                    label={f.title.toUpperCase()}
+                    subtitle={f.description || "Modulo operativo guidato"}
+                    accent={f.color_accent || "blue"}
+                    onClick={() => navigate(`/zebra/checkin/${f.code}`)}
+                  />
+                );
+              })}
+
+              {/* Se ci sono più moduli disponibili, mostra TouchCard per aprirli tutti */}
+              {customForms.length > 1 && (
+                <TouchCard
+                  icon={ClipboardList}
+                  label="TUTTI I MODULI & CHECK-IN"
+                  subtitle="Sfoglia e compila tutti i moduli personalizzati attivi"
+                  badge={customForms.length}
+                  accent="purple"
+                  onClick={() => setShowFormsModal(true)}
+                />
+              )}
+
+              <TouchCard 
+                icon={Download} 
+                label="SPUNTA ENTRATA" 
+                subtitle="Controlla DDT in arrivo e genera bancali"
+                badge={counts.inboundPending}
+                accent="blue"
+                disabled={!canInbound}
+                onClick={() => canInbound && navigate('/zebra/inbound')} 
+              />
+              <TouchCard 
+                icon={ArrowRightLeft} 
+                label="HANDLING (Spostamento)" 
+                subtitle="Stiva nuove palette, sposta o unisci sugli scaffali"
+                accent="amber"
+                disabled={!canHandling}
+                onClick={() => canHandling && navigate('/zebra/handling')} 
+              />
+              <TouchCard 
+                icon={PackageMinus} 
+                label="PICKING (Prelievo)" 
+                subtitle="Preleva bancali e scatole per le spedizioni"
+                badge={counts.outboundActive}
+                accent="emerald"
+                disabled={!canPicking}
+                onClick={() => canPicking && navigate('/zebra/outbound')} 
+              />
+            </div>
+          );
+        })()}
+
+        {/* Modal Tattile a Schermo Intero per Scelta Modulo su Zebra */}
+        {showFormsModal && (
+          <div className="fixed inset-0 z-50 bg-brand-black/95 backdrop-blur-md flex flex-col p-4 animate-fade-in-up">
+            <div className="flex justify-between items-center pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <ClipboardList size={24} className="text-brand-blue" />
+                <div>
+                  <h2 className="text-lg font-black text-brand-white leading-tight">Moduli & Check-in Disponibili</h2>
+                  <p className="text-[11px] text-slate-400">Tocca un modulo per avviarne la compilazione</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowFormsModal(false)}
+                className="p-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-slate-400 active:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-4 space-y-3">
+              {customForms.map(f => {
+                const IconComp = iconComponentMap[f.icon] || ClipboardList;
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => {
+                      setShowFormsModal(false);
+                      navigate(`/zebra/checkin/${f.code}`);
+                    }}
+                    className="w-full p-4 rounded-3xl bg-slate-900/95 border-2 border-slate-800 active:border-brand-blue text-left flex items-center justify-between gap-3 shadow-xl active:scale-[0.98] transition-all"
+                  >
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <div className="w-14 h-14 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center text-brand-blue shrink-0">
+                        <IconComp size={28} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-base text-brand-white block truncate">{f.title}</span>
+                          {f.is_default && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                              Predefinito
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-slate-400 block truncate mt-0.5">{f.description || 'Modulo operativo guidato'}</span>
+                      </div>
+                    </div>
+                    <div className="w-9 h-9 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                      <ChevronRight size={18} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-6 pt-3 border-t border-slate-900 text-center">
@@ -319,6 +462,10 @@ const ZebraApp = () => {
       
       <Routes>
         <Route path="/" element={<Dashboard user={user} />} />
+        <Route path="/checkin" element={<ZebraCheckinWizard />} />
+        <Route path="/checkin/:formCode" element={<ZebraCheckinWizard />} />
+        <Route path="/form/:formCode" element={<ZebraCheckinWizard />} />
+        <Route path="/arrival" element={<ZebraCheckinWizard />} />
         <Route
           path="/inbound"
           element={hasPerm('inbound_create', user) ? <InboundZebra /> : <Navigate to="/zebra" replace />}

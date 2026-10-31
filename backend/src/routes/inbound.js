@@ -11,7 +11,7 @@ async function inboundRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare DDT o aggiungere merce in ingresso.' });
     }
 
-    const { cart } = request.body;
+    const { cart, client_ddt, checkin_id, checkin_session_code } = request.body || {};
     if (!cart || cart.length === 0) return reply.code(400).send({ error: 'Carrello vuoto' });
 
     const customer_id = cart[0].customer_id;
@@ -23,14 +23,45 @@ async function inboundRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
 
-      // Generate DDT Number
-      const [rows] = await connection.query('SELECT COUNT(*) as count FROM INBOUND_DDTS WHERE YEAR(created_at) = YEAR(CURRENT_DATE)');
-      const nextId = rows[0].count + 1;
-      const ddtNumber = `IN-${new Date().getFullYear()}-${nextId.toString().padStart(4, '0')}`;
+      let effectiveCheckinId = checkin_id || null;
+      let effectiveSessionCode = checkin_session_code || null;
+      const cleanClientDdt = client_ddt && String(client_ddt).trim() ? String(client_ddt).trim() : null;
+
+      // Se fornito numero DDT / Container ma non checkin_id, cerchiamo automaticamente nei check-in
+      if (!effectiveCheckinId && cleanClientDdt) {
+        const [matched] = await connection.query(`
+          SELECT id, session_code FROM CUSTOM_FORM_SUBMISSIONS
+          WHERE JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_ddt')) = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_container')) = ?
+             OR session_code = ?
+          ORDER BY id DESC LIMIT 1
+        `, [cleanClientDdt, cleanClientDdt, cleanClientDdt]);
+        if (matched.length > 0) {
+          effectiveCheckinId = matched[0].id;
+          effectiveSessionCode = matched[0].session_code;
+        }
+      }
+
+      // Generate DDT Number in modo incrementale sicuro senza rischio di collisioni post-eliminazione
+      const year = new Date().getFullYear();
+      const prefix = `IN-${year}-`;
+      const [seqRows] = await connection.query(
+        'SELECT ddt_number FROM INBOUND_DDTS WHERE ddt_number LIKE ?',
+        [`${prefix}%`]
+      );
+      let maxSeq = 0;
+      for (const r of seqRows) {
+        const numPart = String(r.ddt_number || '').replace(prefix, '');
+        const num = parseInt(numPart, 10);
+        if (!isNaN(num) && num > maxSeq) {
+          maxSeq = num;
+        }
+      }
+      const ddtNumber = `${prefix}${String(maxSeq + 1).padStart(4, '0')}`;
 
       const [resDdt] = await connection.query(
-        'INSERT INTO INBOUND_DDTS (ddt_number, customer_id, status) VALUES (?, ?, ?)',
-        [ddtNumber, customer_id, 'PENDING']
+        'INSERT INTO INBOUND_DDTS (ddt_number, customer_id, status, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?)',
+        [ddtNumber, customer_id, 'PENDING', cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
       );
       const ddtId = resDdt.insertId;
 
@@ -285,15 +316,16 @@ async function inboundRoutes(fastify, options) {
         palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
       }
 
-      // Insert Pallet
+      // Insert Pallet (eredita client_ddt e check-in dal DDT entrata)
       await connection.query(`
         INSERT INTO PALLETS 
-        (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
         warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
-        sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id
+        sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id,
+        ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
       ]);
       
       await connection.query(
@@ -799,6 +831,119 @@ async function inboundRoutes(fastify, options) {
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore generazione barcodes' });
+    }
+  });
+
+  // 7. DELETE /api/inbound/ddt/:id - Elimina definitivamente un DDT Entrata
+  fastify.delete('/ddt/:id', async (request, reply) => {
+    if (!hasPermission(request.user, 'delete_inbound_ddt')) {
+      return reply.code(403).send({ error: 'Accesso negato: il tuo ruolo non possiede il permesso di eliminare i DDT Entrata (Spunta).' });
+    }
+
+    const ddtId = request.params.id;
+    const connection = await db.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const [[ddt]] = await connection.query(`
+        SELECT d.*, c.business_name AS customer_name
+        FROM INBOUND_DDTS d
+        JOIN CUSTOMERS c ON d.customer_id = c.id
+        WHERE d.id = ?
+      `, [ddtId]);
+
+      if (!ddt) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'DDT Entrata non trovato' });
+      }
+
+      if (!canAccessCustomer(request.user, ddt.customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Accesso negato: il cliente associato a questo DDT è limitato per il tuo profilo.' });
+      }
+
+      // Controllo se ci sono palette già spedite derivate da questo DDT
+      const [shippedPallets] = await connection.query(
+        "SELECT id, pallet_code FROM PALLETS WHERE inbound_ddt_id = ? AND status = 'SHIPPED'",
+        [ddtId]
+      );
+      if (shippedPallets.length > 0) {
+        await connection.rollback();
+        const codes = shippedPallets.map(p => p.pallet_code).slice(0, 5).join(', ');
+        return reply.code(400).send({
+          error: `Impossibile eliminare il DDT: ${shippedPallets.length} palett${shippedPallets.length === 1 ? 'a risulta già spedita' : 'e risultano già spedite'} (${codes}${shippedPallets.length > 5 ? '...' : ''}).`
+        });
+      }
+
+      // Controllo se ci sono palette impegnate in spedizioni Outbound aperte
+      const [reservedPallets] = await connection.query(`
+        SELECT oi.id, o.order_code, p.pallet_code 
+        FROM OUTBOUND_ITEMS oi
+        JOIN OUTBOUND_ORDERS o ON oi.order_id = o.id
+        JOIN PALLETS p ON oi.pallet_id = p.id
+        WHERE p.inbound_ddt_id = ? AND o.status NOT IN ('CANCELLED', 'RETURNED')
+      `, [ddtId]);
+
+      if (reservedPallets.length > 0) {
+        await connection.rollback();
+        return reply.code(400).send({
+          error: `Impossibile eliminare il DDT: la paletta ${reservedPallets[0].pallet_code} è già impegnata nell'ordine di spedizione ${reservedPallets[0].order_code}.`
+        });
+      }
+
+      // Recupera quante palette verranno eliminate
+      const [[palCountRow]] = await connection.query(
+        'SELECT COUNT(*) as count FROM PALLETS WHERE inbound_ddt_id = ?',
+        [ddtId]
+      );
+      const deletedPalletsCount = palCountRow?.count || 0;
+
+      // 1. Rimuovi le palette generate dalla spunta da PALLETS
+      await connection.query('DELETE FROM PALLETS WHERE inbound_ddt_id = ?', [ddtId]);
+
+      // 2. Rimuovi i log di discrepanza
+      await connection.query('DELETE FROM INBOUND_DISCREPANCY_LOGS WHERE inbound_ddt_id = ?', [ddtId]);
+
+      // 3. Rimuovi le righe del DDT
+      await connection.query('DELETE FROM INBOUND_DDT_ITEMS WHERE inbound_ddt_id = ?', [ddtId]);
+
+      // 4. Elimina il record principale DDT
+      await connection.query('DELETE FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+
+      const username = request.user?.username || 'Backoffice';
+
+      // 5. Registra l'evento in AUDIT_LOGS
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'DELETE_INBOUND_DDT',
+          `Eliminato definitivamente DDT Entrata "${ddt.ddt_number}" (${ddt.customer_name}) con rimozione di ${deletedPalletsCount} palette dall'inventario`,
+          'Gestionale',
+          username
+        ]
+      );
+
+      await connection.commit();
+
+      if (fastify.io) {
+        fastify.io.emit('inbound_updated');
+        fastify.io.emit('dashboard_update');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('inventory_updated');
+      }
+
+      return {
+        success: true,
+        message: `DDT Entrata ${ddt.ddt_number} eliminato con successo.${deletedPalletsCount > 0 ? ` ${deletedPalletsCount} palette rimosse dall'inventario.` : ''}`,
+        deleted_pallets_count: deletedPalletsCount
+      };
+    } catch (err) {
+      await connection.rollback();
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore durante l\'eliminazione del DDT Entrata' });
+    } finally {
+      connection.release();
     }
   });
 }

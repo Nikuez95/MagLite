@@ -35,7 +35,7 @@ async function customerRoutes(fastify, options) {
         LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
         ORDER BY COALESCE(pc.business_name, c.business_name) ASC, (c.parent_id IS NOT NULL) ASC, c.business_name ASC
       `);
-      return rows;
+      return rows.filter(r => canAccessCustomer(request.user, r.id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante il recupero dei clienti' });

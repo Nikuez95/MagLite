@@ -25,6 +25,7 @@ const PERMISSION_CATALOG = [
       { key: 'view_customers', label: 'Visualizza Anagrafica Clienti', desc: 'Accesso alla scheda clienti e sottoreparti.' },
       { key: 'view_locations', label: 'Visualizza Mappa Magazzino', desc: 'Accesso alla mappa scaffali, corridoi e posizioni.' },
       { key: 'view_tms', label: 'Visualizza TMS (Trasporti)', desc: 'Accesso alla pianificazione trasporti e autisti.' },
+      { key: 'view_custom_forms', label: 'Visualizza Moduli & Arrivi', desc: 'Accesso alla sezione Moduli & Check-in e storico arrivi merce.' },
       { key: 'view_finances', label: 'Visualizza Finanza', desc: 'Accesso a Dashboard Finanza, Spese e Archivio Proforme.' },
       { key: 'view_billing', label: 'Visualizza Amministrazione', desc: 'Accesso a Regole Base, Tariffe Clienti e Pre-Fatturazione.' },
       { key: 'view_users', label: 'Visualizza Utenti & Ruoli (Team)', desc: 'Accesso alla pagina di gestione del team e della piramide ruoli.' },
@@ -38,9 +39,13 @@ const PERMISSION_CATALOG = [
     description: 'Permessi operativi su ingressi, modifiche giacenze, spostamenti ed eliminazioni.',
     items: [
       { key: 'inbound_create', label: 'Aggiungere Merce & Creare DDT', desc: 'Permette di caricare nuovi bancali, generare barcode e confermare DDT entrata.' },
+      { key: 'delete_inbound_ddt', label: 'Eliminare DDT Entrata (Spunta)', desc: 'Permette di cancellare definitivamente registrazioni e spunte DDT in ingresso.' },
       { key: 'pallet_edit', label: 'Modificare Quantità e Note Palette', desc: 'Permette di rettificare quantità, scadenze, lotti e metadati delle palette.' },
       { key: 'pallet_move', label: 'Spostare / Stivare Palette e Scaffali', desc: 'Permette di stivare, spostare o unire palette e creare posizioni.' },
       { key: 'product_manage', label: 'Gestire Anagrafica Prodotti', desc: 'Permette di creare e modificare gli articoli a catalogo.' },
+      { key: 'manage_custom_forms', label: 'Gestione Moduli & Form Dinamici', desc: 'Permette di creare, modificare e disattivare form e sequenze guidate.' },
+      { key: 'delete_custom_forms', label: 'Eliminare Moduli & Form Dinamici', desc: 'Permette l\'eliminazione definitiva di template e moduli configurati.' },
+      { key: 'delete_checkin', label: 'Eliminare Arrivi & Check-in', desc: 'Permette di cancellare definitivamente registrazioni di arrivo o check-in.' },
       { key: 'pallet_delete', label: 'Eliminare Palette e Prodotti', desc: 'Permette l\'eliminazione fisica definitiva di palette o prodotti dal gestionale.' }
     ]
   },
@@ -49,7 +54,8 @@ const PERMISSION_CATALOG = [
     title: 'Quarantena & Controllo Qualità',
     description: 'Gestione del blocco cautelativo merce e relativo sblocco con tracciamento motivi.',
     items: [
-      { key: 'quarantine_manage', label: 'Bloccare e Sbloccare Merce in Quarantena', desc: 'Permette di mettere prodotti/palette in quarantena e di sbloccarli.' }
+      { key: 'quarantine_manage', label: 'Bloccare e Sbloccare Merce in Quarantena', desc: 'Permette di mettere prodotti/palette in quarantena e di sbloccarli.' },
+      { key: 'approve_custom_forms', label: 'Sblocco Standby QA / GDP', desc: 'Permette di autorizzare e sbloccare le sequenze guidate in standby (es. sigillo mancante o controlli QA).' }
     ]
   },
   {
@@ -102,6 +108,7 @@ const VIEW_ONLY_PERMISSIONS = buildPermMap([
   'view_customers',
   'view_locations',
   'view_tms',
+  'view_custom_forms',
   'view_audit'
 ]);
 
@@ -117,12 +124,14 @@ const QUALITY_PERMISSIONS = buildPermMap([
   'view_quarantine',
   'view_customers',
   'view_locations',
+  'view_custom_forms',
   'view_audit',
   'inbound_create',
   'pallet_edit',
   'pallet_move',
   'product_manage',
   'quarantine_manage',
+  'approve_custom_forms',
   'outbound_return'
 ]);
 
@@ -200,7 +209,30 @@ function parseJsonSafe(val, fallback = {}) {
   }
 }
 
+const userAccessCache = new Map();
+const ACCESS_CACHE_TTL_MS = 30 * 1000; // 30s cache
+
+function clearUserAccessCache(userId = null) {
+  if (userId) {
+    userAccessCache.delete(Number(userId));
+    userAccessCache.delete(String(userId));
+  } else {
+    userAccessCache.clear();
+  }
+}
+
 async function resolveUserAccess(userIdOrUsername, connection = db) {
+  // Mini-cache in memoria di 30 secondi (se usiamo la connessione db standard)
+  if (connection === db) {
+    const cacheKey = (typeof userIdOrUsername === 'object' && userIdOrUsername) ? userIdOrUsername.id : userIdOrUsername;
+    if (cacheKey) {
+      const cached = userAccessCache.get(cacheKey) || userAccessCache.get(Number(cacheKey));
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.access;
+      }
+    }
+  }
+
   let userRow = null;
   if (typeof userIdOrUsername === 'number' || /^\d+$/.test(String(userIdOrUsername))) {
     const [rows] = await connection.query('SELECT * FROM USERS WHERE id = ?', [userIdOrUsername]);
@@ -267,7 +299,13 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     effectiveRestrictedCustomers = Array.from(combined);
   }
 
-  return {
+  const customerAccessMode = (
+    rawUserCustom?.customer_access_mode ||
+    rawRolePerms?.customer_access_mode ||
+    'BLACKLIST'
+  ).toUpperCase();
+
+  const accessResult = {
     id: userRow.id,
     username: userRow.username,
     role: roleCode,
@@ -278,8 +316,17 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     preferences: parseJsonSafe(userRow.preferences, null),
     permissions: effectivePermissions,
     restricted_customers: effectiveRestrictedCustomers,
+    customer_access_mode: customerAccessMode,
     custom_permissions: rawUserCustom
   };
+
+  if (connection === db) {
+    const expiresAt = Date.now() + ACCESS_CACHE_TTL_MS;
+    userAccessCache.set(Number(userRow.id), { access: accessResult, expiresAt });
+    userAccessCache.set(userRow.username, { access: accessResult, expiresAt });
+  }
+
+  return accessResult;
 }
 
 function hasPermission(userContext, permKey) {
@@ -293,9 +340,21 @@ function hasPermission(userContext, permKey) {
 
 function canAccessCustomer(userContext, customerId) {
   if (!userContext || !customerId) return true;
-  const restricted = userContext.restricted_customers;
-  if (!Array.isArray(restricted) || restricted.length === 0) return true;
-  return !restricted.map(Number).includes(Number(customerId));
+  if (userContext.role === 'developer') return true;
+
+  const mode = (userContext.customer_access_mode || 'BLACKLIST').toUpperCase();
+  const list = Array.isArray(userContext.restricted_customers)
+    ? userContext.restricted_customers.map(Number)
+    : [];
+
+  if (mode === 'WHITELIST' || mode === 'WHITELIST_ONLY' || mode === 'CLIENT_PORTAL') {
+    // Portale Clienti: accesso consentito ESCLUSIVAMENTE ai clienti autorizzati
+    return list.includes(Number(customerId));
+  }
+
+  // Modalità Standard Blacklist: accesso consentito a tutti tranne quelli bloccati
+  if (list.length === 0) return true;
+  return !list.includes(Number(customerId));
 }
 
 module.exports = {
@@ -310,5 +369,6 @@ module.exports = {
   resolveUserAccess,
   hasPermission,
   canAccessCustomer,
-  parseJsonSafe
+  parseJsonSafe,
+  clearUserAccessCache
 };

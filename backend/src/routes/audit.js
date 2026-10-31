@@ -61,14 +61,28 @@ async function auditRoutes(fastify, options) {
 
       const [logs] = await db.query(query, params);
 
-      // Pre-carica mappa palette e prodotti per arricchire i log con info cliccabili di prodotto/bancale/cliente
-      const [allPallets] = await db.query(`
-        SELECT p.id, p.pallet_code, p.product_id, p.customer_id, p.batch, p.location, p.quantity, p.status, p.client_pallet_number,
-               pr.name AS product_name, pr.sku AS sku, c.business_name AS customer_name
-        FROM PALLETS p
-        LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
-        LEFT JOIN CUSTOMERS c ON p.customer_id = c.id
-      `);
+      // Ottimizzazione CPU/DB: Estrai codici paletta dai 600 log per evitare query a vuoto sull'intera tabella PALLETS
+      const palletCodes = new Set();
+      for (const log of logs) {
+        const text = String(log.details || '');
+        const palMatch = text.match(/\b(PAL-[A-Z0-9\-]+|NOBAR-[A-Z0-9\-]+)\b/i);
+        if (palMatch) {
+          palletCodes.add(palMatch[1].toUpperCase());
+        }
+      }
+
+      let allPallets = [];
+      if (palletCodes.size > 0) {
+        const [pRows] = await db.query(`
+          SELECT p.id, p.pallet_code, p.product_id, p.customer_id, p.batch, p.location, p.quantity, p.status, p.client_pallet_number,
+                 pr.name AS product_name, pr.sku AS sku, c.business_name AS customer_name
+          FROM PALLETS p
+          LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
+          LEFT JOIN CUSTOMERS c ON p.customer_id = c.id
+          WHERE p.pallet_code IN (?)
+        `, [Array.from(palletCodes)]);
+        allPallets = pRows;
+      }
 
       const palletByCode = new Map();
       for (const p of allPallets) {

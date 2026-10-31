@@ -55,6 +55,7 @@ const UsersManagement = () => {
   const [editUserOverrides, setEditUserOverrides] = useState({});
   const [editUserRestrictedCustomers, setEditUserRestrictedCustomers] = useState([]);
   const [editUserUnlockedCustomers, setEditUserUnlockedCustomers] = useState([]);
+  const [editUserAccessMode, setEditUserAccessMode] = useState('BLACKLIST');
   const [editUserPermSearch, setEditUserPermSearch] = useState('');
 
   // Role Editor state
@@ -232,8 +233,8 @@ const UsersManagement = () => {
         map[k] = [
           'access_desktop', 'access_zebra', 'view_dashboard', 'view_inbound', 'view_documents',
           'view_outbound', 'view_products', 'view_inventory', 'view_quarantine', 'view_customers',
-          'view_locations', 'view_audit', 'inbound_create', 'pallet_edit', 'pallet_move',
-          'product_manage', 'quarantine_manage', 'outbound_return'
+          'view_locations', 'view_custom_forms', 'view_audit', 'inbound_create', 'pallet_edit', 'pallet_move',
+          'product_manage', 'quarantine_manage', 'approve_custom_forms', 'outbound_return'
         ].includes(k);
       } else if (tplName === 'operator') {
         map[k] = ['access_zebra', 'inbound_create', 'pallet_move', 'outbound_pick'].includes(k);
@@ -328,6 +329,18 @@ const UsersManagement = () => {
       permissions: {
         ...(prev.permissions || {}),
         [permKey]: !prev.permissions?.[permKey]
+      }
+    }));
+    setHasRoleUnsavedChanges(true);
+  };
+
+  const setRoleDraftAccessMode = (mode) => {
+    if (!canModifyRole(roleDraft)) return;
+    setRoleDraft(prev => ({
+      ...prev,
+      permissions: {
+        ...(prev.permissions || {}),
+        customer_access_mode: mode
       }
     }));
     setHasRoleUnsavedChanges(true);
@@ -498,6 +511,7 @@ const UsersManagement = () => {
         ? u.custom_permissions.unlocked_customers.map(Number)
         : []
     );
+    setEditUserAccessMode(u.customer_access_mode || u.custom_permissions?.customer_access_mode || 'BLACKLIST');
     setEditUserPermSearch('');
   };
 
@@ -514,13 +528,15 @@ const UsersManagement = () => {
       const hasAnyCustom =
         Object.keys(cleanOverrides).length > 0 ||
         editUserRestrictedCustomers.length > 0 ||
-        editUserUnlockedCustomers.length > 0;
+        editUserUnlockedCustomers.length > 0 ||
+        editUserAccessMode === 'WHITELIST';
 
       const custom_permissions = hasAnyCustom
         ? {
             overrides: cleanOverrides,
             restricted_customers: editUserRestrictedCustomers,
-            unlocked_customers: editUserUnlockedCustomers
+            unlocked_customers: editUserUnlockedCustomers,
+            customer_access_mode: editUserAccessMode
           }
         : null;
 
@@ -1332,13 +1348,36 @@ const UsersManagement = () => {
 
                 {/* Sezione Restrizioni per Cliente sul Ruolo */}
                 <div className="bg-slate-950/60 border border-slate-800/90 rounded-2xl p-5">
-                  <div className="mb-4">
-                    <h3 className="text-sm font-black uppercase tracking-wider text-amber-400 flex items-center gap-2">
-                      <Building2 size={16} /> Accesso Merce per Singolo Cliente
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Clicca su un cliente per bloccare o consentire a questo ruolo di operare sulla merce di quel cliente.
-                    </p>
+                  <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-black uppercase tracking-wider text-amber-400 flex items-center gap-2">
+                        <Building2 size={16} /> Accesso Merce per Cliente / Client Portal
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {roleDraft.permissions?.customer_access_mode === 'WHITELIST'
+                          ? 'Modalità Whitelist (Client Portal): gli utenti vedranno ESCLUSIVAMENTE i clienti selezionati.'
+                          : 'Modalità Standard (Magazzino): tutti i clienti sono operativi tranne quelli contrassegnati in rosso.'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 p-1 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold shrink-0">
+                      <button
+                        type="button"
+                        disabled={!canModifyRole(roleDraft)}
+                        onClick={() => setRoleDraftAccessMode('BLACKLIST')}
+                        className={`px-3 py-1.5 rounded-lg transition-all ${(roleDraft.permissions?.customer_access_mode || 'BLACKLIST') !== 'WHITELIST' ? 'bg-brand-blue text-brand-black font-black' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Blacklist (Escludi)
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canModifyRole(roleDraft)}
+                        onClick={() => setRoleDraftAccessMode('WHITELIST')}
+                        className={`px-3 py-1.5 rounded-lg transition-all ${roleDraft.permissions?.customer_access_mode === 'WHITELIST' ? 'bg-amber-400 text-slate-950 font-black' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Whitelist (Client Portal)
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
@@ -1841,14 +1880,32 @@ const UsersManagement = () => {
 
             {/* Restrizioni Clienti per questo singolo utente */}
             <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5">
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
                 <div>
                   <h3 className="text-sm font-black uppercase tracking-wider text-amber-400 flex items-center gap-2">
                     <Building2 size={16} /> Accesso ai Clienti per {editingUser.username}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Clicca per bloccare o sbloccare l&apos;operatività di questo singolo utente sulla merce di ciascun cliente.
+                    {editUserAccessMode === 'WHITELIST'
+                      ? 'Modalità Whitelist (Client Portal): questo utente vedrà SOLTANTO i clienti attivi contrassegnati in verde.'
+                      : 'Modalità Blacklist: l\'operatività è consentita su tutti i clienti tranne quelli bloccati in rosso.'}
                   </p>
+                </div>
+                <div className="flex items-center gap-1.5 p-1 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setEditUserAccessMode('BLACKLIST')}
+                    className={`px-3 py-1 rounded-lg transition-all ${editUserAccessMode !== 'WHITELIST' ? 'bg-brand-blue text-brand-black font-black' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    Blacklist
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditUserAccessMode('WHITELIST')}
+                    className={`px-3 py-1 rounded-lg transition-all ${editUserAccessMode === 'WHITELIST' ? 'bg-amber-400 text-slate-950 font-black' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    Client Portal (Whitelist)
+                  </button>
                 </div>
               </div>
 

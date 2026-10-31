@@ -381,8 +381,19 @@ const Quarantine = () => {
                       </div>
                     </div>
 
-                    {canManageQuarantine && canOperateCustomer && (
-                      <div className="shrink-0">
+                    <div className="shrink-0 flex flex-wrap items-center gap-2">
+                      <a
+                        href={`http://${window.location.hostname}:3000/api/quarantine/report/${pal.id}/pdf?token=${getToken()}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full sm:w-auto px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-bold rounded-2xl text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all border border-slate-700 shadow"
+                        title="Scarica Verbale Ufficiale Non Conformità PDF"
+                      >
+                        <FileText size={16} className="text-rose-400" />
+                        <span>Verbale PDF</span>
+                      </a>
+
+                      {canManageQuarantine && canOperateCustomer && (
                         <button
                           onClick={() =>
                             setUnblockModal({
@@ -395,13 +406,13 @@ const Quarantine = () => {
                               notes: ''
                             })
                           }
-                          className="w-full lg:w-auto px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-2xl text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg"
+                          className="w-full sm:w-auto px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-2xl text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg"
                         >
                           <Unlock size={16} />
-                          <span>Sblocca da Quarantena</span>
+                          <span>Sblocca</span>
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -443,6 +454,7 @@ const Quarantine = () => {
                   <th className="py-3 px-3">Cliente & Articolo</th>
                   <th className="py-3 px-3">Dettagli Blocco (Quarantena)</th>
                   <th className="py-3 px-3">Dettagli Sblocco (Rilascio)</th>
+                  <th className="py-3 px-3 text-right">Verbale</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-xs">
@@ -491,6 +503,17 @@ const Quarantine = () => {
                         ) : (
                           <span className="text-slate-500 italic">Ancora in quarantena</span>
                         )}
+                      </td>
+                      <td className="py-4 px-3 text-right">
+                        <a
+                          href={`http://${window.location.hostname}:3000/api/quarantine/report/${log.id}/pdf?token=${getToken()}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-[11px] font-bold"
+                          title="Scarica Verbale Non Conformità PDF"
+                        >
+                          <FileText size={13} className="text-rose-400" /> PDF
+                        </a>
                       </td>
                     </tr>
                   );

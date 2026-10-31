@@ -49,6 +49,16 @@ async function runMigrations() {
       "ALTER TABLE PALLETS DROP INDEX pallet_code",
 
       "ALTER TABLE PALLETS ADD COLUMN inbound_ddt_id INT DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN client_ddt VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN checkin_id INT DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN checkin_session_code VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN client_ddt VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN checkin_id INT DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDTS ADD COLUMN checkin_session_code VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE CUSTOM_FORMS ADD COLUMN icon VARCHAR(50) DEFAULT 'ClipboardList'",
+      "ALTER TABLE CUSTOM_FORMS ADD COLUMN color_accent VARCHAR(30) DEFAULT 'blue'",
+      "ALTER TABLE CUSTOM_FORMS ADD COLUMN display_mode VARCHAR(30) DEFAULT 'SHOW_ON_HOME'",
+      "ALTER TABLE CUSTOM_FORMS ADD COLUMN is_default BOOLEAN DEFAULT FALSE",
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN sku VARCHAR(100) DEFAULT NULL",
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN product_name VARCHAR(255) DEFAULT NULL",
       "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN product_uom VARCHAR(50) DEFAULT NULL",
@@ -287,6 +297,197 @@ async function runMigrations() {
       console.warn('[MIGRATE ROLES SEED WARNING]', roleSeedErr.message);
     }
 
+    // 5. Inizializza Tabelle Form Dinamici & Arrivo Merce
+    try {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS CUSTOM_FORMS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          code VARCHAR(50) UNIQUE NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          category VARCHAR(50) DEFAULT 'INBOUND',
+          target_device VARCHAR(20) DEFAULT 'ZEBRA',
+          is_active BOOLEAN DEFAULT TRUE,
+          icon VARCHAR(50) DEFAULT 'ClipboardList',
+          color_accent VARCHAR(30) DEFAULT 'blue',
+          display_mode VARCHAR(30) DEFAULT 'SHOW_ON_HOME',
+          is_default BOOLEAN DEFAULT FALSE,
+          steps JSON NOT NULL,
+          created_by VARCHAR(100) DEFAULT 'Sistema',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS CUSTOM_FORM_SUBMISSIONS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          form_id INT NOT NULL,
+          session_code VARCHAR(100) UNIQUE NOT NULL,
+          status ENUM('IN_PROGRESS', 'STANDBY_APPROVAL', 'COMPLETED', 'ABORTED', 'REJECTED') DEFAULT 'IN_PROGRESS',
+          current_step_id VARCHAR(100) DEFAULT NULL,
+          operator_id INT DEFAULT NULL,
+          operator_name VARCHAR(100) DEFAULT NULL,
+          answers JSON DEFAULT NULL,
+          standby_reason TEXT DEFAULT NULL,
+          approved_by INT DEFAULT NULL,
+          approved_by_name VARCHAR(100) DEFAULT NULL,
+          approved_at DATETIME DEFAULT NULL,
+          approval_notes TEXT DEFAULT NULL,
+          rejection_reason TEXT DEFAULT NULL,
+          metadata JSON DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          completed_at DATETIME DEFAULT NULL,
+          FOREIGN KEY (form_id) REFERENCES CUSTOM_FORMS(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Verifica se esiste già il form standard ARRIVO_MERCE
+      const [existingForm] = await connection.query("SELECT id FROM CUSTOM_FORMS WHERE code = 'ARRIVO_MERCE'");
+      if (existingForm.length === 0) {
+        const defaultSteps = [
+          {
+            id: "step_mezzo",
+            title: "Tipo di Mezzo in Arrivo",
+            subtitle: "Seleziona se il carico giunge con automezzo standard o container",
+            type: "CHOICE",
+            field_key: "tipo_mezzo",
+            options: [
+              { label: "Camion", value: "CAMION", next_step_id: "step_ddt", color: "blue" },
+              { label: "Container", value: "CONTAINER", next_step_id: "step_container", color: "amber" }
+            ]
+          },
+          {
+            id: "step_ddt",
+            title: "Numero DDT",
+            subtitle: "Inserisci il numero del Documento di Trasporto indicato dall'autista",
+            type: "TEXT",
+            field_key: "numero_ddt",
+            placeholder: "Es. DDT-2026/0849",
+            required: true,
+            next_step_id: "step_temp_check"
+          },
+          {
+            id: "step_container",
+            title: "Numero Container",
+            subtitle: "Inserisci la sigla e matricola del container (es. 4 lettere + 7 cifre)",
+            type: "TEXT",
+            field_key: "numero_container",
+            placeholder: "Es. MSCU1234567",
+            required: true,
+            next_step_id: "step_sigillo"
+          },
+          {
+            id: "step_sigillo",
+            title: "È presente un sigillo?",
+            subtitle: "Verificare visivamente la presenza del sigillo di sicurezza intatto sul container",
+            type: "CHOICE",
+            field_key: "sigillo_presente",
+            options: [
+              { label: "Sì, Sigillo Presente", value: "SI", next_step_id: "step_sigillo_num", color: "emerald" },
+              { label: "No, Sigillo Assente o Manomesso", value: "NO", next_step_id: "step_standby_qa", color: "rose" }
+            ]
+          },
+          {
+            id: "step_sigillo_num",
+            title: "Numero Sigillo di Sicurezza",
+            subtitle: "Trascrivi esattamente la matricola del sigillo metallico o plastico",
+            type: "TEXT",
+            field_key: "numero_sigillo",
+            placeholder: "Es. SEAL-987654",
+            required: true,
+            next_step_id: "step_temp_check"
+          },
+          {
+            id: "step_standby_qa",
+            title: "⚠️ Fermo Standby: Contatta Ufficio / QA / GDP",
+            subtitle: "Sigillo assente o anomalia rilevata. La procedura è sospesa in attesa di autorizzazione da parte del QA o dell'Ufficio.",
+            type: "STANDBY",
+            standby_reason: "Sigillo assente o non conforme sul container. Richiesta autorizzazione formale QA/GDP prima dello scarico.",
+            next_step_id_on_approved: "step_temp_check"
+          },
+          {
+            id: "step_temp_check",
+            title: "È merce a temperatura controllata?",
+            subtitle: "Specificare se il carico richiede mantenimento della catena del freddo",
+            type: "CHOICE",
+            field_key: "is_temp_controlled",
+            options: [
+              { label: "Sì (Pharma / Fresco)", value: "SI", next_step_id: "step_temp_range", color: "blue" },
+              { label: "No (Temperatura Ambiente)", value: "NO", next_step_id: "step_igiene", color: "slate" }
+            ]
+          },
+          {
+            id: "step_temp_range",
+            title: "Fascia Temperatura Richiesta",
+            subtitle: "Seleziona il range termico prescritto per questo trasporto",
+            type: "CHOICE",
+            field_key: "temp_range",
+            options: [
+              { label: "+2°C / +8°C", value: "2_8", next_step_id: "step_temp_value", color: "cyan" },
+              { label: "+15°C / +25°C", value: "15_25", next_step_id: "step_temp_value", color: "emerald" },
+              { label: "< 25°C", value: "UNDER_25", next_step_id: "step_temp_value", color: "amber" }
+            ]
+          },
+          {
+            id: "step_temp_value",
+            title: "A che temperatura è il mezzo?",
+            subtitle: "Rileva la temperatura interna o termoregistratore del mezzo (°C)",
+            type: "TEMPERATURE",
+            field_key: "misura_temperatura",
+            unit: "°C",
+            min: -30,
+            max: 50,
+            check_range_against: "temp_range",
+            range_definitions: {
+              "2_8": { min: 2, max: 8, label: "+2°C / +8°C" },
+              "15_25": { min: 15, max: 25, label: "+15°C / +25°C" },
+              "UNDER_25": { min: -30, max: 25, label: "< 25°C" }
+            },
+            next_step_id: "step_igiene",
+            next_if_discrepancy: "step_temp_reject"
+          },
+          {
+            id: "step_temp_reject",
+            title: "🛑 Temperatura Fuori Range - Non Scaricare!",
+            subtitle: "Non scaricare ancora. Invita l'autista a sostare fuori e fallo tornare quando il camion sarà alla temperatura prescritta.",
+            type: "REJECT",
+            rejection_message: "Non scaricare ancora, invita l'autista a sostare fuori e fallo tornare quando il camion sarà a temperatura."
+          },
+          {
+            id: "step_igiene",
+            title: "Condizioni Igienico-Sanitarie Mezzo",
+            subtitle: "Ispezione visiva e olfattiva del vano di carico",
+            type: "CHECKLIST",
+            field_key: "igiene_checks",
+            items: [
+              { id: "pulito", label: "Pianale pulito, asciutto e privo di odori anomali" },
+              { id: "integro", label: "Pareti, tetto e porte integri senza infiltrazioni" },
+              { id: "no_parassiti", label: "Assenza di tracce di parassiti o contaminazioni" },
+              { id: "imballi_ok", label: "Bancali / colli stabili e imballi integri" }
+            ],
+            next_step_id: "step_summary"
+          },
+          {
+            id: "step_summary",
+            title: "Riepilogo & Conferma Arrivo",
+            subtitle: "Verifica le informazioni registrate prima di confermare l'ingresso del veicolo",
+            type: "SUMMARY"
+          }
+        ];
+
+        await connection.query(
+          `INSERT INTO CUSTOM_FORMS (code, title, description, category, target_device, is_active, steps, created_by)
+           VALUES ('ARRIVO_MERCE', 'Arrivo Merce & Controllo Mezzo', 'Procedura guidata per check-in mezzo, verifica sigillo, catena del freddo e controlli QA/GDP.', 'INBOUND', 'ZEBRA', 1, ?, 'Sistema')`,
+          [JSON.stringify(defaultSteps)]
+        );
+        console.log('✅ Form standard ARRIVO_MERCE inizializzato con successo.');
+      }
+    } catch (formInitErr) {
+      console.warn('[MIGRATE CUSTOM FORMS WARNING]', formInitErr.message);
+    }
+
     console.log('🚀 Migrazioni completate. Database allineato al 100%.');
   } catch (err) {
     console.error('❌ Errore critico durante le migrazioni:', err);
@@ -296,3 +497,12 @@ async function runMigrations() {
 }
 
 module.exports = runMigrations;
+
+if (require.main === module) {
+  runMigrations()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

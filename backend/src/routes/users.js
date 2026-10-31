@@ -7,7 +7,8 @@ const {
   seedDefaultRoles,
   resolveUserAccess,
   hasPermission,
-  parseJsonSafe
+  parseJsonSafe,
+  clearUserAccessCache
 } = require('../utils/permissions');
 
 function sanitizeRoleCode(str) {
@@ -67,10 +68,8 @@ async function userRoutes(fastify, options) {
 
   // Middleware locale: verifica accesso alla sezione utenti
   fastify.addHook('preHandler', async (request, reply) => {
-    const caller = await resolveUserAccess(request.user.id, db);
-    if (!caller) {
-      return reply.code(401).send({ error: 'Utente non valido' });
-    }
+    // Usa direttamente request.user arricchito da fastify.authenticate per azzerare chiamate duplicate al DB
+    const caller = request.user;
     request.callerAccess = caller;
 
     // Il Software Engineer ha sempre accesso alla gestione utenti/ruoli
@@ -223,10 +222,12 @@ async function userRoutes(fastify, options) {
         : null;
 
       const hash = await bcrypt.hash(password, 10);
-      await db.query(
+      const [userRes] = await db.query(
         'INSERT INTO USERS (username, password_hash, role, requires_password_change, custom_permissions) VALUES (?, ?, ?, TRUE, ?)',
         [username.trim(), hash, targetRole.code, cleanCustomPerms]
       );
+
+      clearUserAccessCache(userRes.insertId);
 
       await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
@@ -235,7 +236,7 @@ async function userRoutes(fastify, options) {
 
       if (fastify.io) fastify.io.emit('permissions_updated');
 
-      return reply.code(201).send({ success: true, message: 'Utente creato con successo' });
+      return reply.code(201).send({ success: true, id: userRes.insertId, message: 'Utente creato con successo' });
     } catch (err) {
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Lo username scelto è già in uso' });

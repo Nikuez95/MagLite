@@ -23,7 +23,11 @@ import {
   Hash,
   X,
   GitBranch,
-  Building2
+  Building2,
+  Truck,
+  ShieldCheck,
+  CheckCircle2,
+  Link2
 } from 'lucide-react';
 
 const Inbound = () => {
@@ -40,6 +44,14 @@ const Inbound = () => {
 
   // Opzioni di Stampa
   const [abilitaSpunta, setAbilitaSpunta] = useState(true);
+
+  // Riferimento DDT / Container & Check-in Arrivo Mezzo
+  const [clientDdt, setClientDdt] = useState('');
+  const [matchedCheckin, setMatchedCheckin] = useState(null);
+  const [isCheckingCheckin, setIsCheckingCheckin] = useState(false);
+  const [checkinSearchResults, setCheckinSearchResults] = useState([]);
+  const [showCheckinDropdown, setShowCheckinDropdown] = useState(false);
+  const checkinDropdownRef = useRef(null);
   const [printOptions, setPrintOptions] = useState({
     paper_format: 'A4', // 'A4' o 'THERMAL'
     print_mode: 'GRID',  // 'GRID' (solo per A4) o 'SINGLE_PAGE'
@@ -99,6 +111,66 @@ const Inbound = () => {
 
   useEffect(() => {
     fetchData();
+  }, []);
+
+  // Lookup automatico check-in associato a DDT / Container
+  useEffect(() => {
+    const trimmed = clientDdt.trim();
+    if (!trimmed) {
+      setMatchedCheckin(null);
+      setCheckinSearchResults([]);
+      setIsCheckingCheckin(false);
+      return;
+    }
+
+    if (matchedCheckin && (
+      (matchedCheckin.ddt && matchedCheckin.ddt.toLowerCase() === trimmed.toLowerCase()) ||
+      (matchedCheckin.container && matchedCheckin.container.toLowerCase() === trimmed.toLowerCase()) ||
+      (matchedCheckin.session_code && matchedCheckin.session_code.toLowerCase() === trimmed.toLowerCase())
+    )) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsCheckingCheckin(true);
+      try {
+        const res = await axios.get(`http://${window.location.hostname}:3000/api/custom-forms/lookup-checkin?query=${encodeURIComponent(trimmed)}`, {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        const results = res.data || [];
+        setCheckinSearchResults(results);
+        
+        const exact = results.find(r => 
+          (r.ddt && r.ddt.toLowerCase() === trimmed.toLowerCase()) ||
+          (r.container && r.container.toLowerCase() === trimmed.toLowerCase()) ||
+          (r.session_code && r.session_code.toLowerCase() === trimmed.toLowerCase())
+        );
+        if (exact) {
+          setMatchedCheckin(exact);
+        } else if (results.length === 1 && trimmed.length >= 3) {
+          setMatchedCheckin(results[0]);
+        } else {
+          setMatchedCheckin(null);
+        }
+      } catch (err) {
+        console.error('Errore lookup check-in:', err);
+      } finally {
+        setIsCheckingCheckin(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [clientDdt]);
+
+  // Chiudi dropdown se clicco fuori
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (checkinDropdownRef.current && !checkinDropdownRef.current.contains(e.target)) {
+        setShowCheckinDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   useEffect(() => {
@@ -515,6 +587,16 @@ const Inbound = () => {
             }
           }
 
+          // Riconoscimento eventuale colonna DDT / Container nel file
+          const ddtFromFile = getCol(
+            normRow,
+            ['ddt', 'numero_ddt', 'num_ddt', 'doc', 'documento', 'container', 'num_container'],
+            k => k.includes('ddt') || k.includes('container')
+          );
+          if (ddtFromFile && !clientDdt) {
+            setClientDdt(String(ddtFromFile).trim());
+          }
+
           const rawProdName = getCol(
             normRow,
             ['prodotto', 'nome_prodotto', 'descrizione', 'descrizione_prodotto', 'descrizione_articolo', 'desc_articolo', 'desc_prodotto', 'nome_articolo', 'merce', 'articolo', 'nome'],
@@ -753,6 +835,7 @@ const Inbound = () => {
             notes: note,
             client_pallet_number: palletCliente,
             client_article_number: articoloCliente || finalSku,
+            client_ddt: ddtFromFile ? String(ddtFromFile).trim() : (clientDdt.trim() || ''),
             location: posizione,
             expiration_date: scadenza || '',
             arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
@@ -915,6 +998,7 @@ const Inbound = () => {
       notes: formData.notes,
       client_pallet_number: formData.client_pallet_number,
       client_article_number: articleCode || finalSku,
+      client_ddt: clientDdt.trim() || '',
       location: cleanLocation,
       expiration_date: formData.expiration_date,
       arrival_date: formData.arrival_date,
@@ -970,7 +1054,12 @@ const Inbound = () => {
     if (abilitaSpunta) {
       setIsGenerating(true);
       try {
-        const payload = { cart };
+        const payload = { 
+          cart,
+          client_ddt: clientDdt.trim() || null,
+          checkin_id: matchedCheckin?.id || null,
+          checkin_session_code: matchedCheckin?.session_code || null
+        };
         const res = await axios.post(`http://${window.location.hostname}:3000/api/inbound/ddt`, payload, {
           headers: { Authorization: `Bearer ${getToken()}` }
         });
@@ -981,6 +1070,8 @@ const Inbound = () => {
         
         setCart([]);
         setCartSearch('');
+        setClientDdt('');
+        setMatchedCheckin(null);
         setFormData({...formData, parent_customer_id: null, fragment_id: null, customer_id: null, product_id: null, isNewProduct: false, newProductName: ''});
         setPrintOptions({ paper_format: 'A4', print_mode: 'GRID', isMixed: false, noBarcode: false, freeLocation: '' });
       } catch (err) {
@@ -999,7 +1090,10 @@ const Inbound = () => {
     try {
       const payload = {
         cart,
-        printOptions
+        printOptions,
+        client_ddt: clientDdt.trim() || null,
+        checkin_id: matchedCheckin?.id || null,
+        checkin_session_code: matchedCheckin?.session_code || null
       };
 
       const res = await axios.post(`http://${window.location.hostname}:3000/api/pallets/generate`, payload, {
@@ -1017,6 +1111,8 @@ const Inbound = () => {
 
       setCart([]);
       setCartSearch('');
+      setClientDdt('');
+      setMatchedCheckin(null);
     } catch (err) {
       appAlert('Errore durante la generazione del PDF.');
     } finally {
@@ -1193,6 +1289,185 @@ const Inbound = () => {
               <Download size={17} />
               Scarica Template
             </button>
+          </div>
+        </div>
+
+        {/* SEZIONE COLLEGAMENTO TRASPORTO / CHECK-IN MEZZO (OPZIONALE) */}
+        <div className="mb-6 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl relative">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-brand-blue/15 border border-brand-blue/30 flex items-center justify-center text-brand-blue">
+                  <Truck size={18} />
+                </div>
+                <h2 className="text-base font-extrabold text-brand-white">
+                  Riferimento Trasporto (DDT / Container) & Check-in Arrivo
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                  Opzionale
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 pl-10.5">
+                Inserisci il numero di DDT o Container del fornitore: se presente un check-in compilato su Zebra, la merce verrà collegata automaticamente con orari, mezzo e controlli effettuati.
+              </p>
+            </div>
+
+            {matchedCheckin && (
+              <div className="flex items-center gap-2 bg-emerald-950/40 border border-emerald-500/40 text-emerald-300 px-3 py-1.5 rounded-xl text-xs font-bold animate-fade-in-up">
+                <CheckCircle2 size={15} className="text-emerald-400" />
+                <span>Check-in #{matchedCheckin.session_code} Collegato</span>
+                <button 
+                  type="button" 
+                  onClick={() => { setMatchedCheckin(null); setClientDdt(''); }}
+                  title="Scollega check-in"
+                  className="text-slate-400 hover:text-rose-400 ml-1 p-0.5 transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            {/* Input di ricerca / inserimento DDT o Container */}
+            <div className={`relative ${matchedCheckin ? 'lg:col-span-5' : 'lg:col-span-7'}`} ref={checkinDropdownRef}>
+              <label className="block text-slate-400 font-bold mb-1.5 text-[11px] uppercase tracking-wider flex items-center justify-between">
+                <span>Numero DDT / Codice Container</span>
+                {isCheckingCheckin && <span className="text-[10px] text-brand-blue animate-pulse font-normal">Ricerca check-in in corso...</span>}
+              </label>
+              <div className="relative">
+                <input 
+                  type="text"
+                  value={clientDdt}
+                  onChange={e => {
+                    setClientDdt(e.target.value);
+                    setShowCheckinDropdown(true);
+                  }}
+                  onFocus={() => setShowCheckinDropdown(true)}
+                  placeholder="Es. DDT-2026-1049 oppure MSKU928174..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-semibold text-brand-white focus:outline-none focus:border-brand-blue transition-colors pr-10"
+                />
+                {clientDdt && (
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setClientDdt('');
+                      setMatchedCheckin(null);
+                      setCheckinSearchResults([]);
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+
+              {/* Dropdown suggerimenti check-in trovati */}
+              {showCheckinDropdown && checkinSearchResults.length > 0 && !matchedCheckin && (
+                <div className="absolute z-30 left-0 right-0 mt-1.5 bg-slate-950 border border-slate-700/80 rounded-2xl shadow-2xl p-2 max-h-60 overflow-y-auto space-y-1">
+                  <div className="text-[10px] font-bold text-slate-400 px-2 py-1 uppercase tracking-wider">
+                    Check-in arrivo trovati ({checkinSearchResults.length})
+                  </div>
+                  {checkinSearchResults.map(res => (
+                    <div 
+                      key={res.id}
+                      onClick={() => {
+                        setMatchedCheckin(res);
+                        setClientDdt(res.ddt || res.container || res.session_code);
+                        setShowCheckinDropdown(false);
+                      }}
+                      className="p-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-brand-blue/50 cursor-pointer transition-all flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-extrabold text-brand-white flex items-center gap-1.5">
+                          <Truck size={13} className="text-brand-blue" />
+                          <span>{res.vehicle_type || 'Mezzo'}: {res.ddt ? `DDT ${res.ddt}` : (res.container ? `Cont. ${res.container}` : `#${res.session_code}`)}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 truncate">
+                          Arrivato: {new Date(res.created_at).toLocaleString('it-IT')} • Op: {res.operator_name || 'N/D'}
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                        res.status === 'COMPLETED' ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' :
+                        res.status === 'APPROVED_OVERRIDE' ? 'bg-amber-950 text-amber-400 border border-amber-500/30' :
+                        'bg-slate-800 text-slate-300'
+                      }`}>
+                        {res.status === 'COMPLETED' ? 'CONFORME' : res.status === 'APPROVED_OVERRIDE' ? 'SBLOCCATO QA' : res.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Avviso informativo se inserito DDT manuale senza check-in preliminare */}
+              {clientDdt.trim().length >= 2 && !isCheckingCheckin && !matchedCheckin && checkinSearchResults.length === 0 && (
+                <div className="mt-2 text-[11px] text-slate-400 flex items-center gap-1.5 bg-slate-950/60 border border-slate-800/80 px-3 py-1.5 rounded-xl">
+                  <FileText size={13} className="text-brand-blue shrink-0" />
+                  <span>DDT impostato manualmente. Verrà registrato sulle palette e collegato qualora il check-in venga salvato.</span>
+                </div>
+              )}
+            </div>
+
+            {/* Pannello Dettaglio Check-in Collegato */}
+            {matchedCheckin ? (
+              <div className="lg:col-span-7 bg-slate-950/80 border border-emerald-500/30 rounded-2xl p-3.5 space-y-2.5 animate-fade-in-up">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={16} className="text-emerald-400" />
+                    <span className="text-xs font-black text-brand-white">
+                      Scheda Arrivo Mezzo #{matchedCheckin.session_code}
+                    </span>
+                  </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                    matchedCheckin.status === 'COMPLETED' 
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40' 
+                      : 'bg-amber-500/10 text-amber-400 border-amber-500/40'
+                  }`}>
+                    {matchedCheckin.status === 'COMPLETED' ? '✅ IDONEO / CONFORME' : '⚠️ DEROGA QA / GDP'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block font-bold">Mezzo / Rif</span>
+                    <span className="font-extrabold text-white truncate block">
+                      {matchedCheckin.vehicle_type || 'Mezzo'}: {matchedCheckin.ddt || matchedCheckin.container || 'N/D'}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block font-bold">Data & Ricezione</span>
+                    <span className="font-extrabold text-white truncate block" title={matchedCheckin.operator_name}>
+                      {new Date(matchedCheckin.created_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })} • {matchedCheckin.operator_name || 'Operatore'}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block font-bold">Temperatura</span>
+                    <span className="font-extrabold text-emerald-400 truncate block">
+                      {matchedCheckin.temperature !== null ? `${matchedCheckin.temperature}°C` : 'Non richiesta'} 
+                      {matchedCheckin.temp_range ? ` (${matchedCheckin.temp_range})` : ''}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block font-bold">Sigillo / Deroga</span>
+                    <span className="font-extrabold text-white truncate block">
+                      {matchedCheckin.approved_by_name ? `Deroga: ${matchedCheckin.approved_by_name}` : (matchedCheckin.seal || 'Regolare')}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-emerald-400/90 flex items-center gap-1.5 pt-0.5">
+                  <Link2 size={13} className="shrink-0 text-emerald-400" />
+                  <span>Tutti i bancali scaricati in questa sessione saranno tracciati con questo arrivo nel report Arrivi e Check-in.</span>
+                </div>
+              </div>
+            ) : (
+              <div className="lg:col-span-5 flex items-center gap-2.5 p-3 rounded-2xl bg-slate-950/40 border border-slate-800 text-xs text-slate-400">
+                <Layers size={18} className="text-slate-500 shrink-0" />
+                <div>
+                  <span className="font-bold text-slate-300">Tracciabilità Flusso Entrata:</span> Se compili prima il form sullo Zebra &quot;Arrivo Merce&quot;, inserendo qui il DDT/Container la merce scaricata si collega istantaneamente all&apos;automezzo.
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

@@ -34,7 +34,8 @@ fastify.decorate('authenticate', async function (request, reply) {
           role_name: access.role_name,
           hierarchy_level: access.hierarchy_level,
           permissions: access.permissions,
-          restricted_customers: access.restricted_customers
+          restricted_customers: access.restricted_customers,
+          customer_access_mode: access.customer_access_mode
         };
       }
     }
@@ -59,6 +60,7 @@ fastify.register(require('./routes/billing'), { prefix: '/api/billing' });
 fastify.register(require('./routes/settings'), { prefix: '/api/settings' });
 fastify.register(require('./routes/finances'), { prefix: '/api/finances' });
 fastify.register(require('./routes/tms'), { prefix: '/api/tms' });
+fastify.register(require('./routes/customForms'), { prefix: '/api/custom-forms' });
 
 // Health check endpoint (non protetto)
 fastify.get('/api/health', async () => {
@@ -88,6 +90,10 @@ const start = async () => {
     await fastify.ready();
     await fastify.listen({ port, host });
     fastify.log.info(`🚀 MagLite Backend in ascolto su ${host}:${port}`);
+
+    // Avvio Cron Job GDP Auto-Quarantena Lotti Scaduti (Startup + Mezzanotte/Orario)
+    const { startGdpAutoQuarantineCron } = require('./utils/gdpCron');
+    startGdpAutoQuarantineCron(fastify.io, fastify.log);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

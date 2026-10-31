@@ -1,35 +1,50 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import { Lock, ArrowLeft } from 'lucide-react';
+import { Lock, ArrowLeft, Loader2 } from 'lucide-react';
+import axios from 'axios';
 
-// Pages
+// Centralizzazione API URL di base
+export const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:3000`;
+axios.defaults.baseURL = API_BASE_URL;
+
+// Mobile / Core Pages (static imports for instant performance on Zebra guns)
 import ModeSelection from './pages/ModeSelection';
-import DesktopLayout from './pages/desktop/DesktopLayout';
 import ZebraApp from './zebra/ZebraApp';
 import Login from './pages/Login';
-import UsersManagement from './pages/desktop/Users';
 import ForcePasswordChange from './pages/ForcePasswordChange';
-import Customers from './pages/desktop/Customers';
-import Products from './pages/desktop/Products';
-import Inbound from './pages/desktop/Inbound';
-import InboundDDTs from './pages/desktop/InboundDDTs';
-import Outbound from './pages/desktop/Outbound';
-import OutboundHistory from './pages/desktop/OutboundHistory';
-import OutboundReturns from './pages/desktop/OutboundReturns';
-import Quarantine from './pages/desktop/Quarantine';
-import Inventory from './pages/desktop/Inventory';
-import Locations from './pages/desktop/Locations';
-import ClientTariffManager from './pages/desktop/ClientTariffManager';
-import Settings from './pages/desktop/Settings';
-import RoutingManager from './pages/desktop/RoutingManager';
-import BillingRulesManager from './pages/desktop/BillingRulesManager';
-import PreBillingDashboard from './pages/desktop/PreBillingDashboard';
-import FinancesDashboard from './pages/desktop/FinancesDashboard';
-import TMSDashboard from './pages/desktop/TMSDashboard';
-import InvoicesHistory from './pages/desktop/InvoicesHistory';
-import ExpensesManager from './pages/desktop/ExpensesManager';
-import Dashboard from './pages/desktop/Dashboard';
-import AuditLogs from './pages/desktop/AuditLogs';
+
+// Desktop Pages (Code-splitting tramite React.lazy per alleggerire il bundle iniziale di Zebra)
+const DesktopLayout = lazy(() => import('./pages/desktop/DesktopLayout'));
+const UsersManagement = lazy(() => import('./pages/desktop/Users'));
+const Customers = lazy(() => import('./pages/desktop/Customers'));
+const Products = lazy(() => import('./pages/desktop/Products'));
+const Inbound = lazy(() => import('./pages/desktop/Inbound'));
+const CustomFormsManager = lazy(() => import('./pages/desktop/CustomFormsManager'));
+const InboundDDTs = lazy(() => import('./pages/desktop/InboundDDTs'));
+const Outbound = lazy(() => import('./pages/desktop/Outbound'));
+const OutboundHistory = lazy(() => import('./pages/desktop/OutboundHistory'));
+const OutboundReturns = lazy(() => import('./pages/desktop/OutboundReturns'));
+const Quarantine = lazy(() => import('./pages/desktop/Quarantine'));
+const Inventory = lazy(() => import('./pages/desktop/Inventory'));
+const Locations = lazy(() => import('./pages/desktop/Locations'));
+const ClientTariffManager = lazy(() => import('./pages/desktop/ClientTariffManager'));
+const Settings = lazy(() => import('./pages/desktop/Settings'));
+const RoutingManager = lazy(() => import('./pages/desktop/RoutingManager'));
+const BillingRulesManager = lazy(() => import('./pages/desktop/BillingRulesManager'));
+const PreBillingDashboard = lazy(() => import('./pages/desktop/PreBillingDashboard'));
+const FinancesDashboard = lazy(() => import('./pages/desktop/FinancesDashboard'));
+const TMSDashboard = lazy(() => import('./pages/desktop/TMSDashboard'));
+const InvoicesHistory = lazy(() => import('./pages/desktop/InvoicesHistory'));
+const ExpensesManager = lazy(() => import('./pages/desktop/ExpensesManager'));
+const Dashboard = lazy(() => import('./pages/desktop/Dashboard'));
+const AuditLogs = lazy(() => import('./pages/desktop/AuditLogs'));
+
+const DesktopShellFallback = () => (
+  <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center text-slate-400 gap-3">
+    <div className="w-10 h-10 border-4 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
+    <div className="text-xs font-black uppercase tracking-wider text-slate-300">Caricamento Gestionale Desktop...</div>
+  </div>
+);
 import {
   canAccessDesktop,
   canAccessZebra,
@@ -158,7 +173,11 @@ function App() {
               !token
                 ? <Navigate to="/login" />
                 : isDesktopAllowed
-                  ? <DesktopLayout />
+                  ? (
+                    <Suspense fallback={<DesktopShellFallback />}>
+                      <DesktopLayout />
+                    </Suspense>
+                  )
                   : <Navigate to={isZebraAllowed ? '/zebra' : '/'} replace />
             }
           >
@@ -175,6 +194,14 @@ function App() {
               element={
                 <ProtectedSection perm="view_inbound" sectionName="Nuova Merce (Inbound)" user={user}>
                   <Inbound />
+                </ProtectedSection>
+              }
+            />
+            <Route
+              path="custom-forms"
+              element={
+                <ProtectedSection perm={['view_custom_forms', 'manage_custom_forms']} sectionName="Moduli Dinamici & Check-in" user={user}>
+                  <CustomFormsManager />
                 </ProtectedSection>
               }
             />

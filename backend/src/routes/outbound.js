@@ -354,7 +354,7 @@ async function outboundRoutes(fastify, options) {
         JOIN CUSTOMERS c ON o.customer_id = c.id
         ORDER BY o.created_at DESC
       `);
-      return orders;
+      return orders.filter(o => canAccessCustomer(request.user, o.customer_id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore nel recupero degli ordini' });
@@ -410,7 +410,7 @@ async function outboundRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
-      return { success: true, order_code: orderCode };
+      return { success: true, id: orderId, order_id: orderId, order_code: orderCode };
     } catch (err) {
       if (connection) {
         await connection.rollback();
@@ -911,27 +911,70 @@ async function outboundRoutes(fastify, options) {
         return reply.code(403).send({ error: `BLOCCO QUARANTENA: La paletta ${item.pallet_code} è in quarantena (${item.quarantine_reason || 'Bloccata'}) e non può essere prelevata!` });
       }
 
-      // Verifica Barcode Paletta
+      // Verifica Barcode Paletta con controllo giacenza e prenotazioni
       let actualPalletId = item.resolved_pallet_id;
       if (item.pallet_code.toLowerCase() !== pallet_code.toLowerCase()) {
         const [scannedPallets] = await db.query(
           'SELECT id, pallet_code, product_id, batch, status, location, quantity, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"',
           [pallet_code.trim()]
         );
-        if (
-          scannedPallets.length > 0 &&
-          !scannedPallets[0].is_quarantined && scannedPallets[0].product_id === item.product_id &&
-          ((scannedPallets[0].batch || '').trim().toUpperCase() === (item.batch || '').trim().toUpperCase() || (!scannedPallets[0].batch && !item.batch))
-        ) {
-          actualPalletId = scannedPallets[0].id;
-          await db.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [
-            actualPalletId,
-            scannedPallets[0].pallet_code,
-            item_id
-          ]);
-          item.pallet_code = scannedPallets[0].pallet_code;
-        } else {
-          return reply.code(400).send({ error: 'Codice Paletta errato (Lotto non corrispondente)' });
+
+        if (scannedPallets.length === 0) {
+          return reply.code(404).send({ error: 'Paletta non trovata o già spedita.' });
+        }
+
+        const altPallet = scannedPallets[0];
+
+        if (altPallet.is_quarantined) {
+          return reply.code(403).send({ error: `BLOCCO QUARANTENA: La paletta ${altPallet.pallet_code} è in quarantena (${altPallet.quarantine_reason || 'Bloccata'}) e non può essere prelevata!` });
+        }
+
+        const isSameBatch = ((altPallet.batch || '').trim().toUpperCase() === (item.batch || '').trim().toUpperCase()) || (!altPallet.batch && !item.batch);
+        if (altPallet.product_id !== item.product_id || !isSameBatch) {
+          return reply.code(400).send({ error: 'Codice Paletta errato: Articolo o Lotto non corrispondente alla riga ordine.' });
+        }
+
+        // Verifica disponibilità giacenza sufficiente sulla paletta alternativa
+        const availableQty = parseFloat(altPallet.quantity) || 0;
+        const requiredQty = parseFloat(qty_picked) || 0;
+        if (availableQty < requiredQty) {
+          return reply.code(400).send({ error: `Giacenza insufficiente sulla paletta scansionata (${availableQty} disponibili contro ${requiredQty} richiesti).` });
+        }
+
+        // Verifica che la paletta non sia già prenotata da un altro ordine Outbound aperto
+        const [reserved] = await db.query(
+          `SELECT oi.id, oi.order_id, o.order_code
+           FROM OUTBOUND_ITEMS oi
+           JOIN OUTBOUND_ORDERS o ON oi.order_id = o.id
+           WHERE (oi.pallet_id = ? OR (oi.pallet_code = ? AND oi.product_id = ?))
+             AND oi.id != ?
+             AND o.status NOT IN ('SHIPPED', 'CANCELLED', 'RETURNED')
+             AND oi.status IN ('PENDING', 'PICKING')`,
+          [altPallet.id, altPallet.pallet_code, item.product_id, item_id]
+        );
+
+        if (reserved.length > 0) {
+          return reply.code(400).send({
+            error: `La paletta ${altPallet.pallet_code} è già prenotata per l'ordine ${reserved[0].order_code || ('#' + reserved[0].order_id)}.`
+          });
+        }
+
+        actualPalletId = altPallet.id;
+        await db.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [
+          actualPalletId,
+          altPallet.pallet_code,
+          item_id
+        ]);
+        item.pallet_code = altPallet.pallet_code;
+      } else {
+        // Prelievo diretto dalla paletta originale assegnata: verifica giacenza fisica
+        if (actualPalletId) {
+          const [[origPallet]] = await db.query('SELECT quantity FROM PALLETS WHERE id = ?', [actualPalletId]);
+          if (origPallet && parseFloat(origPallet.quantity) < parseFloat(qty_picked)) {
+            return reply.code(400).send({
+              error: `Giacenza insufficiente sulla paletta (${origPallet.quantity} disponibili contro ${qty_picked} richiesti).`
+            });
+          }
         }
       }
 
@@ -1338,21 +1381,22 @@ async function outboundRoutes(fastify, options) {
         let assignedPalletCode = item.pallet_code || (pallet ? pallet.pallet_code : `PAL-RESO-${order.id}`);
 
         if (pallet && (pallet.status === 'SHIPPED' || parseFloat(pallet.quantity) === 0)) {
-          // Paletta azzerata/spedita: riattivala con posizione 'IN ATTESA'
+          // Paletta azzerata/spedita: riattivala come PENDING da stivare (location = NULL)
           await connection.query(
-            'UPDATE PALLETS SET quantity = ?, status = "STOCKED", location = "IN ATTESA", shipped_at = NULL WHERE id = ?',
+            'UPDATE PALLETS SET quantity = ?, status = "PENDING", location = NULL, shipped_at = NULL WHERE id = ?',
             [restoreQty, pallet.id]
           );
           assignedPalletId = pallet.id;
           assignedPalletCode = pallet.pallet_code;
         } else if (pallet && pallet.status !== 'SHIPPED') {
-          // Paletta parziale: crea nuova riga specifica con posizione 'IN ATTESA'
+          // Paletta parziale rimasta sullo scaffale: generiamo codice dedicato PAL-RESO univoco e status PENDING, location NULL
+          const resoCode = `PAL-RESO-${order.id}-${item.id}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
           const [insertRes] = await connection.query(
             `INSERT INTO PALLETS 
              (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STOCKED', 'IN ATTESA', ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, ?, ?, ?)`,
             [
-              pallet.pallet_code,
+              resoCode,
               pallet.customer_id,
               pallet.product_id,
               restoreQty,
@@ -1366,16 +1410,17 @@ async function outboundRoutes(fastify, options) {
             ]
           );
           assignedPalletId = insertRes.insertId;
-          assignedPalletCode = pallet.pallet_code;
-          await connection.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ? WHERE id = ?', [assignedPalletId, item.id]);
+          assignedPalletCode = resoCode;
+          await connection.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [assignedPalletId, assignedPalletCode, item.id]);
         } else {
-          // Paletta non trovata: inserisci nuova paletta
+          // Paletta non trovata: inserisci nuova paletta PENDING da stivare
+          const resoCode = `PAL-RESO-${order.id}-${item.id}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
           const [insertRes] = await connection.query(
             `INSERT INTO PALLETS 
              (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'Settala', 'STOCKED', 'IN ATTESA')`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'Settala', 'PENDING', NULL)`,
             [
-              assignedPalletCode,
+              resoCode,
               order.customer_id,
               item.product_id,
               restoreQty,
@@ -1385,6 +1430,7 @@ async function outboundRoutes(fastify, options) {
             ]
           );
           assignedPalletId = insertRes.insertId;
+          assignedPalletCode = resoCode;
           await connection.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [assignedPalletId, assignedPalletCode, item.id]);
         }
 

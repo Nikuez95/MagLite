@@ -32,11 +32,23 @@ export function hasPerm(permKey, customUser = null) {
 export function canTouchCustomer(customerId, customUser = null) {
   if (!customerId) return true;
   const user = customUser || getCurrentUser();
-  if (!user) return false;
-  const restricted = user.restricted_customers;
-  if (!Array.isArray(restricted) || restricted.length === 0) return true;
-  return !restricted.map(Number).includes(Number(customerId));
+  if (!user || !user.role) return false;
+  if (user.role === 'developer') return true;
+
+  const mode = (user.customer_access_mode || 'BLACKLIST').toUpperCase();
+  const list = Array.isArray(user.restricted_customers)
+    ? user.restricted_customers.map(Number)
+    : [];
+
+  if (mode === 'WHITELIST' || mode === 'WHITELIST_ONLY' || mode === 'CLIENT_PORTAL') {
+    return list.includes(Number(customerId));
+  }
+
+  if (list.length === 0) return true;
+  return !list.includes(Number(customerId));
 }
+
+export const canAccessCustomer = canTouchCustomer;
 
 export function canAccessDesktop(customUser = null) {
   const user = customUser || getCurrentUser();
@@ -52,6 +64,7 @@ export function canAccessZebra(customUser = null) {
 export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop', perm: 'view_dashboard', label: 'Dashboard' },
   { path: '/desktop/inbound', perm: 'view_inbound', label: 'Nuova Merce (Inbound)' },
+  { path: '/desktop/custom-forms', perm: ['view_custom_forms', 'manage_custom_forms'], label: 'Moduli & Arrivi' },
   { path: '/desktop/documents', perm: 'view_documents', label: 'DDT Entrata (Spunta)' },
   { path: '/desktop/outbound', perm: 'view_outbound', label: 'Spedizioni (Outbound)' },
   { path: '/desktop/outbound/history', perm: 'view_outbound', label: 'Storico Uscite' },

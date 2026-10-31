@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
@@ -35,7 +35,8 @@ import {
   Truck,
   Smartphone,
   MapPin,
-  ArrowUpRight
+  ArrowUpRight,
+  ClipboardList
 } from 'lucide-react';
 import { hasPerm, refreshUserProfile } from '../../utils/permissions';
 
@@ -168,6 +169,7 @@ const DesktopLayout = () => {
       icon: Package, 
       submenu: [
         { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus, perm: 'view_inbound' },
+        { name: 'Moduli & Check-in', path: '/desktop/custom-forms', icon: ClipboardList, perm: ['view_custom_forms', 'manage_custom_forms'] },
         { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
         { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
         { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
@@ -219,6 +221,7 @@ const DesktopLayout = () => {
   const allFlatPages = [
     { name: 'Dashboard Control Center', path: '/desktop', icon: LayoutDashboard, group: 'Generale', perm: 'view_dashboard' },
     { name: 'Nuova Merce (Inbound)', path: '/desktop/inbound', icon: PackagePlus, group: 'Merce', perm: 'view_inbound' },
+    { name: 'Moduli Dinamici & Check-in', path: '/desktop/custom-forms', icon: ClipboardList, group: 'Merce', perm: ['view_custom_forms', 'manage_custom_forms'] },
     { name: 'Spedizioni (Outbound)', path: '/desktop/outbound', icon: PackageMinus, group: 'Merce', perm: 'view_outbound' },
     { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce', perm: 'view_outbound' },
     { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: ['view_outbound', 'outbound_return'] },
@@ -698,7 +701,14 @@ const DesktopLayout = () => {
         </header>
 
         <main className="flex-1 w-full max-w-full overflow-y-auto overflow-x-hidden bg-brand-black p-4 md:p-8">
-          <Outlet />
+          <Suspense fallback={
+            <div className="min-h-[50vh] flex flex-col items-center justify-center text-slate-400 gap-3">
+              <div className="w-8 h-8 border-3 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
+              <div className="text-xs font-bold text-slate-400">Caricamento modulo...</div>
+            </div>
+          }>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

@@ -215,14 +215,33 @@ async function billingRoutes(fastify, options) {
 
   // POST Calculate (Supporta Pre-Fatturazione per Deposito + Suddivisione per Frammentazioni + Dettaglio Completo Articolo/Lotto/Rif/Note/Prezzo)
   fastify.post('/calculate', async (request, reply) => {
-    const {
+    let {
       clientId,
       month,
       year,
       includeHistorical = true,
       includeDeposit = true,
-      includeStorage = true
+      includeStorage = true,
+      storageMode // 'DEPOSITO_FINE_MESE' | 'QUINDICINA' | 'ENTRAMBI' | 'NESSUNO'
     } = request.body;
+
+    // Regola anti-doppio addebito stoccaggio a fine mese:
+    if (storageMode === 'DEPOSITO_FINE_MESE') {
+      includeStorage = false;
+      includeDeposit = true;
+    } else if (storageMode === 'QUINDICINA') {
+      includeStorage = true;
+      includeDeposit = false;
+    } else if (storageMode === 'NESSUNO') {
+      includeStorage = false;
+      includeDeposit = false;
+    } else if (storageMode === 'ENTRAMBI') {
+      includeStorage = true;
+      includeDeposit = true;
+    } else if (includeDeposit && includeStorage) {
+      // Se entrambi sono lasciati a true, privilegiamo DEPOSITO_PALLET fine mese per evitare doppio addebito con SOSTA_15
+      includeStorage = false;
+    }
     
     if (!clientId || !month || !year) {
       return reply.code(400).send({ error: 'Client, mese e anno richiesti' });
