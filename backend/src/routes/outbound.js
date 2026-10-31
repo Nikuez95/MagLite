@@ -1,3 +1,4 @@
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 const PDFDocument = require('pdfkit');
 const bwipjs = require('bwip-js');
@@ -225,7 +226,7 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       FROM PALLETS pal 
       JOIN PRODUCTS p ON pal.product_id = p.id 
       LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode 
-      WHERE pal.product_id = ? AND pal.status != 'SHIPPED' AND pal.quantity > 0
+      WHERE pal.product_id = ? AND pal.status != 'SHIPPED' AND pal.quantity > 0 AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE)
     `;
     const params = [req.product_id];
 
@@ -363,6 +364,12 @@ async function outboundRoutes(fastify, options) {
   // POST /api/outbound - Create new order
   fastify.post('/', async (request, reply) => {
     const { customer_id, exit_date, items, client_ddt, notes } = request.body;
+    if (!hasPermission(request.user, 'outbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare spedizioni.' });
+    }
+    if (customer_id && !canAccessCustomer(request.user, customer_id)) {
+      return reply.code(403).send({ error: 'Accesso negato: non puoi creare spedizioni per questo cliente.' });
+    }
     const connection = await db.getConnection();
     
     try {
@@ -419,9 +426,11 @@ async function outboundRoutes(fastify, options) {
     const { id } = request.params;
     const { customer_id, exit_date, items, client_ddt, notes } = request.body;
     
-    const userRole = request.user?.role;
-    if (userRole !== 'developer' && userRole !== 'backoffice' && userRole !== 'admin') {
+    if (!hasPermission(request.user, 'outbound_create')) {
       return reply.code(403).send({ error: 'Non autorizzato a modificare le spedizioni' });
+    }
+    if (customer_id && !canAccessCustomer(request.user, customer_id)) {
+      return reply.code(403).send({ error: 'Accesso negato: non puoi operare sulle spedizioni di questo cliente.' });
     }
 
     const connection = await db.getConnection();
@@ -512,10 +521,8 @@ async function outboundRoutes(fastify, options) {
   fastify.delete('/:id', async (request, reply) => {
     const { id } = request.params;
     
-    // Auth check
-    const userRole = request.user?.role;
-    if (userRole !== 'developer' && userRole !== 'backoffice' && userRole !== 'admin') {
-      return reply.code(403).send({ error: 'Non autorizzato a eliminare le spedizioni' });
+    if (!hasPermission(request.user, 'outbound_delete')) {
+      return reply.code(403).send({ error: 'Non hai il permesso di eliminare le spedizioni' });
     }
 
     try {
@@ -606,6 +613,7 @@ async function outboundRoutes(fastify, options) {
                   WHERE pal.product_id = ?
                     AND (TRIM(pal.batch) = TRIM(?) OR (pal.batch IS NULL AND ? IS NULL))
                     AND pal.status = 'STOCKED'
+                    AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE)
                     AND pal.id != ?
                   HAVING avail_qty >= ?
                 `, [it.id, it.product_id, it.batch, it.batch, it.pallet_id, parseFloat(it.quantity_required)]);
@@ -875,7 +883,7 @@ async function outboundRoutes(fastify, options) {
     try {
       // Verifica item
       const [items] = await db.query(`
-        SELECT i.*, pal.id as resolved_pallet_id, pal.location, loc.pin as loc_pin, pr.name as product_name
+        SELECT i.*, pal.id as resolved_pallet_id, pal.location, pal.is_quarantined, pal.quarantine_reason, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
           i.pallet_id,
@@ -893,17 +901,20 @@ async function outboundRoutes(fastify, options) {
 
       if (items.length === 0) return reply.code(404).send({ error: 'Riga ordine non trovata' });
       const item = items[0];
+      if (item.is_quarantined) {
+        return reply.code(403).send({ error: `BLOCCO QUARANTENA: La paletta ${item.pallet_code} è in quarantena (${item.quarantine_reason || 'Bloccata'}) e non può essere prelevata!` });
+      }
 
       // Verifica Barcode Paletta
       let actualPalletId = item.resolved_pallet_id;
       if (item.pallet_code.toLowerCase() !== pallet_code.toLowerCase()) {
         const [scannedPallets] = await db.query(
-          'SELECT id, pallet_code, product_id, batch, status, location, quantity FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"',
+          'SELECT id, pallet_code, product_id, batch, status, location, quantity, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"',
           [pallet_code.trim()]
         );
         if (
           scannedPallets.length > 0 &&
-          scannedPallets[0].product_id === item.product_id &&
+          !scannedPallets[0].is_quarantined && scannedPallets[0].product_id === item.product_id &&
           ((scannedPallets[0].batch || '').trim().toUpperCase() === (item.batch || '').trim().toUpperCase() || (!scannedPallets[0].batch && !item.batch))
         ) {
           actualPalletId = scannedPallets[0].id;
@@ -1060,6 +1071,9 @@ async function outboundRoutes(fastify, options) {
         const [pallets] = await connection.query(palletsQuery, palletsParams);
         if (pallets.length > 0) {
           const pallet = pallets[0];
+          if (pallet.is_quarantined) {
+            throw new Error(`BLOCCO QUARANTENA: La paletta ${pallet.pallet_code} è in quarantena (${pallet.quarantine_reason || 'Bloccata'}) e non può essere spedita. Sbloccala prima dal Registro Quarantene.`);
+          }
           const upb = parseFloat(pallet.effective_units_per_box) || 1;
           const bpp = parseFloat(pallet.effective_boxes_per_pallet) || 1;
           const unitsPerPallet = upb * bpp;
@@ -1168,7 +1182,7 @@ async function outboundRoutes(fastify, options) {
         FROM PALLETS pal
         JOIN PRODUCTS p ON pal.product_id = p.id
         LEFT JOIN LOCATIONS l ON pal.location = l.barcode
-        WHERE pal.customer_id = ? AND pal.status ${statusCondition}
+        WHERE pal.customer_id = ? AND pal.status ${statusCondition} AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE)
         HAVING available_quantity > 0
         ORDER BY pal.expiration_date ASC, pal.created_at ASC
       `, [customer_id]);

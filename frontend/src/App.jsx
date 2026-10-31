@@ -15,6 +15,7 @@ import InboundDDTs from './pages/desktop/InboundDDTs';
 import Outbound from './pages/desktop/Outbound';
 import OutboundHistory from './pages/desktop/OutboundHistory';
 import OutboundReturns from './pages/desktop/OutboundReturns';
+import Quarantine from './pages/desktop/Quarantine';
 import Inventory from './pages/desktop/Inventory';
 import Locations from './pages/desktop/Locations';
 import ClientTariffManager from './pages/desktop/ClientTariffManager';
@@ -28,20 +29,40 @@ import InvoicesHistory from './pages/desktop/InvoicesHistory';
 import ExpensesManager from './pages/desktop/ExpensesManager';
 import Dashboard from './pages/desktop/Dashboard';
 import AuditLogs from './pages/desktop/AuditLogs';
+import { canAccessDesktop, refreshUserProfile } from './utils/permissions';
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem('maglite_token'));
-  
-  const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+  const [userState, setUserState] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('maglite_user') || '{}'); } catch { return {}; }
+  });
+
+  const user = userState;
   const [needsPasswordChange, setNeedsPasswordChange] = useState(token && user.requires_password_change);
-  
-  const isDesktopAllowed = token && (user.role === 'developer' || user.role === 'backoffice');
+
+  const isDesktopAllowed = Boolean(token && canAccessDesktop(user));
+
+  useEffect(() => {
+    const syncUser = () => {
+      try {
+        const u = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+        setUserState(u);
+        setNeedsPasswordChange(Boolean(token && u.requires_password_change));
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('maglite_permissions_updated', syncUser);
+    return () => window.removeEventListener('maglite_permissions_updated', syncUser);
+  }, [token]);
 
   useEffect(() => {
     if (token) {
       localStorage.setItem('maglite_token', token);
       const updatedUser = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+      setUserState(updatedUser);
       setNeedsPasswordChange(updatedUser.requires_password_change);
+      refreshUserProfile();
     } else {
       localStorage.removeItem('maglite_token');
       setNeedsPasswordChange(false);
@@ -73,6 +94,7 @@ function App() {
           <Route path="outbound" element={<Outbound />} />
           <Route path="outbound/history" element={<OutboundHistory />} />
           <Route path="outbound/returns" element={<OutboundReturns />} />
+          <Route path="quarantine" element={<Quarantine />} />
           <Route path="inventory" element={<Inventory />} />
           <Route path="customers" element={<Customers />} />
           <Route path="products" element={<Products />} />

@@ -1,3 +1,4 @@
+const { hasPermission } = require('../utils/permissions');
 const db = require('../config/db');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
@@ -123,8 +124,8 @@ async function locationRoutes(fastify, options) {
   fastify.delete('/:id', async (request, reply) => {
     const { id } = request.params;
     
-    if (request.user.role !== 'developer') {
-      return reply.code(403).send({ error: 'Azione consentita solo ai developer' });
+    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage')) {
+      return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
     try {
@@ -152,8 +153,8 @@ async function locationRoutes(fastify, options) {
   fastify.delete('/zone/:zoneName', async (request, reply) => {
     const { zoneName } = request.params;
     
-    if (request.user.role !== 'developer') {
-      return reply.code(403).send({ error: 'Azione consentita solo ai developer' });
+    if (!hasPermission(request.user, 'pallet_delete') && !hasPermission(request.user, 'settings_manage')) {
+      return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
     try {

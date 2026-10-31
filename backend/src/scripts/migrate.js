@@ -125,6 +125,49 @@ async function runMigrations() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (order_id) REFERENCES OUTBOUND_ORDERS(id) ON DELETE CASCADE,
         FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+      )`,
+      "ALTER TABLE USERS MODIFY COLUMN role VARCHAR(50) NOT NULL DEFAULT 'operator'",
+      "ALTER TABLE USERS ADD COLUMN custom_permissions JSON DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN is_quarantined BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE PALLETS ADD COLUMN quarantine_reason VARCHAR(255) DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN quarantined_at DATETIME DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN quarantined_by VARCHAR(100) DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN quarantine_notes TEXT DEFAULT NULL",
+      `CREATE TABLE IF NOT EXISTS ROLES (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code VARCHAR(50) UNIQUE NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        description VARCHAR(255) DEFAULT NULL,
+        color VARCHAR(30) DEFAULT '#38bdf8',
+        hierarchy_level INT NOT NULL DEFAULT 100,
+        is_system BOOLEAN DEFAULT FALSE,
+        permissions JSON NOT NULL,
+        created_by VARCHAR(50) DEFAULT 'Sistema',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS QUARANTINE_LOGS (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        pallet_id INT DEFAULT NULL,
+        pallet_code VARCHAR(50) NOT NULL,
+        product_id INT NOT NULL,
+        product_name VARCHAR(255) DEFAULT NULL,
+        sku VARCHAR(100) DEFAULT NULL,
+        customer_id INT NOT NULL,
+        customer_name VARCHAR(255) DEFAULT NULL,
+        batch VARCHAR(100) DEFAULT NULL,
+        quantity DECIMAL(10,2) DEFAULT 0,
+        uom VARCHAR(50) DEFAULT NULL,
+        location VARCHAR(50) DEFAULT NULL,
+        status ENUM('QUARANTINED', 'RELEASED') NOT NULL DEFAULT 'QUARANTINED',
+        block_reason VARCHAR(255) NOT NULL,
+        block_notes TEXT DEFAULT NULL,
+        blocked_by VARCHAR(100) NOT NULL,
+        blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        unblock_reason VARCHAR(255) DEFAULT NULL,
+        unblock_notes TEXT DEFAULT NULL,
+        unblocked_by VARCHAR(100) DEFAULT NULL,
+        unblocked_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 
@@ -235,6 +278,15 @@ async function runMigrations() {
       console.warn('[MIGRATE SKU CLEANUP WARNING]', skuCleanErr.message);
     }
     
+    // 4. Inizializza Ruoli Piramidali di Default (Discord-style RBAC)
+    try {
+      const { seedDefaultRoles } = require('../utils/permissions');
+      await seedDefaultRoles(connection);
+      console.log('✅ Ruoli piramidali sincronizzati.');
+    } catch (roleSeedErr) {
+      console.warn('[MIGRATE ROLES SEED WARNING]', roleSeedErr.message);
+    }
+
     console.log('🚀 Migrazioni completate. Database allineato al 100%.');
   } catch (err) {
     console.error('❌ Errore critico durante le migrazioni:', err);

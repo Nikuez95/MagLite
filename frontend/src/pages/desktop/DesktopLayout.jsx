@@ -28,6 +28,7 @@ import {
   Coins,
   DollarSign,
   RotateCcw,
+  ShieldAlert,
   Activity,
   TrendingDown,
   Archive,
@@ -36,6 +37,7 @@ import {
   MapPin,
   ArrowUpRight
 } from 'lucide-react';
+import { hasPerm, refreshUserProfile } from '../../utils/permissions';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
@@ -43,16 +45,16 @@ const DesktopLayout = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(true);
 
-  const user = (() => {
+  const [user, setUser] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('maglite_user') || '{}');
     } catch {
       return {};
     }
-  })();
+  });
 
   const [openSubmenus, setOpenSubmenus] = useState({
-    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns'].includes(location.pathname),
+    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
     Finanza: ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
     Amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
   });
@@ -68,18 +70,38 @@ const DesktopLayout = () => {
   useEffect(() => {
     setOpenSubmenus(prev => ({
       ...prev,
-      Merce: prev.Merce || ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns'].includes(location.pathname),
+      Merce: prev.Merce || ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
       Finanza: prev.Finanza || ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
       Amministrazione: prev.Amministrazione || ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
     }));
   }, [location.pathname]);
 
-  // WebSocket status indicator in top bar
+  useEffect(() => {
+    refreshUserProfile().then(u => {
+      if (u) setUser(u);
+    });
+    const handlePermSync = () => {
+      try {
+        setUser(JSON.parse(localStorage.getItem('maglite_user') || '{}'));
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('maglite_permissions_updated', handlePermSync);
+    return () => window.removeEventListener('maglite_permissions_updated', handlePermSync);
+  }, []);
+
+  // WebSocket status indicator in top bar & live permissions sync
   useEffect(() => {
     const socket = io(`http://${window.location.hostname}:3000`);
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
     socket.on('connect_error', () => setSocketConnected(false));
+    socket.on('permissions_updated', () => {
+      refreshUserProfile().then(u => {
+        if (u) setUser(u);
+      });
+    });
     return () => socket.disconnect();
   }, []);
 
@@ -139,68 +161,85 @@ const DesktopLayout = () => {
     setOpenSubmenus(prev => ({ ...prev, [name]: !prev[name] }));
   };
 
-  const menu = [
-    { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard },
+  const rawMenu = [
+    { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard, perm: 'view_dashboard' },
     { 
       name: 'Merce', 
       icon: Package, 
       submenu: [
-        { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus },
-        { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus },
-        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw },
-        { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box },
-        { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch },
+        { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus, perm: 'view_inbound' },
+        { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
+        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: 'view_returns' },
+        { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
+        { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
+        { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' },
       ]
     },
-    { name: 'Clienti', path: '/desktop/customers', icon: Users },
-    { name: 'Magazzino', path: '/desktop/locations', icon: Map },
-    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText },
-    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck },
+    { name: 'Clienti', path: '/desktop/customers', icon: Users, perm: 'view_customers' },
+    { name: 'Magazzino', path: '/desktop/locations', icon: Map, perm: 'view_locations' },
+    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_inbound' },
+    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: 'view_tms' },
     {
       name: 'Finanza',
       icon: DollarSign,
+      perm: 'view_finance',
       submenu: [
-        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity },
-        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown },
-        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive }
+        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, perm: 'view_finance' },
+        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, perm: 'view_finance' },
+        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, perm: 'view_finance' }
       ]
     },
     {
       name: 'Amministrazione',
       icon: Calculator,
+      perm: 'view_billing',
       submenu: [
-        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2 },
-        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins },
-        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText }
+        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: 'view_billing' },
+        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: 'view_billing' },
+        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: 'view_billing' }
       ]
     },
-    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog },
-    { name: 'Audit Logs', path: '/desktop/audit', icon: History },
+    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: 'view_users' },
+    { name: 'Audit Logs', path: '/desktop/audit', icon: History, perm: 'view_audit' },
   ];
 
+  const menu = rawMenu
+    .map(item => {
+      if (item.submenu) {
+        if (item.perm && !hasPerm(item.perm, user)) return null;
+        const filteredSub = item.submenu.filter(s => !s.perm || hasPerm(s.perm, user));
+        if (filteredSub.length === 0) return null;
+        return { ...item, submenu: filteredSub };
+      }
+      if (item.perm && !hasPerm(item.perm, user)) return null;
+      return item;
+    })
+    .filter(Boolean);
+
   const allFlatPages = [
-    { name: 'Dashboard Control Center', path: '/desktop', icon: LayoutDashboard, group: 'Generale' },
-    { name: 'Nuova Merce (Inbound)', path: '/desktop/inbound', icon: PackagePlus, group: 'Merce' },
-    { name: 'Spedizioni (Outbound)', path: '/desktop/outbound', icon: PackageMinus, group: 'Merce' },
-    { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce' },
-    { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce' },
-    { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce' },
-    { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce' },
-    { name: 'Anagrafica Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche' },
-    { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: Map, group: 'Magazzino' },
-    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce' },
-    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica' },
-    { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza' },
-    { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, group: 'Finanza' },
-    { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, group: 'Finanza' },
-    { name: 'Regole Base Fatturazione', path: '/desktop/billing-rules', icon: Settings2, group: 'Amministrazione' },
-    { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, group: 'Amministrazione' },
-    { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione' },
-    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema' },
-    { name: 'Audit Logs', path: '/desktop/audit', icon: History, group: 'Sistema' },
-    { name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, group: 'Configurazione' },
-    { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: Map, group: 'Configurazione' }
-  ];
+    { name: 'Dashboard Control Center', path: '/desktop', icon: LayoutDashboard, group: 'Generale', perm: 'view_dashboard' },
+    { name: 'Nuova Merce (Inbound)', path: '/desktop/inbound', icon: PackagePlus, group: 'Merce', perm: 'view_inbound' },
+    { name: 'Spedizioni (Outbound)', path: '/desktop/outbound', icon: PackageMinus, group: 'Merce', perm: 'view_outbound' },
+    { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce', perm: 'view_outbound' },
+    { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: 'view_returns' },
+    { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce', perm: 'view_products' },
+    { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, group: 'Merce', perm: 'view_quarantine' },
+    { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },
+    { name: 'Anagrafica Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
+    { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: Map, group: 'Magazzino', perm: 'view_locations' },
+    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce', perm: 'view_inbound' },
+    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica', perm: 'view_tms' },
+    { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza', perm: 'view_finance' },
+    { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, group: 'Finanza', perm: 'view_finance' },
+    { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, group: 'Finanza', perm: 'view_finance' },
+    { name: 'Regole Base Fatturazione', path: '/desktop/billing-rules', icon: Settings2, group: 'Amministrazione', perm: 'view_billing' },
+    { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, group: 'Amministrazione', perm: 'view_billing' },
+    { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione', perm: 'view_billing' },
+    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema', perm: 'view_users' },
+    { name: 'Audit Logs', path: '/desktop/audit', icon: History, group: 'Sistema', perm: 'view_audit' },
+    { name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, group: 'Configurazione', perm: 'view_settings' },
+    { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: Map, group: 'Configurazione', perm: 'view_settings' }
+  ].filter(p => !p.perm || hasPerm(p.perm, user));
 
   const currentPageMeta = allFlatPages.find(p => p.path === location.pathname) || { name: 'Gestionale', group: 'MagLite' };
 
@@ -503,38 +542,54 @@ const DesktopLayout = () => {
 
         {/* Footer Sidebar */}
         <div className="p-3 border-t border-slate-800/80 flex flex-col gap-1.5 bg-slate-950/40">
-          <button
-            onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}
-            className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
-              location.pathname === '/desktop/settings'
-                ? 'bg-brand-blue text-brand-black font-bold'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
-            }`}
-          >
-            <Settings size={17} />
-            <span>Impostazioni Aziendali</span>
-          </button>
-          <button
-            onClick={() => { navigate('/desktop/settings/routing'); setMobileMenuOpen(false); }}
-            className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
-              location.pathname === '/desktop/settings/routing'
-                ? 'bg-brand-blue text-brand-black font-bold'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
-            }`}
-          >
-            <Map size={17} />
-            <span>Regole di Prelievo</span>
-          </button>
+          {hasPerm('view_settings', user) && (
+            <>
+              <button
+                onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}
+                className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
+                  location.pathname === '/desktop/settings'
+                    ? 'bg-brand-blue text-brand-black font-bold'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
+                }`}
+              >
+                <Settings size={17} />
+                <span>Impostazioni Aziendali</span>
+              </button>
+              <button
+                onClick={() => { navigate('/desktop/settings/routing'); setMobileMenuOpen(false); }}
+                className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
+                  location.pathname === '/desktop/settings/routing'
+                    ? 'bg-brand-blue text-brand-black font-bold'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
+                }`}
+              >
+                <Map size={17} />
+                <span>Regole di Prelievo</span>
+              </button>
+            </>
+          )}
 
           {/* User Profile & Logout Bar */}
           <div className="mt-1 pt-2 border-t border-slate-800/70 flex items-center justify-between gap-2 px-2">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-xl bg-brand-blue/15 border border-brand-blue/30 flex items-center justify-center text-brand-blue font-black text-xs shrink-0 uppercase">
+              <div
+                className="w-8 h-8 rounded-xl border flex items-center justify-center font-black text-xs shrink-0 uppercase"
+                style={{
+                  backgroundColor: `${user.role_color || '#38bdf8'}20`,
+                  borderColor: `${user.role_color || '#38bdf8'}55`,
+                  color: user.role_color || '#38bdf8'
+                }}
+              >
                 {(user.username || 'U').slice(0, 2)}
               </div>
               <div className="min-w-0">
                 <div className="text-xs font-bold text-brand-white truncate">{user.username || 'Utente'}</div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-brand-blue truncate">{user.role || 'admin'}</div>
+                <div
+                  className="text-[10px] font-bold uppercase tracking-wider truncate"
+                  style={{ color: user.role_color || '#38bdf8' }}
+                >
+                  {user.role_name || user.role || 'admin'}
+                </div>
               </div>
             </div>
             <button 
@@ -563,51 +618,73 @@ const DesktopLayout = () => {
           </div>
 
           <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => navigate('/desktop/inbound')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                location.pathname === '/desktop/inbound'
-                  ? 'bg-brand-blue text-brand-black border-brand-blue'
-                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
-              }`}
-            >
-              <PackagePlus size={14} className={location.pathname === '/desktop/inbound' ? 'text-brand-black' : 'text-brand-blue'} />
-              Nuova Merce
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate('/desktop/outbound')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                location.pathname === '/desktop/outbound'
-                  ? 'bg-brand-blue text-brand-black border-brand-blue'
-                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
-              }`}
-            >
-              <PackageMinus size={14} className={location.pathname === '/desktop/outbound' ? 'text-brand-black' : 'text-brand-blue'} />
-              Spedizioni
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate('/desktop/products')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                location.pathname === '/desktop/products'
-                  ? 'bg-brand-blue text-brand-black border-brand-blue'
-                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
-              }`}
-            >
-              <Box size={14} className={location.pathname === '/desktop/products' ? 'text-brand-black' : 'text-brand-blue'} />
-              Stock Palette
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate('/zebra')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-brand-white border border-slate-800 transition-all"
-              title="Passa all'interfaccia Terminale Zebra"
-            >
-              <Smartphone size={14} className="text-brand-blue" />
-              Zebra
-            </button>
+            {hasPerm('view_inbound', user) && (
+              <button
+                type="button"
+                onClick={() => navigate('/desktop/inbound')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                  location.pathname === '/desktop/inbound'
+                    ? 'bg-brand-blue text-brand-black border-brand-blue'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
+                }`}
+              >
+                <PackagePlus size={14} className={location.pathname === '/desktop/inbound' ? 'text-brand-black' : 'text-brand-blue'} />
+                Nuova Merce
+              </button>
+            )}
+            {hasPerm('view_outbound', user) && (
+              <button
+                type="button"
+                onClick={() => navigate('/desktop/outbound')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                  location.pathname === '/desktop/outbound'
+                    ? 'bg-brand-blue text-brand-black border-brand-blue'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
+                }`}
+              >
+                <PackageMinus size={14} className={location.pathname === '/desktop/outbound' ? 'text-brand-black' : 'text-brand-blue'} />
+                Spedizioni
+              </button>
+            )}
+            {hasPerm('view_products', user) && (
+              <button
+                type="button"
+                onClick={() => navigate('/desktop/products')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                  location.pathname === '/desktop/products'
+                    ? 'bg-brand-blue text-brand-black border-brand-blue'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
+                }`}
+              >
+                <Box size={14} className={location.pathname === '/desktop/products' ? 'text-brand-black' : 'text-brand-blue'} />
+                Stock Palette
+              </button>
+            )}
+            {hasPerm('view_quarantine', user) && (
+              <button
+                type="button"
+                onClick={() => navigate('/desktop/quarantine')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                  location.pathname === '/desktop/quarantine'
+                    ? 'bg-rose-500 text-brand-black border-rose-500'
+                    : 'bg-slate-900 hover:bg-slate-800 text-rose-400 border-slate-800 hover:border-rose-500/40'
+                }`}
+              >
+                <ShieldAlert size={14} className={location.pathname === '/desktop/quarantine' ? 'text-brand-black' : 'text-rose-400'} />
+                Quarantena
+              </button>
+            )}
+            {hasPerm('access_zebra', user) && (
+              <button
+                type="button"
+                onClick={() => navigate('/zebra')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-brand-white border border-slate-800 transition-all"
+                title="Passa all'interfaccia Terminale Zebra"
+              >
+                <Smartphone size={14} className="text-brand-blue" />
+                Zebra
+              </button>
+            )}
 
             <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
               socketConnected

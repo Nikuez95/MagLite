@@ -1,11 +1,18 @@
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 
 async function customerRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   fastify.addHook('preHandler', async (request, reply) => {
-    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
-      return reply.code(403).send({ error: 'Accesso negato.' });
+    if (request.method === 'GET') {
+      return;
+    }
+    if (!hasPermission(request.user, 'customer_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare o eliminare clienti.' });
+    }
+    if (request.params?.id && !canAccessCustomer(request.user, request.params.id)) {
+      return reply.code(403).send({ error: 'Accesso negato: questo cliente è bloccato per il tuo profilo.' });
     }
   });
 

@@ -1,14 +1,18 @@
 import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
   Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity,
   User, Monitor, Loader2, Trash2, Edit3, Printer, Clock, AlertTriangle,
-  Calendar, ArrowUpDown, ShieldCheck, RotateCcw, Flame, X, Layers, ExternalLink
+  Calendar, ArrowUpDown, ShieldCheck, RotateCcw, Flame, X, Layers, ExternalLink,
+  Lock, Unlock, ShieldAlert
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import CreatableSelect from 'react-select/creatable';
 import Select from 'react-select';
+import { hasPerm, canTouchCustomer } from '../../utils/permissions';
+import { DEFAULT_BLOCK_REASONS, DEFAULT_UNBLOCK_REASONS } from './Quarantine';
 
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
@@ -273,19 +277,124 @@ const ProductsManagement = () => {
 
   const [printModal, setPrintModal] = useState({ show: false, code: '', copies: 1, format: 'A4', isBulk: false });
 
+  // Modale Quarantena (Blocco / Sblocco rapido da Stock Palette)
+  const [quarantineModal, setQuarantineModal] = useState({
+    show: false,
+    mode: 'BLOCK', // 'BLOCK' | 'UNBLOCK'
+    pallet: null,
+    isBulk: false,
+    reason: DEFAULT_BLOCK_REASONS[0],
+    customReason: '',
+    notes: '',
+    error: null
+  });
+
+  const navigate = useNavigate();
   const getToken = () => localStorage.getItem('maglite_token');
   
-  const getUser = () => {
+  const canManageProducts = hasPerm('product_manage');
+  const canDeleteProducts = hasPerm('product_delete');
+  const canEditPallet = hasPerm('pallet_edit');
+  const canDeletePallet = hasPerm('pallet_delete');
+  const canManageQuarantine = hasPerm('quarantine_manage');
+  const canViewQuarantine = hasPerm('view_quarantine');
+
+  const openQuarantineModalForPallet = (pallet, mode = 'BLOCK') => {
+    setQuarantineModal({
+      show: true,
+      mode,
+      pallet,
+      isBulk: false,
+      reason: mode === 'BLOCK' ? DEFAULT_BLOCK_REASONS[0] : DEFAULT_UNBLOCK_REASONS[0],
+      customReason: '',
+      notes: pallet?.quarantine_notes || '',
+      error: null
+    });
+  };
+
+  const openBulkQuarantineModal = () => {
+    const eligibleIds = selectedPallets.filter(id => {
+      const p = pallets.find(pal => pal.id === id);
+      return p && !p.is_quarantined && canTouchCustomer(p.customer_id);
+    });
+    if (eligibleIds.length === 0) {
+      appAlert('Seleziona almeno una paletta non ancora in quarantena su cui hai i permessi operativi.');
+      return;
+    }
+    setQuarantineModal({
+      show: true,
+      mode: 'BLOCK',
+      pallet: null,
+      isBulk: true,
+      reason: DEFAULT_BLOCK_REASONS[0],
+      customReason: '',
+      notes: '',
+      error: null
+    });
+  };
+
+  const handleQuarantineSubmit = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    const finalReason = quarantineModal.reason === 'CUSTOM'
+      ? quarantineModal.customReason.trim()
+      : quarantineModal.reason;
+
+    if (!finalReason) {
+      setQuarantineModal(prev => ({ ...prev, error: 'Inserisci o seleziona un motivo valido.' }));
+      return;
+    }
+
+    setIsProcessing(true);
+    setQuarantineModal(prev => ({ ...prev, error: null }));
     try {
-      const token = getToken();
-      if (!token) return null;
-      return JSON.parse(atob(token.split('.')[1]));
-    } catch(e) {
-      return null;
+      const headers = { Authorization: `Bearer ${getToken()}` };
+      if (quarantineModal.mode === 'BLOCK') {
+        if (quarantineModal.isBulk) {
+          const eligibleIds = selectedPallets.filter(id => {
+            const p = pallets.find(pal => pal.id === id);
+            return p && !p.is_quarantined && canTouchCustomer(p.customer_id);
+          });
+          await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
+            pallet_ids: eligibleIds,
+            reason: finalReason,
+            notes: quarantineModal.notes.trim() || null
+          }, { headers });
+          setSelectedPallets([]);
+        } else {
+          await axios.post(`http://${window.location.hostname}:3000/api/quarantine/block`, {
+            pallet_id: quarantineModal.pallet.id,
+            reason: finalReason,
+            notes: quarantineModal.notes.trim() || null
+          }, { headers });
+        }
+      } else {
+        await axios.post(`http://${window.location.hostname}:3000/api/quarantine/unblock`, {
+          pallet_id: quarantineModal.pallet.id,
+          reason: finalReason,
+          notes: quarantineModal.notes.trim() || null
+        }, { headers });
+      }
+      setQuarantineModal({
+        show: false,
+        mode: 'BLOCK',
+        pallet: null,
+        isBulk: false,
+        reason: DEFAULT_BLOCK_REASONS[0],
+        customReason: '',
+        notes: '',
+        error: null
+      });
+      fetchData();
+    } catch (err) {
+      setQuarantineModal(prev => ({
+        ...prev,
+        error: err.response?.data?.error || 'Errore durante l\'operazione di quarantena.'
+      }));
+    } finally {
+      setIsProcessing(false);
     }
   };
-  const user = getUser();
-  const canManageProducts = user?.role === 'developer' || user?.role === 'backoffice' || user?.role === 'admin';
 
   const fetchData = async () => {
     try {
@@ -310,6 +419,7 @@ const ProductsManagement = () => {
     const socket = io(`http://${window.location.hostname}:3000`);
     socket.on('stow_updated', () => fetchData());
     socket.on('dashboard_update', () => fetchData());
+    socket.on('quarantine_updated', () => fetchData());
     return () => socket.disconnect();
   }, []);
 
@@ -565,6 +675,10 @@ const ProductsManagement = () => {
     return pallets.filter(p => String(p.location || '').startsWith('ZONA CARICO')).length;
   }, [pallets]);
 
+  const quarantinedCount = React.useMemo(() => {
+    return pallets.filter(p => Boolean(p.is_quarantined)).length;
+  }, [pallets]);
+
   // Filtro base (ricerca, cliente, magazzino, stato, range date)
   const baseFilteredPallets = React.useMemo(() => {
     return pallets.filter(p => {
@@ -577,6 +691,7 @@ const ProductsManagement = () => {
                           (p.location && p.location.toLowerCase().includes(searchLower)) ||
                           (p.notes && p.notes.toLowerCase().includes(searchLower)) ||
                           (p.product_notes && p.product_notes.toLowerCase().includes(searchLower)) ||
+                          (p.quarantine_reason && p.quarantine_reason.toLowerCase().includes(searchLower)) ||
                           (p.client_pallet_number && p.client_pallet_number.toLowerCase().includes(searchLower)) ||
                           (p.client_article_number && p.client_article_number.toLowerCase().includes(searchLower)) ||
                           (p.expiration_date && new Date(p.expiration_date).toLocaleDateString('it-IT').includes(searchLower));
@@ -590,6 +705,8 @@ const ProductsManagement = () => {
         matchStatus = p.status === 'STOCKED' && !String(p.location || '').startsWith('ZONA CARICO');
       } else if (filterStatus === 'LOADING_ZONE') {
         matchStatus = String(p.location || '').startsWith('ZONA CARICO');
+      } else if (filterStatus === 'QUARANTINED') {
+        matchStatus = Boolean(p.is_quarantined);
       }
       
       let matchDate = true;
@@ -804,12 +921,30 @@ const ProductsManagement = () => {
               </button>
             </div>
 
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="flex items-center gap-2 px-5 py-2.5 bg-brand-blue text-brand-black font-black text-sm rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.25)] active:scale-95"
-            >
-              <Plus size={18} /> Nuova Referenza
-            </button>
+            {canViewQuarantine && (
+              <button
+                type="button"
+                onClick={() => navigate('/desktop/quarantine')}
+                className="flex items-center gap-2 px-4 py-2.5 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-400 font-bold text-sm rounded-xl transition-all"
+              >
+                <ShieldAlert size={17} />
+                Registro Quarantene
+                {quarantinedCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-rose-500 text-brand-black">
+                    {quarantinedCount}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {canManageProducts && (
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-brand-blue text-brand-black font-black text-sm rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.25)] active:scale-95"
+              >
+                <Plus size={18} /> Nuova Referenza
+              </button>
+            )}
           </div>
         </div>
 
@@ -1009,6 +1144,9 @@ const ProductsManagement = () => {
                       <button onClick={() => setFilterStatus('LOADING_ZONE')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'LOADING_ZONE' ? 'bg-amber-500/25 text-amber-300 font-bold' : 'text-amber-400/70 hover:text-amber-300'}`}>
                         Zona Carico ({loadingZoneCount})
                       </button>
+                      <button onClick={() => setFilterStatus('QUARANTINED')} className={`px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 ${filterStatus === 'QUARANTINED' ? 'bg-rose-500/25 text-rose-300 font-bold border border-rose-500/40' : 'text-rose-400/80 hover:text-rose-300'}`}>
+                        <Lock size={12} /> Quarantena ({quarantinedCount})
+                      </button>
                     </div>
                   </div>
 
@@ -1061,12 +1199,24 @@ const ProductsManagement = () => {
                     </button>
                   )}
                   {selectedPallets.length > 0 && (
-                    <button
-                      onClick={handlePrintBulk}
-                      className="flex items-center gap-2 px-4 py-1.5 bg-brand-blue text-brand-black font-black rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95 text-xs"
-                    >
-                      <Printer size={15} /> Stampa {selectedPallets.length} Etichett{selectedPallets.length === 1 ? 'a' : 'e'}
-                    </button>
+                    <>
+                      {canManageQuarantine && (
+                        <button
+                          type="button"
+                          onClick={openBulkQuarantineModal}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-500/15 hover:bg-rose-500 text-rose-400 hover:text-brand-black border border-rose-500/35 font-bold rounded-xl transition-all text-xs"
+                          title="Metti in Quarantena le palette selezionate"
+                        >
+                          <Lock size={14} /> Quarantena ({selectedPallets.length})
+                        </button>
+                      )}
+                      <button
+                        onClick={handlePrintBulk}
+                        className="flex items-center gap-2 px-4 py-1.5 bg-brand-blue text-brand-black font-black rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.2)] active:scale-95 text-xs"
+                      >
+                        <Printer size={15} /> Stampa {selectedPallets.length} Etichett{selectedPallets.length === 1 ? 'a' : 'e'}
+                      </button>
+                    </>
                   )}
                 </div>
               )}
@@ -1292,8 +1442,10 @@ const ProductsManagement = () => {
                       const expStatus = getExpirationStatus(p.expiration_date, expirationWarningValue, warningUnit);
                       const isExpiredRow = expStatus.category === 'EXPIRED';
                       const isWarningRow = expStatus.category === 'WARNING';
+                      const isQuarantined = Boolean(p.is_quarantined);
+                      const customerAllowed = canTouchCustomer(p.customer_id);
                       return (
-                      <tr key={p.id} className={`border-b border-slate-800/50 transition-colors ${isExpiredRow ? 'bg-rose-950/15 hover:bg-rose-950/25' : isWarningRow ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'hover:bg-slate-800/30'}`}>
+                      <tr key={p.id} className={`border-b border-slate-800/50 transition-colors ${isQuarantined ? 'bg-rose-950/30 hover:bg-rose-950/40 border-l-4 border-l-rose-500' : isExpiredRow ? 'bg-rose-950/15 hover:bg-rose-950/25' : isWarningRow ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'hover:bg-slate-800/30'}`}>
                         <td className="p-4 text-center">
                           <div onClick={() => toggleSelect(p.id)} className={`w-5 h-5 mx-auto rounded border-2 flex items-center justify-center cursor-pointer transition-all ${selectedPallets.includes(p.id) ? 'bg-brand-blue border-brand-blue shadow-[0_0_10px_rgba(14,165,233,0.3)]' : 'bg-slate-900 border-slate-700 hover:border-brand-blue'}`}>{selectedPallets.includes(p.id) && <CheckCircle size={14} className="text-brand-black" strokeWidth={3} />}</div>
                         </td>
@@ -1386,32 +1538,82 @@ const ProductsManagement = () => {
                           })()}
                         </td>
                         <td className="px-3 py-3">
-                          {p.status === 'PENDING' ? (
-                            <span className="text-slate-500 italic text-xs font-bold bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">⏳ IN ATTESA</span>
-                          ) : String(p.location || '').startsWith('ZONA CARICO') ? (
-                            <span
-                              className="text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/40 flex items-center gap-1.5 w-max cursor-pointer hover:bg-amber-500/25 text-xs"
-                              onClick={() => openHistory(p.pallet_code)}
-                              title="Merce prelevata in picking e in attesa di conferma spedizione dal backoffice"
-                            >
-                              <Package size={14} /> {p.location}
-                            </span>
-                          ) : (
-                            <span className="text-green-400 font-bold bg-green-500/10 px-2.5 py-1 rounded-lg border border-green-500/30 flex items-center gap-1 w-max cursor-pointer hover:bg-green-500/20 text-xs" onClick={() => openHistory(p.pallet_code)}>
-                              <MapPin size={14} /> {p.location}
-                            </span>
-                          )}
+                          <div className="flex flex-col gap-1.5 items-start">
+                            {isQuarantined && (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-500 text-brand-black font-black text-[10px] uppercase tracking-wider shadow-[0_0_12px_rgba(244,63,94,0.35)]"
+                                title={`Bloccata da ${p.quarantined_by || '-'} • Motivo: ${p.quarantine_reason || 'Bloccata'}${p.quarantine_notes ? `\nNote: ${p.quarantine_notes}` : ''}`}
+                              >
+                                <Lock size={11} /> IN QUARANTENA: {p.quarantine_reason || 'Bloccata'}
+                              </span>
+                            )}
+                            {p.status === 'PENDING' ? (
+                              <span className="text-slate-500 italic text-xs font-bold bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">⏳ IN ATTESA</span>
+                            ) : String(p.location || '').startsWith('ZONA CARICO') ? (
+                              <span
+                                className="text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/40 flex items-center gap-1.5 w-max cursor-pointer hover:bg-amber-500/25 text-xs"
+                                onClick={() => openHistory(p.pallet_code)}
+                                title="Merce prelevata in picking e in attesa di conferma spedizione dal backoffice"
+                              >
+                                <Package size={14} /> {p.location}
+                              </span>
+                            ) : (
+                              <span className="text-green-400 font-bold bg-green-500/10 px-2.5 py-1 rounded-lg border border-green-500/30 flex items-center gap-1 w-max cursor-pointer hover:bg-green-500/20 text-xs" onClick={() => openHistory(p.pallet_code)}>
+                                <MapPin size={14} /> {p.location}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => setAdjustQtyModal({ show: true, pallet: p, newQuantity: p.quantity, error: null })} className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 rounded-xl transition-colors" title="Modifica Quantità">
-                              <Package size={17} />
-                            </button>
-                            <button onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })} className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors" title="Modifica">
-                              <Edit3 size={17} />
-                            </button>
-                            {canManageProducts && (
-                              <button onClick={() => handleDeletePallet(p.pallet_code)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors" title="Elimina Paletta">
+                            {canManageQuarantine && customerAllowed && (
+                              isQuarantined ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openQuarantineModalForPallet(p, 'UNBLOCK')}
+                                  className="px-2.5 py-1.5 bg-emerald-500/15 hover:bg-emerald-500 text-emerald-400 hover:text-brand-black border border-emerald-500/35 rounded-xl font-black text-xs transition-all flex items-center gap-1"
+                                  title="Sblocca paletta dalla Quarantena"
+                                >
+                                  <Unlock size={14} /> Sblocca
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => openQuarantineModalForPallet(p, 'BLOCK')}
+                                  className="p-2 text-rose-400 hover:text-brand-black hover:bg-rose-500 border border-rose-500/25 rounded-xl transition-all"
+                                  title="Metti in Quarantena (Blocco Operativo)"
+                                >
+                                  <Lock size={16} />
+                                </button>
+                              )
+                            )}
+                            {canEditPallet && (
+                              <>
+                                <button
+                                  disabled={isQuarantined || !customerAllowed}
+                                  onClick={() => setAdjustQtyModal({ show: true, pallet: p, newQuantity: p.quantity, error: null })}
+                                  className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title={isQuarantined ? "Paletta in QUARANTENA: sbloccala prima di modificare la quantità" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Modifica Quantità"}
+                                >
+                                  <Package size={17} />
+                                </button>
+                                <button
+                                  disabled={isQuarantined || !customerAllowed}
+                                  onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
+                                  className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title={isQuarantined ? "Paletta in QUARANTENA: sbloccala prima di modificarla o spostarla" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Modifica"}
+                                >
+                                  <Edit3 size={17} />
+                                </button>
+                              </>
+                            )}
+                            {canDeletePallet && (
+                              <button
+                                disabled={isQuarantined || !customerAllowed}
+                                onClick={() => handleDeletePallet(p.pallet_code)}
+                                className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={isQuarantined ? "Paletta in QUARANTENA: non può essere eliminata finché non viene sbloccata" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Elimina Paletta"}
+                              >
                                 <Trash2 size={17} />
                               </button>
                             )}
@@ -1951,6 +2153,137 @@ const ProductsManagement = () => {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modale Blocco / Sblocco Quarantena */}
+      {quarantineModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className={`bg-slate-900 border rounded-3xl p-7 max-w-lg w-full shadow-2xl relative animate-fade-in-up ${
+            quarantineModal.mode === 'BLOCK' ? 'border-rose-500/40' : 'border-emerald-500/40'
+          }`}>
+            <button
+              onClick={() => setQuarantineModal(prev => ({ ...prev, show: false }))}
+              className="absolute top-6 right-6 text-slate-500 hover:text-white"
+            >
+              <XCircle size={22} />
+            </button>
+
+            <h2 className="text-xl font-black text-brand-white mb-2 flex items-center gap-2.5">
+              {quarantineModal.mode === 'BLOCK' ? (
+                <>
+                  <span className="w-10 h-10 rounded-2xl bg-rose-500/15 border border-rose-500/35 flex items-center justify-center text-rose-400">
+                    <Lock size={20} />
+                  </span>
+                  Metti in Quarantena
+                </>
+              ) : (
+                <>
+                  <span className="w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/35 flex items-center justify-center text-emerald-400">
+                    <Unlock size={20} />
+                  </span>
+                  Sblocca da Quarantena
+                </>
+              )}
+            </h2>
+
+            <p className="text-xs text-slate-400 mb-5">
+              {quarantineModal.mode === 'BLOCK'
+                ? 'Le palette in quarantena non possono essere spostate, modificate, spedite o eliminate finché non vengono sbloccate.'
+                : 'Sbloccando la paletta tornerà immediatamente disponibile per lo stoccaggio, la modifica e la spedizione.'}
+            </p>
+
+            {quarantineModal.pallet && (
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 mb-5 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono font-black text-brand-blue text-sm">{quarantineModal.pallet.pallet_code}</span>
+                  <span className="text-slate-400">Lotto: <strong className="text-white">{quarantineModal.pallet.batch || '-'}</strong></span>
+                </div>
+                <div className="font-bold text-brand-white mt-1">{quarantineModal.pallet.product_name}</div>
+                <div className="text-slate-400 mt-0.5">{quarantineModal.pallet.customer_name} • Q.tà: {quarantineModal.pallet.quantity} {quarantineModal.pallet.uom}</div>
+              </div>
+            )}
+
+            {quarantineModal.isBulk && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-3.5 mb-5 text-xs font-bold text-rose-300">
+                Stai bloccando in Quarantena le palette selezionate ({selectedPallets.length} selezionate).
+              </div>
+            )}
+
+            {quarantineModal.error && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-bold">
+                {quarantineModal.error}
+              </div>
+            )}
+
+            <form onSubmit={handleQuarantineSubmit} className="space-y-4">
+              <div>
+                <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">
+                  {quarantineModal.mode === 'BLOCK' ? 'Motivo del Blocco *' : 'Motivo dello Sblocco / Rilascio *'}
+                </label>
+                <select
+                  value={quarantineModal.reason}
+                  onChange={e => setQuarantineModal(prev => ({ ...prev, reason: e.target.value }))}
+                  className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm font-bold"
+                >
+                  {(quarantineModal.mode === 'BLOCK' ? DEFAULT_BLOCK_REASONS : DEFAULT_UNBLOCK_REASONS).map(r => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                  <option value="CUSTOM">✍️ Altro motivo personalizzato...</option>
+                </select>
+              </div>
+
+              {quarantineModal.reason === 'CUSTOM' && (
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">
+                    Specifica Motivo Personalizzato *
+                  </label>
+                  <input
+                    required
+                    value={quarantineModal.customReason}
+                    onChange={e => setQuarantineModal(prev => ({ ...prev, customReason: e.target.value }))}
+                    placeholder="Inserisci il motivo..."
+                    className="w-full bg-slate-950 border border-slate-700 text-brand-white rounded-xl p-3 text-sm"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">
+                  Note Qualità / Disposizioni Operative (Opzionale)
+                </label>
+                <textarea
+                  rows={2}
+                  value={quarantineModal.notes}
+                  onChange={e => setQuarantineModal(prev => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Annotazioni aggiuntive per il registro qualità..."
+                  className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm resize-none"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setQuarantineModal(prev => ({ ...prev, show: false }))}
+                  className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold text-sm"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  disabled={isProcessing}
+                  className={`flex-1 py-3 rounded-xl font-black text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-50 ${
+                    quarantineModal.mode === 'BLOCK'
+                      ? 'bg-rose-500 hover:bg-rose-400 text-brand-black shadow-[0_0_20px_rgba(244,63,94,0.3)]'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-brand-black shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+                  }`}
+                >
+                  {quarantineModal.mode === 'BLOCK' ? <Lock size={16} /> : <Unlock size={16} />}
+                  {isProcessing ? 'Salvataggio...' : quarantineModal.mode === 'BLOCK' ? 'Conferma Quarantena' : 'Conferma Sblocco'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

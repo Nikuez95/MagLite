@@ -3,7 +3,7 @@ import axios from 'axios';
 import {
   Search, SlidersHorizontal, Filter, Download, Printer, GripVertical, Clock,
   Calendar, AlertTriangle, ShieldCheck, Flame, RotateCcw, Package, CheckCircle,
-  Columns, ChevronDown, ChevronUp, X, Layers, ArrowUpDown
+  Columns, ChevronDown, ChevronUp, X, Layers, ArrowUpDown, Lock
 } from 'lucide-react';
 import Select from 'react-select';
 import { jsPDF } from 'jspdf';
@@ -253,6 +253,7 @@ const Inventory = () => {
     const socket = io(`http://${window.location.hostname}:3000`);
     socket.on('stow_updated', () => fetchData());
     socket.on('dashboard_update', () => fetchData());
+    socket.on('quarantine_updated', () => fetchData());
     return () => socket.disconnect();
   }, []);
 
@@ -344,6 +345,7 @@ const Inventory = () => {
         if (filterLocationState === 'LOADING_ZONE') return loc.startsWith('ZONA CARICO');
         if (filterLocationState === 'PENDING') return !p.location || p.status === 'PENDING';
         if (filterLocationState === 'SHELF') return p.location && !loc.startsWith('ZONA CARICO');
+        if (filterLocationState === 'QUARANTINED') return Boolean(p.is_quarantined);
         return true;
       });
     }
@@ -649,7 +651,15 @@ const Inventory = () => {
         );
       }
       case 'location': return (
-        <div className="text-center">
+        <div className="text-center flex flex-col items-center gap-1">
+          {Boolean(row.is_quarantined) && (
+            <span
+              className="inline-flex items-center gap-1 bg-rose-500 text-brand-black px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider"
+              title={`In Quarantena: ${row.quarantine_reason || 'Bloccata'}`}
+            >
+              <Lock size={10} /> IN QUARANTENA
+            </span>
+          )}
           {groupByBatch ? (
             <span className="text-slate-500 font-bold">-</span>
           ) : row.location ? (
@@ -1052,6 +1062,9 @@ const Inventory = () => {
             <button onClick={() => setFilterLocationState('SHELF')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'SHELF' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>Scaffale</button>
             <button onClick={() => setFilterLocationState('LOADING_ZONE')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'LOADING_ZONE' ? 'bg-amber-500/20 text-amber-400' : 'text-slate-500 hover:text-amber-400'}`}>Zona Carico</button>
             <button onClick={() => setFilterLocationState('PENDING')} className={`px-2.5 py-1.5 rounded-lg transition-colors ${filterLocationState === 'PENDING' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
+            <button onClick={() => setFilterLocationState('QUARANTINED')} className={`px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1 ${filterLocationState === 'QUARANTINED' ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40' : 'text-rose-400/80 hover:text-rose-300'}`}>
+              <Lock size={12} /> Quarantena
+            </button>
           </div>
 
           <div className="flex items-center gap-2">

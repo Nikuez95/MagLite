@@ -1,17 +1,18 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Monitor, Smartphone, LogOut } from 'lucide-react';
+import { canAccessDesktop, canAccessZebra } from '../utils/permissions';
 
 const ModeSelection = () => {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('maglite_user') || '{}');
-  const isOperator = user.role === 'operator';
+  const isOnlyZebra = !canAccessDesktop(user) && canAccessZebra(user);
 
   useEffect(() => {
-    if (isOperator) {
+    if (isOnlyZebra) {
       navigate('/zebra');
     }
-  }, [isOperator, navigate]);
+  }, [isOnlyZebra, navigate]);
 
   const handleLogout = () => {
     localStorage.removeItem('maglite_token');

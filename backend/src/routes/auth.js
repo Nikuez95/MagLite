@@ -1,5 +1,6 @@
 const bcrypt = require('bcrypt');
 const db = require('../config/db');
+const { resolveUserAccess } = require('../utils/permissions');
 
 async function authRoutes(fastify, options) {
   
@@ -24,23 +25,20 @@ async function authRoutes(fastify, options) {
         return reply.code(401).send({ error: 'Credenziali non valide' });
       }
 
+      const accessProfile = await resolveUserAccess(user.id, db);
+
       // Genera il token JWT includendo ruolo e ID (Senza scadenza)
       const token = fastify.jwt.sign({ 
         id: user.id, 
         username: user.username, 
-        role: user.role,
+        role: accessProfile.role,
+        hierarchy_level: accessProfile.hierarchy_level,
         requires_password_change: !!user.requires_password_change
       });
 
       return {
         token,
-        user: {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-          requires_password_change: !!user.requires_password_change,
-          preferences: user.preferences ? (typeof user.preferences === 'string' ? JSON.parse(user.preferences) : user.preferences) : null
-        }
+        user: accessProfile
       };
 
     } catch (err) {
@@ -49,8 +47,21 @@ async function authRoutes(fastify, options) {
     }
   });
 
+  // GET /api/auth/me - Profilo e permessi aggiornati in tempo reale
+  fastify.get('/me', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+    try {
+      const accessProfile = await resolveUserAccess(request.user.id, db);
+      if (!accessProfile) {
+        return reply.code(404).send({ error: 'Utente non trovato' });
+      }
+      return { user: accessProfile };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore recupero profilo' });
+    }
+  });
+
   // Endpoint di Supporto: Setup Admin iniziale (Pubblico per MVP)
-  // Utilizzato per creare il primissimo utente admin per poter testare il login
   fastify.post('/setup-admin', async (request, reply) => {
     try {
       const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM USERS');
@@ -62,7 +73,6 @@ async function authRoutes(fastify, options) {
         return reply.code(400).send({ error: 'Username e password obbligatori' });
       }
 
-      // Cifra la password prima di salvarla nel DB
       const hash = await bcrypt.hash(password, 10);
       await db.query('INSERT INTO USERS (username, password_hash, role, requires_password_change) VALUES (?, ?, ?, FALSE)', [username, hash, 'developer']);
       
@@ -89,15 +99,16 @@ async function authRoutes(fastify, options) {
       
       await db.query('UPDATE USERS SET password_hash = ?, requires_password_change = FALSE WHERE id = ?', [hash, request.user.id]);
       
-      // Rigeneriamo il token per rimuovere il flag requires_password_change (Senza scadenza)
+      const accessProfile = await resolveUserAccess(request.user.id, db);
       const newToken = fastify.jwt.sign({ 
         id: request.user.id, 
         username: request.user.username, 
-        role: request.user.role,
+        role: accessProfile.role,
+        hierarchy_level: accessProfile.hierarchy_level,
         requires_password_change: false
       });
 
-      return { success: true, message: 'Password aggiornata con successo', token: newToken };
+      return { success: true, message: 'Password aggiornata con successo', token: newToken, user: accessProfile };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore interno del server' });

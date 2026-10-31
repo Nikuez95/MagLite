@@ -1,3 +1,4 @@
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 
@@ -94,6 +95,16 @@ async function palletRoutes(fastify, options) {
   });
 
   fastify.post('/generate', async (request, reply) => {
+    if (!hasPermission(request.user, 'inbound_create')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di aggiungere nuova merce.' });
+    }
+    if (Array.isArray(request.body?.cart)) {
+      for (const it of request.body.cart) {
+        if (it.customer_id && !canAccessCustomer(request.user, it.customer_id)) {
+          return reply.code(403).send({ error: 'Accesso negato: non puoi aggiungere o toccare la merce del cliente selezionato.' });
+        }
+      }
+    }
     const { cart, printOptions } = request.body;
     
     if (!cart || !Array.isArray(cart) || cart.length === 0) {
@@ -514,6 +525,9 @@ async function palletRoutes(fastify, options) {
   });
 
   fastify.put('/:code/quantity', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_edit')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare le quantità delle palette.' });
+    }
     const { code } = request.params;
     const { quantity, pallet_id } = request.body;
 
@@ -522,6 +536,15 @@ async function palletRoutes(fastify, options) {
     }
 
     try {
+      const [checkRows] = pallet_id
+        ? await db.query('SELECT id, customer_id, is_quarantined, quarantine_reason FROM PALLETS WHERE id = ?', [pallet_id])
+        : await db.query('SELECT id, customer_id, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ?', [code]);
+      if (checkRows.some(r => r.is_quarantined)) {
+        return reply.code(403).send({ error: 'BLOCCO QUARANTENA: Impossibile modificare la quantità di una paletta in quarantena. Sbloccala prima dal Registro Quarantene.' });
+      }
+      if (checkRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi modificare la merce di questo cliente.' });
+      }
       let oldPallet;
       if (pallet_id) {
         [[oldPallet]] = await db.query('SELECT quantity FROM PALLETS WHERE id = ?', [pallet_id]);
@@ -549,9 +572,19 @@ async function palletRoutes(fastify, options) {
 
 
   fastify.put('/:code', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_edit')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare le palette.' });
+    }
     const { code } = request.params;
     const { notes, client_pallet_number, client_article_number, expiration_date } = request.body;
     try {
+      const [checkRows] = await db.query('SELECT customer_id, is_quarantined FROM PALLETS WHERE pallet_code = ?', [code]);
+      if (checkRows.some(r => r.is_quarantined)) {
+        return reply.code(403).send({ error: 'BLOCCO QUARANTENA: Impossibile modificare una paletta in quarantena.' });
+      }
+      if (checkRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi modificare la merce di questo cliente.' });
+      }
       await db.query(
         'UPDATE PALLETS SET notes = ?, client_pallet_number = ?, client_article_number = ?, expiration_date = ? WHERE pallet_code = ?',
         [notes || null, client_pallet_number || null, client_article_number || null, sanitizeExpirationDate(expiration_date), code]
@@ -572,11 +605,18 @@ async function palletRoutes(fastify, options) {
   });
 
   fastify.delete('/:code', async (request, reply) => {
-    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
-      return reply.code(403).send({ error: 'Solo per developer o backoffice' });
+    if (!hasPermission(request.user, 'pallet_delete')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di eliminare palette.' });
     }
     const { code } = request.params;
     try {
+      const [checkRows] = await db.query('SELECT customer_id, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"', [code]);
+      if (checkRows.some(r => r.is_quarantined)) {
+        return reply.code(403).send({ error: 'BLOCCO QUARANTENA: La paletta è in quarantena e non può essere eliminata! Deve prima essere sbloccata dal Registro Quarantene.' });
+      }
+      if (checkRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi eliminare la merce di questo cliente.' });
+      }
       await db.query('DELETE FROM PALLETS WHERE pallet_code = ?', [code]);
       
       await db.query(
@@ -598,11 +638,21 @@ async function palletRoutes(fastify, options) {
 
   // Unisci paletta a un'altra (Frammenta)
   fastify.post('/merge', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di unire o spostare palette.' });
+    }
     const { source_code, target_code } = request.body;
     if (!source_code || !target_code) return reply.code(400).send({ error: 'Codici mancanti' });
     if (source_code === target_code) return reply.code(400).send({ error: 'I codici sono identici' });
     
     try {
+      const [qRows] = await db.query('SELECT pallet_code, customer_id, is_quarantined FROM PALLETS WHERE pallet_code IN (?, ?) AND status != "SHIPPED"', [source_code, target_code]);
+      if (qRows.some(r => r.is_quarantined)) {
+        return reply.code(403).send({ error: 'BLOCCO QUARANTENA: Impossibile unire palette che si trovano in quarantena!' });
+      }
+      if (qRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi operare sulla merce di questo cliente.' });
+      }
       const [rows] = await db.query('SELECT id FROM PALLETS WHERE pallet_code = ?', [target_code]);
       if (rows.length === 0) return reply.code(404).send({ error: 'Paletta di destinazione non trovata' });
       
@@ -621,6 +671,9 @@ async function palletRoutes(fastify, options) {
   });
   
   fastify.post('/stow', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di spostare o stivare palette.' });
+    }
     const { pallet_code, location, pin, source = 'Zebra', force = false } = request.body;
     
     fastify.log.info(`[STOW] Received stow request: pallet=${pallet_code}, location=${location}, force=${force}`);
@@ -630,6 +683,16 @@ async function palletRoutes(fastify, options) {
     }
 
     try {
+      const [qRows] = await db.query('SELECT customer_id, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"', [pallet_code]);
+      if (qRows.some(r => r.is_quarantined)) {
+        const qReason = qRows.find(r => r.is_quarantined)?.quarantine_reason || 'Blocco qualità';
+        return reply.code(403).send({
+          error: `BLOCCO QUARANTENA: La paletta ${pallet_code} è in quarantena (${qReason}) e non può essere spostata! Sbloccala prima dal Registro Quarantene.`
+        });
+      }
+      if (qRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi spostare la merce di questo cliente.' });
+      }
       if (!force) {
         const [occupied] = await db.query(
           "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 AND pallet_code != ?", 

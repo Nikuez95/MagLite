@@ -5,6 +5,7 @@ const fastify = require('fastify')({
 const cors = require('@fastify/cors');
 const jwt = require('@fastify/jwt');
 require('dotenv').config();
+const { resolveUserAccess } = require('./utils/permissions');
 
 // 1. Configurazione CORS
 fastify.register(cors, {
@@ -17,14 +18,26 @@ fastify.register(jwt, {
   secret: process.env.JWT_SECRET || 'super_secret_jwt_key_maglite_2026'
 });
 
-// 3. Decoratore per proteggere le rotte
-// Qualsiasi rotta che usa preValidation: [fastify.authenticate] verificherà il token
+// 3. Decoratore per proteggere le rotte e arricchire il profilo permessi/gerarchia
 fastify.decorate('authenticate', async function (request, reply) {
   try {
     if (!request.headers.authorization && request.query.token) {
       request.headers.authorization = `Bearer ${request.query.token}`;
     }
     await request.jwtVerify();
+    if (request.user && request.user.id) {
+      const access = await resolveUserAccess(request.user.id);
+      if (access) {
+        request.user = {
+          ...request.user,
+          role: access.role,
+          role_name: access.role_name,
+          hierarchy_level: access.hierarchy_level,
+          permissions: access.permissions,
+          restricted_customers: access.restricted_customers
+        };
+      }
+    }
   } catch (err) {
     reply.code(401).send({ error: 'Non autorizzato. Token mancante o non valido.' });
   }
@@ -33,6 +46,7 @@ fastify.decorate('authenticate', async function (request, reply) {
 // 4. Registrazione Rotte
 fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
 fastify.register(require('./routes/pallets'), { prefix: '/api/pallets' });
+fastify.register(require('./routes/quarantine'), { prefix: '/api/quarantine' });
 fastify.register(require('./routes/inbound'), { prefix: '/api/inbound' });
 fastify.register(require('./routes/users'), { prefix: '/api/users' });
 fastify.register(require('./routes/customers'), { prefix: '/api/customers' });
@@ -81,4 +95,3 @@ const start = async () => {
 };
 
 start();
-

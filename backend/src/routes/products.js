@@ -1,12 +1,20 @@
+const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 
 async function productRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // Solo backoffice e developer
   fastify.addHook('preHandler', async (request, reply) => {
-    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
-      return reply.code(403).send({ error: 'Accesso negato.' });
+    if (request.method === 'GET') return;
+    if (request.method === 'DELETE') {
+      if (!hasPermission(request.user, 'pallet_delete')) {
+        return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di eliminare articoli.' });
+      }
+    } else if (!hasPermission(request.user, 'product_manage')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare o modificare articoli.' });
+    }
+    if (request.body?.customer_id && !canAccessCustomer(request.user, request.body.customer_id)) {
+      return reply.code(403).send({ error: 'Accesso negato: non puoi operare sulla merce di questo cliente.' });
     }
   });
 
@@ -208,8 +216,12 @@ async function productRoutes(fastify, options) {
   });
 
   fastify.delete('/:id', async (request, reply) => {
-    if (request.user.role !== 'developer' && request.user.role !== 'backoffice') {
-      return reply.code(403).send({ error: 'Solo developer e backoffice possono eliminare anagrafiche' });
+    if (!hasPermission(request.user, 'pallet_delete')) {
+      return reply.code(403).send({ error: 'Non hai il permesso di eliminare anagrafiche prodotto.' });
+    }
+    const [[quarCheck]] = await db.query('SELECT COUNT(*) as cnt FROM PALLETS WHERE product_id = ? AND is_quarantined = TRUE AND status != "SHIPPED"', [request.params.id]);
+    if (quarCheck && quarCheck.cnt > 0) {
+      return reply.code(403).send({ error: 'BLOCCO QUARANTENA: Impossibile eliminare un prodotto che ha palette in quarantena.' });
     }
     try {
       const [[product]] = await db.query('SELECT name FROM PRODUCTS WHERE id = ?', [request.params.id]);
