@@ -149,8 +149,22 @@ const isItemNoScan = (item) => {
 
 const formatLocationLabel = (item) => {
   if (!item) return 'N/D';
-  if (item.zone && item.zone !== 'null') {
-    return `${item.zone} · ${item.col} · ${item.pos}`;
+  let zone = item.zone && item.zone !== 'null' ? item.zone : '';
+  let col = item.col && item.col !== 'null' ? item.col : '';
+  let pos = item.pos && item.pos !== 'null' ? item.pos : '';
+  if (!zone && item.location) {
+    const parts = item.location.split('-').map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 3) {
+      zone = parts[0];
+      col = parts[1];
+      pos = parts.slice(2).join('-');
+    } else if (parts.length === 2) {
+      col = parts[0];
+      pos = parts[1];
+    }
+  }
+  if (zone || col) {
+    return [zone, col, pos].filter(Boolean).join(' · ');
   }
   return item.location || 'Senza Posizione';
 };
@@ -781,7 +795,7 @@ const OutboundZebra = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-bold uppercase text-slate-400">Vai alla posizione</p>
-                <p className="text-xl font-black text-brand-white truncate">{formatLocationLabel(nextItem)}</p>
+                <p className="text-xl font-black text-brand-white break-words leading-tight">{formatLocationLabel(nextItem)}</p>
               </div>
             </div>
 
@@ -832,7 +846,23 @@ const OutboundZebra = () => {
   const currentStepNumber = completedCount + 1;
   const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
-  const isMappedShelf = Boolean(currentItem?.zone && currentItem.zone !== 'null');
+  let currentZone = (currentItem?.zone && currentItem.zone !== 'null') ? currentItem.zone : '';
+  let currentCol = (currentItem?.col && currentItem.col !== 'null') ? currentItem.col : '';
+  let currentPos = (currentItem?.pos && currentItem.pos !== 'null') ? currentItem.pos : '';
+
+  if (!currentZone && currentItem?.location) {
+    const parts = currentItem.location.split('-').map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 3) {
+      currentZone = parts[0];
+      currentCol = parts[1];
+      pos = parts.slice(2).join('-');
+    } else if (parts.length === 2) {
+      currentCol = parts[0];
+      currentPos = parts[1];
+    }
+  }
+
+  const isMappedShelf = Boolean(currentZone || currentCol);
   const currentLocLabel = formatLocationLabel(currentItem);
   const isSameLocationAsPrev = Boolean(previousLocationKey && previousLocationKey === currentLocLabel);
 
@@ -916,34 +946,47 @@ const OutboundZebra = () => {
           </div>
 
           {isMappedShelf ? (
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl py-2 px-1">
-                <p className="text-[10px] font-extrabold uppercase text-slate-400">Zona</p>
-                <p className="text-2xl font-black text-brand-white tracking-tight truncate">
-                  {currentItem.zone}
+            <div className="flex gap-2 text-center items-stretch">
+              <div className="flex-[1.6] min-w-0 bg-slate-950 border border-slate-800 rounded-2xl py-2 px-1.5 flex flex-col justify-center">
+                <p className="text-[10px] font-extrabold uppercase text-slate-400 mb-0.5">Zona</p>
+                <p className={`font-black text-brand-white tracking-tight break-words leading-tight ${
+                  (currentZone || '').length > 15
+                    ? 'text-xs'
+                    : (currentZone || '').length > 8
+                    ? 'text-sm'
+                    : 'text-xl'
+                }`}>
+                  {currentZone || '—'}
                 </p>
               </div>
-              <div className="bg-slate-950 border border-sky-500/40 rounded-2xl py-2 px-1">
-                <p className="text-[10px] font-extrabold uppercase text-sky-400">Scaffale / Col</p>
-                <p className="text-3xl font-black text-sky-400 tracking-tight">
-                  {currentItem.col}
+              <div className="w-20 shrink-0 bg-slate-950 border border-sky-500/40 rounded-2xl py-2 px-1 flex flex-col justify-center">
+                <p className="text-[10px] font-extrabold uppercase text-sky-400 mb-0.5">Scaffale</p>
+                <p className="text-2xl font-black text-sky-400 tracking-tight">
+                  {currentCol || '—'}
                 </p>
               </div>
-              <div className="bg-slate-950 border border-emerald-500/40 rounded-2xl py-2 px-1">
-                <p className="text-[10px] font-extrabold uppercase text-emerald-400">Pos / Piano</p>
-                <p className="text-3xl font-black text-emerald-400 tracking-tight">
-                  {currentItem.pos}
+              <div className="w-20 shrink-0 bg-slate-950 border border-emerald-500/40 rounded-2xl py-2 px-1 flex flex-col justify-center">
+                <p className="text-[10px] font-extrabold uppercase text-emerald-400 mb-0.5">Pos / Piano</p>
+                <p className="text-2xl font-black text-emerald-400 tracking-tight">
+                  {currentPos || '—'}
                 </p>
               </div>
             </div>
           ) : (
             <div className="bg-slate-950 border border-sky-500/30 rounded-2xl p-3 text-center">
               <p className="text-[10px] font-extrabold uppercase text-sky-400 mb-0.5">Area / Posizione Libera</p>
-              <p className="text-2xl font-black text-brand-white uppercase">
+              <p className="text-xl font-black text-brand-white uppercase break-words">
                 {currentItem?.location || 'Cerca in magazzino'}
               </p>
             </div>
           )}
+
+          <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+            <span className="truncate mr-2">Posizione: <strong className="text-brand-white">{currentLocLabel}</strong></span>
+            {currentItem?.loc_pin && (
+              <span className="shrink-0">PIN: <strong className="text-amber-400 font-bold">{currentItem.loc_pin}</strong></span>
+            )}
+          </div>
         </div>
 
         {/* ================================================================
@@ -977,16 +1020,30 @@ const OutboundZebra = () => {
               </div>
 
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-2.5">
-                <p className="text-[10px] font-extrabold uppercase text-slate-400">Paletta Attesa</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-extrabold uppercase text-slate-400">Paletta Attesa</p>
+                  {Boolean(currentItem?.is_specific) && (
+                    <span className="text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/40">
+                      Specifica
+                    </span>
+                  )}
+                </div>
                 {isNoBarPallet ? (
                   <p className="text-xs font-black text-sky-400 uppercase mt-0.5">Senza Barcode</p>
                 ) : (
-                  <p className="font-mono font-bold text-xs text-slate-400 truncate">
-                    {palletPrefix}
-                    <span className="text-lg font-black text-brand-blue bg-brand-blue/15 px-1.5 py-0.5 rounded ml-0.5">
-                      {palletHighlight}
-                    </span>
-                  </p>
+                  <>
+                    <p className="font-mono font-bold text-xs text-slate-400 truncate mt-0.5">
+                      {palletPrefix}
+                      <span className="text-lg font-black text-brand-blue bg-brand-blue/15 px-1.5 py-0.5 rounded ml-0.5">
+                        {palletHighlight}
+                      </span>
+                    </p>
+                    {currentItem?.client_pallet_number && (
+                      <p className="text-[11px] font-mono text-emerald-400 font-bold truncate mt-1">
+                        Rif: {currentItem.client_pallet_number}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -1339,7 +1396,7 @@ const OutboundZebra = () => {
                         <span className="text-xs font-black px-2 py-0.5 rounded-md bg-slate-800 text-brand-blue font-mono">
                           #{idx + 1}
                         </span>
-                        <span className="font-black text-sm text-sky-400 truncate">
+                        <span className="font-black text-sm text-sky-400 break-words leading-tight">
                           {formatLocationLabel(it)}
                         </span>
                         {isPicked && (

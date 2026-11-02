@@ -197,6 +197,7 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
 
   for (const req of prioritizedItems) {
     const normalizedUom = req.requested_uom === 'Palette' ? 'Bancali' : (req.requested_uom || 'Pezzi');
+    const isSpecific = Boolean(req.pallet_id || (req.client_pallet_number && String(req.client_pallet_number).trim() !== '') || (req.pallet_code && String(req.pallet_code).trim() !== ''));
 
     let query = `
       SELECT pal.*, loc.zone, loc.col, loc.pos,
@@ -255,7 +256,11 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       const alreadyUsedBase = inMemoryUsedByPalletId.get(pal.id) || 0;
       return (parseFloat(pal.available_quantity) - alreadyUsedBase) > 0;
     });
-    sortPalletsByRouting(available, zonePriority, posPriority);
+
+    // Se la richiesta fa riferimento a un bancale specifico, non applichiamo le regole di instradamento/scelta automatica piano
+    if (!isSpecific) {
+      sortPalletsByRouting(available, zonePriority, posPriority);
+    }
 
     let remainingToAllocate = parseFloat(req.quantity_required);
     const allocatedForThisReq = [];
@@ -291,7 +296,8 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       allocatedForThisReq.push({
         pallet_id: pal.id,
         pallet_code: pal.pallet_code,
-        client_pallet_number: pal.client_pallet_number || null,
+        client_pallet_number: pal.client_pallet_number || req.client_pallet_number || null,
+        is_specific: isSpecific ? 1 : 0,
         product_id: req.product_id,
         batch: pal.batch || null,
         quantity_required: take,
@@ -389,8 +395,8 @@ async function outboundRoutes(fastify, options) {
       const allocatedItemsPOST = await allocateOutboundItems(items, connection);
       for (const item of allocatedItemsPOST) {
         await connection.query(
-          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [orderId, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
+          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [orderId, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
         );
       }
       
@@ -453,8 +459,8 @@ async function outboundRoutes(fastify, options) {
       const allocatedItemsPUT = await allocateOutboundItems(items, connection, id);
       for (const item of allocatedItemsPUT) {
         await connection.query(
-          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [id, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null]
+          'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
         );
       }
       
@@ -496,7 +502,8 @@ async function outboundRoutes(fastify, options) {
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location, pal.client_pallet_number
+        SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location,
+               COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -575,7 +582,11 @@ async function outboundRoutes(fastify, options) {
       const order = orders[0];
 
       const [items] = await db.query(`
-        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, pal.location, pal.client_pallet_number, COALESCE(i.batch, pal.batch) as batch, pal.expiration_date, loc.zone, loc.col, loc.pos, loc.pin
+        SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom,
+               COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
+               pal.location, COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number,
+               COALESCE(i.batch, pal.batch) as batch, pal.expiration_date,
+               COALESCE(loc.zone, '') as zone, COALESCE(loc.col, '') as col, COALESCE(loc.pos, '') as pos, loc.pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -593,54 +604,12 @@ async function outboundRoutes(fastify, options) {
       const connection = await db.getConnection();
       try {
         const { zonePriority, posPriority } = await getRoutingSettings(connection);
-
-        // Se l'ordine non è ancora spedito, assicuriamoci che ogni riga non prelevata punti al bancale più basso disponibile
-        if (order.status !== 'SHIPPED') {
-          for (const it of items) {
-            if (it.status !== 'PICKED' && it.location) {
-              const currentCoords = extractLocationCoords(it);
-              const currentFloor = getFloorLevel(currentCoords.pos, posPriority);
-              if (currentFloor > 0) {
-                const [alternatives] = await connection.query(`
-                  SELECT pal.*, loc.zone, loc.col, loc.pos, loc.pin as loc_pin,
-                         (pal.quantity - COALESCE((
-                           SELECT SUM(oi.quantity_required) FROM OUTBOUND_ITEMS oi
-                           JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
-                           WHERE oi.pallet_id = pal.id AND oo.status != 'SHIPPED' AND oi.id != ?
-                         ), 0)) as avail_qty
-                  FROM PALLETS pal
-                  LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
-                  WHERE pal.product_id = ?
-                    AND (TRIM(pal.batch) = TRIM(?) OR (pal.batch IS NULL AND ? IS NULL))
-                    AND pal.status = 'STOCKED'
-                    AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE)
-                    AND pal.id != ?
-                  HAVING avail_qty >= ?
-                `, [it.id, it.product_id, it.batch, it.batch, it.pallet_id, parseFloat(it.quantity_required)]);
-
-                if (alternatives.length > 0) {
-                  sortPalletsByRouting(alternatives, zonePriority, posPriority);
-                  const bestAlt = alternatives[0];
-                  const altCoords = extractLocationCoords(bestAlt);
-                  const altFloor = getFloorLevel(altCoords.pos, posPriority);
-                  if (altFloor < currentFloor) {
-                    await connection.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [
-                      bestAlt.id, bestAlt.pallet_code, it.id
-                    ]);
-                    it.pallet_id = bestAlt.id;
-                    it.pallet_code = bestAlt.pallet_code;
-                    it.location = bestAlt.location;
-                    it.zone = bestAlt.zone;
-                    it.col = bestAlt.col;
-                    it.pos = bestAlt.pos;
-                    it.loc_pin = bestAlt.loc_pin;
-                  }
-                }
-              }
-            }
-          }
+        for (const it of items) {
+          const coords = extractLocationCoords(it);
+          it.zone = coords.zone || it.zone || '';
+          it.col = coords.col || it.col || '';
+          it.pos = coords.pos || it.pos || '';
         }
-
         sortPickingTour(items, zonePriority, posPriority);
       } finally {
         connection.release();
@@ -833,9 +802,9 @@ async function outboundRoutes(fastify, options) {
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
-               pal.location, pal.client_pallet_number, pal.quantity as pallet_quantity,
+               pal.location, COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number, pal.quantity as pallet_quantity,
                COALESCE(i.batch, pal.batch) as batch, pal.expiration_date,
-               loc.zone, loc.col, loc.pos, loc.pin as loc_pin
+               COALESCE(loc.zone, '') as zone, COALESCE(loc.col, '') as col, COALESCE(loc.pos, '') as pos, loc.pin as loc_pin
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
@@ -853,6 +822,12 @@ async function outboundRoutes(fastify, options) {
       const connection = await db.getConnection();
       try {
         const { zonePriority, posPriority } = await getRoutingSettings(connection);
+        for (const it of items) {
+          const coords = extractLocationCoords(it);
+          it.zone = coords.zone || it.zone || '';
+          it.col = coords.col || it.col || '';
+          it.pos = coords.pos || it.pos || '';
+        }
         sortPickingTour(items, zonePriority, posPriority);
       } finally {
         connection.release();
@@ -889,7 +864,9 @@ async function outboundRoutes(fastify, options) {
     try {
       // Verifica item
       const [items] = await db.query(`
-        SELECT i.*, pal.id as resolved_pallet_id, pal.location, pal.is_quarantined, pal.quarantine_reason, loc.pin as loc_pin, pr.name as product_name
+        SELECT i.*, pal.id as resolved_pallet_id,
+               COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number,
+               pal.location, pal.is_quarantined, pal.quarantine_reason, loc.pin as loc_pin, pr.name as product_name
         FROM OUTBOUND_ITEMS i
         LEFT JOIN PALLETS pal ON pal.id = COALESCE(
           i.pallet_id,
@@ -912,11 +889,18 @@ async function outboundRoutes(fastify, options) {
       }
 
       // Verifica Barcode Paletta con controllo giacenza e prenotazioni
+      const scannedCode = String(pallet_code || '').trim();
+      const scannedLower = scannedCode.toLowerCase();
+      const itemPalletCode = String(item.pallet_code || '').trim().toLowerCase();
+      const itemClientPallet = String(item.client_pallet_number || '').trim().toLowerCase();
+
+      let isSamePalletScan = (scannedLower === itemPalletCode) || (itemClientPallet !== '' && scannedLower === itemClientPallet);
       let actualPalletId = item.resolved_pallet_id;
-      if (item.pallet_code.toLowerCase() !== pallet_code.toLowerCase()) {
+
+      if (!isSamePalletScan) {
         const [scannedPallets] = await db.query(
-          'SELECT id, pallet_code, product_id, batch, status, location, quantity, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED"',
-          [pallet_code.trim()]
+          'SELECT id, pallet_code, client_pallet_number, product_id, batch, status, location, quantity, is_quarantined, quarantine_reason FROM PALLETS WHERE (pallet_code = ? OR client_pallet_number = ?) AND status != "SHIPPED"',
+          [scannedCode, scannedCode]
         );
 
         if (scannedPallets.length === 0) {
@@ -925,48 +909,66 @@ async function outboundRoutes(fastify, options) {
 
         const altPallet = scannedPallets[0];
 
-        if (altPallet.is_quarantined) {
-          return reply.code(403).send({ error: `BLOCCO QUARANTENA: La paletta ${altPallet.pallet_code} è in quarantena (${altPallet.quarantine_reason || 'Bloccata'}) e non può essere prelevata!` });
+        // Se la paletta scansionata corrisponde fisicamente alla stessa assegnata (es. trovata tramite client_pallet_number)
+        if (item.resolved_pallet_id && altPallet.id === item.resolved_pallet_id) {
+          isSamePalletScan = true;
+          actualPalletId = altPallet.id;
+        } else {
+          // Se la riga richiede una paletta specifica, non è consentito scambiarla
+          if (item.is_specific) {
+            const specificLabel = item.client_pallet_number 
+              ? `${item.pallet_code} (Rif. Cliente: ${item.client_pallet_number})`
+              : item.pallet_code;
+            return reply.code(400).send({
+              error: `Questa riga richiede specificamente la paletta ${specificLabel}. Non è consentito prelevare una paletta differente.`
+            });
+          }
+
+          if (altPallet.is_quarantined) {
+            return reply.code(403).send({ error: `BLOCCO QUARANTENA: La paletta ${altPallet.pallet_code} è in quarantena (${altPallet.quarantine_reason || 'Bloccata'}) e non può essere prelevata!` });
+          }
+
+          const isSameBatch = ((altPallet.batch || '').trim().toUpperCase() === (item.batch || '').trim().toUpperCase()) || (!altPallet.batch && !item.batch);
+          if (altPallet.product_id !== item.product_id || !isSameBatch) {
+            return reply.code(400).send({ error: 'Codice Paletta errato: Articolo o Lotto non corrispondente alla riga ordine.' });
+          }
+
+          // Verifica disponibilità giacenza sufficiente sulla paletta alternativa
+          const availableQty = parseFloat(altPallet.quantity) || 0;
+          const requiredQty = parseFloat(qty_picked) || 0;
+          if (availableQty < requiredQty) {
+            return reply.code(400).send({ error: `Giacenza insufficiente sulla paletta scansionata (${availableQty} disponibili contro ${requiredQty} richiesti).` });
+          }
+
+          // Verifica che la paletta non sia già prenotata da un altro ordine Outbound aperto
+          const [reserved] = await db.query(
+            `SELECT oi.id, oi.order_id, o.order_code
+             FROM OUTBOUND_ITEMS oi
+             JOIN OUTBOUND_ORDERS o ON oi.order_id = o.id
+             WHERE (oi.pallet_id = ? OR (oi.pallet_code = ? AND oi.product_id = ?))
+               AND oi.id != ?
+               AND o.status NOT IN ('SHIPPED', 'CANCELLED', 'RETURNED')
+               AND oi.status IN ('PENDING', 'PICKING')`,
+            [altPallet.id, altPallet.pallet_code, item.product_id, item_id]
+          );
+
+          if (reserved.length > 0) {
+            return reply.code(400).send({
+              error: `La paletta ${altPallet.pallet_code} è già prenotata per l'ordine ${reserved[0].order_code || ('#' + reserved[0].order_id)}.`
+            });
+          }
+
+          actualPalletId = altPallet.id;
+          await db.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [
+            actualPalletId,
+            altPallet.pallet_code,
+            item_id
+          ]);
+          item.pallet_code = altPallet.pallet_code;
         }
+      }
 
-        const isSameBatch = ((altPallet.batch || '').trim().toUpperCase() === (item.batch || '').trim().toUpperCase()) || (!altPallet.batch && !item.batch);
-        if (altPallet.product_id !== item.product_id || !isSameBatch) {
-          return reply.code(400).send({ error: 'Codice Paletta errato: Articolo o Lotto non corrispondente alla riga ordine.' });
-        }
-
-        // Verifica disponibilità giacenza sufficiente sulla paletta alternativa
-        const availableQty = parseFloat(altPallet.quantity) || 0;
-        const requiredQty = parseFloat(qty_picked) || 0;
-        if (availableQty < requiredQty) {
-          return reply.code(400).send({ error: `Giacenza insufficiente sulla paletta scansionata (${availableQty} disponibili contro ${requiredQty} richiesti).` });
-        }
-
-        // Verifica che la paletta non sia già prenotata da un altro ordine Outbound aperto
-        const [reserved] = await db.query(
-          `SELECT oi.id, oi.order_id, o.order_code
-           FROM OUTBOUND_ITEMS oi
-           JOIN OUTBOUND_ORDERS o ON oi.order_id = o.id
-           WHERE (oi.pallet_id = ? OR (oi.pallet_code = ? AND oi.product_id = ?))
-             AND oi.id != ?
-             AND o.status NOT IN ('SHIPPED', 'CANCELLED', 'RETURNED')
-             AND oi.status IN ('PENDING', 'PICKING')`,
-          [altPallet.id, altPallet.pallet_code, item.product_id, item_id]
-        );
-
-        if (reserved.length > 0) {
-          return reply.code(400).send({
-            error: `La paletta ${altPallet.pallet_code} è già prenotata per l'ordine ${reserved[0].order_code || ('#' + reserved[0].order_id)}.`
-          });
-        }
-
-        actualPalletId = altPallet.id;
-        await db.query('UPDATE OUTBOUND_ITEMS SET pallet_id = ?, pallet_code = ? WHERE id = ?', [
-          actualPalletId,
-          altPallet.pallet_code,
-          item_id
-        ]);
-        item.pallet_code = altPallet.pallet_code;
-      } else {
+      if (isSamePalletScan) {
         // Prelievo diretto dalla paletta originale assegnata: verifica giacenza fisica
         if (actualPalletId) {
           const [[origPallet]] = await db.query('SELECT quantity FROM PALLETS WHERE id = ?', [actualPalletId]);
