@@ -490,6 +490,15 @@ async function runMigrations() {
       console.warn('[MIGRATE CUSTOM FORMS WARNING]', formInitErr.message);
     }
 
+    // 6. Consolidamento automatico posizioni e merce identica (stessa posizione + stesso prodotto + stesso lotto)
+    try {
+      const { consolidateLocationPallets } = require('../utils/palletConsolidation');
+      await consolidateLocationPallets(connection);
+      console.log('✅ Consolidamento posizioni e barcode completato.');
+    } catch (consErr) {
+      console.warn('[MIGRATE CONSOLIDATION WARNING]', consErr.message);
+    }
+
     console.log('🚀 Migrazioni completate. Database allineato al 100%.');
   } catch (err) {
     console.error('❌ Errore critico durante le migrazioni:', err);

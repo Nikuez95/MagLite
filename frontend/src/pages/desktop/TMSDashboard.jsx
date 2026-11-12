@@ -1,15 +1,46 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Truck, MapPin, Calendar, Clock, Euro, MessageCircle, Copy, AlertTriangle, Briefcase, FileText, Plus, Edit2, X, Check, Trash2, CalendarDays, LayoutTemplate, StretchHorizontal, GripVertical } from 'lucide-react';
-import { format, differenceInMinutes } from 'date-fns';
+import {
+  Truck,
+  MapPin,
+  Calendar,
+  Clock,
+  Euro,
+  MessageCircle,
+  Copy,
+  AlertTriangle,
+  Briefcase,
+  FileText,
+  Plus,
+  Edit2,
+  X,
+  Check,
+  Trash2,
+  CalendarDays,
+  StretchHorizontal,
+  GripVertical,
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  TrendingUp,
+  UserCheck,
+  Phone,
+  ArrowRight,
+  CheckCircle2,
+  Navigation,
+  Filter,
+  Sparkles,
+  RotateCcw
+} from 'lucide-react';
+import { format, addDays, subDays, isSameDay } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { appAlert, appConfirm } from '../../utils/alerts';
 import { hasPerm } from '../../utils/permissions';
 import axios from 'axios';
 
 const INITIAL_DRIVERS = [
-  { id: 'driver-1', name: 'Mario Rossi', vehicle: 'IVECO Stralis - AB123CD' },
-  { id: 'driver-2', name: 'Luigi Verdi', vehicle: 'Scania R500 - EF456GH' },
-  { id: 'driver-3', name: 'Antonio Neri', vehicle: 'Mercedes Actros - LM789NO' }
+  { id: 'driver-1', name: 'Mario Rossi', vehicle: 'IVECO Stralis - AB123CD', phone: '' },
+  { id: 'driver-2', name: 'Luigi Verdi', vehicle: 'Scania R500 - EF456GH', phone: '' },
+  { id: 'driver-3', name: 'Antonio Neri', vehicle: 'Mercedes Actros - LM789NO', phone: '' }
 ];
 
 const getMockDate = (dayOffset, hour) => {
@@ -37,22 +68,61 @@ const INITIAL_TRIPS = {
   ]
 };
 
-const STATUS_COLORS = {
-  'UNASSIGNED': 'border-slate-500 bg-slate-500/10 text-slate-400',
-  'ASSIGNED': 'border-brand-blue bg-brand-blue/10 text-brand-blue border-solid border-l-4',
-  'IN_TRANSIT': 'border-amber-500 bg-amber-500/10 text-amber-500 border-solid border-l-4',
-  'DELIVERED': 'border-emerald-500 bg-emerald-500/10 text-emerald-500 border-solid border-l-4',
-  'EXCEPTION': 'border-rose-500 bg-rose-500/10 text-rose-500 border-solid border-l-4',
-  'ADMIN': 'border-fuchsia-500 bg-fuchsia-500/10 text-fuchsia-400 border-solid border-l-4'
+const STATUS_META = {
+  'UNASSIGNED': {
+    label: 'Da Assegnare',
+    shortLabel: 'Libero',
+    cardClass: 'border-slate-600/80 bg-slate-900/90 text-slate-300 border-l-4 border-l-slate-500',
+    badgeClass: 'bg-slate-800 text-slate-300 border-slate-700',
+    timelineClass: 'bg-slate-800/95 border-slate-600 text-slate-200',
+    dotClass: 'bg-slate-400'
+  },
+  'ASSIGNED': {
+    label: 'Assegnato',
+    shortLabel: 'Assegnato',
+    cardClass: 'border-brand-blue/40 bg-slate-900/95 text-slate-100 border-l-4 border-l-brand-blue',
+    badgeClass: 'bg-brand-blue/15 text-brand-blue border-brand-blue/30',
+    timelineClass: 'bg-brand-blue/20 border-brand-blue text-sky-100',
+    dotClass: 'bg-brand-blue'
+  },
+  'IN_TRANSIT': {
+    label: 'In Viaggio',
+    shortLabel: 'In Viaggio',
+    cardClass: 'border-amber-500/40 bg-slate-900/95 text-slate-100 border-l-4 border-l-amber-500',
+    badgeClass: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    timelineClass: 'bg-amber-500/20 border-amber-500 text-amber-100',
+    dotClass: 'bg-amber-400 animate-pulse'
+  },
+  'DELIVERED': {
+    label: 'Consegnato',
+    shortLabel: 'Consegnato',
+    cardClass: 'border-emerald-500/40 bg-slate-900/95 text-slate-100 border-l-4 border-l-emerald-500',
+    badgeClass: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+    timelineClass: 'bg-emerald-500/20 border-emerald-500 text-emerald-100',
+    dotClass: 'bg-emerald-400'
+  },
+  'EXCEPTION': {
+    label: 'Ritardo / Problema',
+    shortLabel: 'Problema',
+    cardClass: 'border-rose-500/50 bg-rose-950/20 text-slate-100 border-l-4 border-l-rose-500',
+    badgeClass: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+    timelineClass: 'bg-rose-500/25 border-rose-500 text-rose-100',
+    dotClass: 'bg-rose-500 animate-ping'
+  },
+  'ADMIN': {
+    label: 'Ferie / Permesso / Officina',
+    shortLabel: 'Assenza / Admin',
+    cardClass: 'border-fuchsia-500/40 bg-fuchsia-950/15 text-fuchsia-200 border-l-4 border-l-fuchsia-500',
+    badgeClass: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
+    timelineClass: 'bg-fuchsia-500/20 border-fuchsia-500 text-fuchsia-100',
+    dotClass: 'bg-fuchsia-400'
+  }
 };
 
-const STATUS_BG = {
-  'UNASSIGNED': 'bg-slate-800',
-  'ASSIGNED': 'bg-brand-blue/20',
-  'IN_TRANSIT': 'bg-amber-500/20',
-  'DELIVERED': 'bg-emerald-500/20',
-  'EXCEPTION': 'bg-rose-500/20',
-  'ADMIN': 'bg-fuchsia-500/20'
+const NEXT_STATUS_FLOW = {
+  'UNASSIGNED': 'ASSIGNED',
+  'ASSIGNED': 'IN_TRANSIT',
+  'IN_TRANSIT': 'DELIVERED'
 };
 
 const TMSDashboard = () => {
@@ -61,19 +131,65 @@ const TMSDashboard = () => {
   const [loading, setLoading] = useState(true);
   const canManageTMS = hasPerm('tms_manage');
 
+  // Views: ONLY 'CALENDAR' (Kanban con le date) and 'TIMELINE' (Timeline orizzontale)
+  const [viewMode, setViewMode] = useState('CALENDAR');
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+
+  // Filters & Search
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [showAllUnassignedDates, setShowAllUnassignedDates] = useState(false);
+
+  // Drag & Drop State
+  const [draggedTrip, setDraggedTrip] = useState(null);
+  const [draggedFrom, setDraggedFrom] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+
+  // Modals State
+  const [isTripModalOpen, setIsTripModalOpen] = useState(false);
+  const [editingTrip, setEditingTrip] = useState(null);
+  const [editingCol, setEditingCol] = useState(null);
+
+  const [isDriverModalOpen, setIsDriverModalOpen] = useState(false);
+  const [editingDriver, setEditingDriver] = useState(null);
+
+  // Trip Form State (includes targetDriverId so trips can be assigned directly on creation)
+  const [tripForm, setTripForm] = useState({
+    customer: '',
+    ref: '',
+    pickup: '',
+    pickupTime: '',
+    delivery: '',
+    deliveryTime: '',
+    revenue: 0,
+    cost: 0,
+    status: 'UNASSIGNED',
+    title: '',
+    notes: '',
+    targetDriverId: 'unassigned'
+  });
+
+  // Driver Form State
+  const [driverForm, setDriverForm] = useState({
+    name: '',
+    vehicle: '',
+    phone: ''
+  });
+
   // Load State from Database
   useEffect(() => {
     const fetchTMS = async () => {
       try {
         const res = await axios.get(`http://${window.location.hostname}:3000/api/tms`, {
-           headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` }
+          headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` }
         });
         if (res.data.drivers.length > 0 || Object.keys(res.data.columns).length > 1) {
-            setDrivers(res.data.drivers);
-            setColumns(res.data.columns);
+          setDrivers(res.data.drivers);
+          setColumns(res.data.columns);
         }
       } catch (err) {
-        console.error("Failed to load TMS from DB, using initial data.", err);
+        console.error('Failed to load TMS from DB, using initial data.', err);
       } finally {
         setLoading(false);
       }
@@ -89,85 +205,201 @@ const TMSDashboard = () => {
   useEffect(() => {
     if (loading) return;
     if (isInitialMount.current) {
-        isInitialMount.current = false;
-        prevDrivers.current = drivers;
-        prevColumns.current = columns;
-        return;
+      isInitialMount.current = false;
+      prevDrivers.current = drivers;
+      prevColumns.current = columns;
+      return;
     }
-    
+
     if (prevDrivers.current === drivers && prevColumns.current === columns) return;
     prevDrivers.current = drivers;
     prevColumns.current = columns;
-    
-    const saveToDB = async () => {
-      if (!canManageTMS) return;
+
+    const saveTMS = async () => {
       try {
-        await axios.post(`http://${window.location.hostname}:3000/api/tms/sync`, 
+        await axios.post(
+          `http://${window.location.hostname}:3000/api/tms/sync`,
           { drivers, columns },
           { headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` } }
         );
-      } catch (err) { console.error("Errore salvataggio DB", err); }
+      } catch (err) {
+        console.error('Failed to sync TMS to DB', err);
+      }
     };
-    
-    const timeoutId = setTimeout(() => saveToDB(), 300);
+
+    const timeoutId = setTimeout(saveTMS, 400);
     return () => clearTimeout(timeoutId);
   }, [drivers, columns, loading]);
 
-  
-  // Views Configuration
-  const [viewMode, setViewMode] = useState('TOTAL');
-  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-
-  // Modals
-  const [editingTrip, setEditingTrip] = useState(null);
-  const [isTripModalOpen, setIsTripModalOpen] = useState(false);
-  const [editingDriver, setEditingDriver] = useState(null);
-  const [isDriverModalOpen, setIsDriverModalOpen] = useState(false);
-  
-  // Drag State for Native DnD
-  const [draggedDriverId, setDraggedDriverId] = useState(null);
-  
-  
-
-  // --- LOGIC ---
-  const handleOpenDriverModal = (driver = null) => {
-    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
-    if (driver) setEditingDriver({ ...driver, isNew: false });
-    else setEditingDriver({ id: 'driver-' + Date.now(), name: '', vehicle: '', isNew: true });
-    setIsDriverModalOpen(true);
+  // Date navigation helpers (Frecce Sinistra / Destra)
+  const handleShiftDate = (daysDelta) => {
+    const base = new Date(`${selectedDate}T12:00:00`);
+    const next = daysDelta >= 0 ? addDays(base, daysDelta) : subDays(base, Math.abs(daysDelta));
+    setSelectedDate(format(next, 'yyyy-MM-dd'));
   };
 
-  const handleSaveDriver = (e) => {
-    e.preventDefault();
-    if (editingDriver.isNew) {
-      const newDriver = { id: editingDriver.id, name: editingDriver.name, vehicle: editingDriver.vehicle };
-      setDrivers([...drivers, newDriver]);
-      setColumns(prev => ({ ...prev, [newDriver.id]: [] }));
-    } else {
-      setDrivers(drivers.map(d => d.id === editingDriver.id ? { ...d, name: editingDriver.name, vehicle: editingDriver.vehicle } : d));
+  const handleResetToday = () => {
+    setSelectedDate(new Date().toISOString().split('T')[0]);
+  };
+
+  const formattedSelectedDate = useMemo(() => {
+    try {
+      const d = new Date(`${selectedDate}T12:00:00`);
+      return format(d, 'EEEE d MMMM yyyy', { locale: it });
+    } catch {
+      return selectedDate;
     }
-    setIsDriverModalOpen(false);
+  }, [selectedDate]);
+
+  const isSelectedToday = selectedDate === todayStr;
+
+  // Check if a trip overlaps with a given YYYY-MM-DD date
+  const tripOverlapsDate = (trip, dateStr) => {
+    if (!trip.pickupTime || !trip.deliveryTime) return true;
+    const tStart = new Date(trip.pickupTime);
+    const tEnd = new Date(trip.deliveryTime);
+    const dayStart = new Date(`${dateStr}T00:00:00`);
+    const dayEnd = new Date(`${dateStr}T23:59:59`);
+    return tStart <= dayEnd && tEnd >= dayStart;
   };
 
-  const handleDeleteDriver = async () => {
-    if (!await appConfirm("I viaggi andranno in Da Assegnare.", "Eliminare Autista?")) return;
-    const driverTrips = columns[editingDriver.id] || [];
-    const updatedUnassigned = [...(columns['unassigned'] || []), ...driverTrips.map(t => ({ ...t, status: 'UNASSIGNED' }))];
-    const newColumns = { ...columns, 'unassigned': updatedUnassigned };
-    delete newColumns[editingDriver.id];
-    setColumns(newColumns);
-    setDrivers(drivers.filter(d => d.id !== editingDriver.id));
-    setIsDriverModalOpen(false);
+  // Check if a trip matches search & status filters
+  const tripMatchesFilters = (trip, driverName = '') => {
+    if (statusFilter !== 'ALL' && trip.status !== statusFilter) {
+      return false;
+    }
+    if (!searchTerm.trim()) return true;
+    const q = searchTerm.toLowerCase().trim();
+    const notesStr = Array.isArray(trip.notes) ? trip.notes.join(' ') : String(trip.notes || '');
+    return (
+      (trip.customer || '').toLowerCase().includes(q) ||
+      (trip.ref || '').toLowerCase().includes(q) ||
+      (trip.pickup || '').toLowerCase().includes(q) ||
+      (trip.delivery || '').toLowerCase().includes(q) ||
+      (trip.title || '').toLowerCase().includes(q) ||
+      notesStr.toLowerCase().includes(q) ||
+      driverName.toLowerCase().includes(q)
+    );
   };
 
-  const handleOpenTripModal = (trip = null) => {
-    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
-    if (trip) setEditingTrip({ ...trip });
-    else {
-      const dateTarget = viewMode === 'CALENDAR' ? selectedDate : format(new Date(), 'yyyy-MM-dd');
-      setEditingTrip({
-        id: 'trip-' + Date.now(), isNew: true, customer: '', ref: 'REF-' + Math.floor(Math.random() * 10000), pickup: '',
-        pickupTime: `${dateTarget}T08:00`, delivery: '', deliveryTime: `${dateTarget}T18:00`, revenue: 0, cost: 0, status: 'UNASSIGNED', title: '', notes: []
+  // Drag & Drop Handlers
+  const handleDragStart = (e, trip, sourceCol) => {
+    if (!canManageTMS) return;
+    setDraggedTrip(trip);
+    setDraggedFrom(sourceCol);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, colId = null) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (colId && dragOverCol !== colId) {
+      setDragOverCol(colId);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverCol(null);
+  };
+
+  const handleDrop = (e, targetCol) => {
+    e.preventDefault();
+    setDragOverCol(null);
+    if (!canManageTMS) return;
+    if (!draggedTrip || draggedFrom === targetCol) return;
+
+    const sourceList = [...(columns[draggedFrom] || [])].filter(t => t.id !== draggedTrip.id);
+    const targetList = [...(columns[targetCol] || [])];
+
+    const updatedTrip = { ...draggedTrip };
+    if (targetCol !== 'unassigned' && updatedTrip.status === 'UNASSIGNED') {
+      updatedTrip.status = 'ASSIGNED';
+    } else if (targetCol === 'unassigned') {
+      updatedTrip.status = 'UNASSIGNED';
+    }
+
+    targetList.push(updatedTrip);
+
+    setColumns({
+      ...columns,
+      [draggedFrom]: sourceList,
+      [targetCol]: targetList
+    });
+
+    setDraggedTrip(null);
+    setDraggedFrom(null);
+  };
+
+  // Quick 1-click status change directly from card
+  const handleQuickStatusChange = (tripId, colId, newStatus) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
+    setColumns(prev => ({
+      ...prev,
+      [colId]: (prev[colId] || []).map(t => (t.id === tripId ? { ...t, status: newStatus } : t))
+    }));
+  };
+
+  // Trip Actions
+  const handleDuplicate = (trip, colId) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per duplicare viaggi.');
+    const newTrip = {
+      ...trip,
+      id: 'trip-' + Date.now(),
+      ref: `${trip.ref}-COPY`,
+      status: colId === 'unassigned' ? 'UNASSIGNED' : 'ASSIGNED'
+    };
+    setColumns({
+      ...columns,
+      [colId]: [...(columns[colId] || []), newTrip]
+    });
+  };
+
+  const handleDeleteTrip = async (tripId, colId) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per eliminare viaggi.');
+    const confirmed = await appConfirm('Sei sicuro di voler eliminare definitivamente questo viaggio?', 'Elimina Viaggio');
+    if (confirmed) {
+      setColumns({
+        ...columns,
+        [colId]: (columns[colId] || []).filter(t => t.id !== tripId)
+      });
+    }
+  };
+
+  /**
+   * Opens the Trip Modal:
+   * - If `trip` is provided: edits existing trip in `colId`
+   * - If `trip` is null and `colId` is a driver ID (clicked '+' on driver card):
+   *   pre-selects `targetDriverId = colId` and sets default status to `'ASSIGNED'`!
+   */
+  const handleOpenTripModal = (trip = null, colId = 'unassigned') => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per creare o modificare viaggi.');
+    if (trip) {
+      setEditingTrip(trip);
+      setEditingCol(colId);
+      setTripForm({
+        ...trip,
+        pickupTime: trip.pickupTime ? format(new Date(trip.pickupTime), "yyyy-MM-dd'T'HH:mm") : '',
+        deliveryTime: trip.deliveryTime ? format(new Date(trip.deliveryTime), "yyyy-MM-dd'T'HH:mm") : '',
+        notes: Array.isArray(trip.notes) ? trip.notes.join(', ') : (trip.notes || ''),
+        targetDriverId: colId || 'unassigned'
+      });
+    } else {
+      const isDirectDriverAssign = colId && colId !== 'unassigned';
+      setEditingTrip(null);
+      setEditingCol(colId || 'unassigned');
+      setTripForm({
+        customer: '',
+        ref: 'REF-' + Math.floor(1000 + Math.random() * 9000),
+        pickup: '',
+        pickupTime: `${selectedDate}T08:00`,
+        delivery: '',
+        deliveryTime: `${selectedDate}T18:00`,
+        revenue: 0,
+        cost: 0,
+        status: isDirectDriverAssign ? 'ASSIGNED' : 'UNASSIGNED',
+        title: '',
+        notes: '',
+        targetDriverId: colId || 'unassigned'
       });
     }
     setIsTripModalOpen(true);
@@ -175,580 +407,1455 @@ const TMSDashboard = () => {
 
   const handleSaveTrip = (e) => {
     e.preventDefault();
-    const tripToSave = {
-      ...editingTrip, revenue: parseFloat(editingTrip.revenue) || 0, cost: parseFloat(editingTrip.cost) || 0,
-      notes: typeof editingTrip.notes === 'string' ? editingTrip.notes.split(',').map(n => n.trim()).filter(n => n) : editingTrip.notes,
-      pickupTime: editingTrip.pickupTime && editingTrip.pickupTime.length === 16 ? editingTrip.pickupTime + ':00Z' : editingTrip.pickupTime,
-      deliveryTime: editingTrip.deliveryTime && editingTrip.deliveryTime.length === 16 ? editingTrip.deliveryTime + ':00Z' : editingTrip.deliveryTime,
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
+    const notesArray = String(tripForm.notes || '')
+      .split(',')
+      .map(n => n.trim())
+      .filter(n => n !== '');
+
+    const destinationCol = tripForm.targetDriverId || editingCol || 'unassigned';
+    let finalStatus = tripForm.status;
+    if (destinationCol !== 'unassigned' && finalStatus === 'UNASSIGNED') {
+      finalStatus = 'ASSIGNED';
+    } else if (destinationCol === 'unassigned' && finalStatus !== 'ADMIN') {
+      finalStatus = 'UNASSIGNED';
+    }
+
+    const tripData = {
+      customer: tripForm.customer,
+      ref: tripForm.ref,
+      pickup: tripForm.pickup,
+      pickupTime: tripForm.pickupTime ? new Date(tripForm.pickupTime).toISOString() : new Date().toISOString(),
+      delivery: tripForm.delivery,
+      deliveryTime: tripForm.deliveryTime ? new Date(tripForm.deliveryTime).toISOString() : new Date().toISOString(),
+      revenue: Number(tripForm.revenue) || 0,
+      cost: Number(tripForm.cost) || 0,
+      status: finalStatus,
+      title: tripForm.title,
+      notes: notesArray,
+      id: editingTrip ? editingTrip.id : 'trip-' + Date.now()
     };
-    let newColumns = { ...columns };
-    if (editingTrip.isNew) {
-      delete tripToSave.isNew;
-      newColumns['unassigned'] = [tripToSave, ...(newColumns['unassigned'] || [])];
-    } else {
-      for (const colId in newColumns) {
-        const index = newColumns[colId].findIndex(t => t.id === tripToSave.id);
-        if (index > -1) { newColumns[colId][index] = tripToSave; break; }
+
+    if (editingTrip) {
+      if (editingCol === destinationCol) {
+        setColumns({
+          ...columns,
+          [destinationCol]: (columns[destinationCol] || []).map(t => (t.id === editingTrip.id ? tripData : t))
+        });
+      } else {
+        // Moved driver inside modal
+        const sourceList = (columns[editingCol] || []).filter(t => t.id !== editingTrip.id);
+        const destList = [...(columns[destinationCol] || []), tripData];
+        setColumns({
+          ...columns,
+          [editingCol]: sourceList,
+          [destinationCol]: destList
+        });
       }
+    } else {
+      setColumns({
+        ...columns,
+        [destinationCol]: [...(columns[destinationCol] || []), tripData]
+      });
     }
-    setColumns(newColumns);
     setIsTripModalOpen(false);
   };
 
-  const handleDeleteTrip = () => {
-    if(!window.confirm("Sicuro di voler eliminare questo viaggio?")) return;
-    let newColumns = { ...columns };
-    for (const colId in newColumns) newColumns[colId] = newColumns[colId].filter(t => t.id !== editingTrip.id);
-    setColumns(newColumns);
-    setIsTripModalOpen(false);
-  };
-
-  const handleWhatsApp = (trip, e) => {
-    e.stopPropagation();
-    const pickupFormatted = trip.pickupTime ? format(new Date(trip.pickupTime), 'dd/MM/yyyy HH:mm') : 'N/D';
-    const deliveryFormatted = trip.deliveryTime ? format(new Date(trip.deliveryTime), 'dd/MM/yyyy HH:mm') : 'N/D';
-    const text = `*MISSIONE DI TRASPORTO: ${trip.ref}*\n\n*Cliente:* ${trip.customer}\n\n*RITIRO:*\n📍 ${trip.pickup || 'N/D'}\n🕒 ${pickupFormatted}\n\n*CONSEGNA:*\n📍 ${trip.delivery || 'N/D'}\n🕒 ${deliveryFormatted}\n\n*Note:* ${(trip.notes || []).join(', ') || 'Nessuna'}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-  };
-
-  const handleCopy = (trip, e) => {
-    e.stopPropagation();
-    const newTrip = { ...trip, id: 'trip-' + Date.now(), ref: trip.ref + '-COPY', status: 'UNASSIGNED' };
-    setColumns({
-      ...columns,
-      'unassigned': [newTrip, ...(columns['unassigned'] || [])]
-    });
-  };
-
-  const moveTripToPosition = (tripId, destColId, targetTripId = null) => {
-    if (!canManageTMS) return appAlert('Permesso Gestione Trasporti (tms_manage) richiesto.');
-    let sourceColId = null;
-    let trip = null;
-    
-    for (const colId in columns) {
-      const t = columns[colId].find(t => t.id === tripId);
-      if (t) { sourceColId = colId; trip = { ...t }; break; }
-    }
-    if (!trip) return;
-    // allow same column reordering: if (sourceColId === destColId && !targetTripId) return;
-
-    const sourceCol = [...columns[sourceColId]];
-    let destCol = sourceColId === destColId ? sourceCol : [...(columns[destColId] || [])];
-
-    const sourceIndex = sourceCol.findIndex(t => t.id === tripId);
-    sourceCol.splice(sourceIndex, 1);
-
-    if (sourceColId === 'unassigned' && destColId !== 'unassigned') trip.status = 'ASSIGNED';
-    else if (sourceColId !== 'unassigned' && destColId === 'unassigned') trip.status = 'UNASSIGNED';
-
-    if (targetTripId) {
-      const targetIndex = destCol.findIndex(t => t.id === targetTripId);
-      if (targetIndex > -1) destCol.splice(targetIndex, 0, trip);
-      else destCol.push(trip);
+  // Driver Actions
+  const handleOpenDriverModal = (driver = null) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per gestire gli autisti.');
+    if (driver) {
+      setEditingDriver(driver);
+      setDriverForm({ name: driver.name, vehicle: driver.vehicle, phone: driver.phone || '' });
     } else {
-      destCol.push(trip);
+      setEditingDriver(null);
+      setDriverForm({ name: '', vehicle: '', phone: '' });
     }
-    setColumns({ ...columns, [sourceColId]: sourceCol, [destColId]: destCol });
+    setIsDriverModalOpen(true);
   };
 
-  const onNativeDropCard = (e, destColId, targetTripId) => {
-    e.currentTarget.classList.remove('!border-t-4', '!border-brand-blue', 'scale-[1.02]');
+  const handleSaveDriver = (e) => {
     e.preventDefault();
-    e.stopPropagation();
-    const type = e.dataTransfer.getData('type');
-    if (type !== 'trip') return;
-    const tripId = e.dataTransfer.getData('tripId');
-    if (tripId && tripId !== targetTripId) moveTripToPosition(tripId, destColId, targetTripId);
-    
-    
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
+    if (editingDriver) {
+      setDrivers(drivers.map(d => (d.id === editingDriver.id ? { ...d, ...driverForm } : d)));
+    } else {
+      const newId = 'driver-' + Date.now();
+      setDrivers([...drivers, { id: newId, ...driverForm }]);
+      setColumns({ ...columns, [newId]: [] });
+    }
+    setIsDriverModalOpen(false);
   };
 
-  const onNativeDrop = (e, destColId) => {
-    e.preventDefault();
-    const type = e.dataTransfer.getData('type');
-    
-    // Drop Autisti (riordinamento)
-    if (type === 'driver') {
-      if (draggedDriverId && draggedDriverId !== destColId && destColId !== 'unassigned') {
-        const newDrivers = [...drivers];
-        const sourceIndex = newDrivers.findIndex(d => d.id === draggedDriverId);
-        const targetIndex = newDrivers.findIndex(d => d.id === destColId);
-        if (sourceIndex > -1 && targetIndex > -1) {
-          const [moved] = newDrivers.splice(sourceIndex, 1);
-          newDrivers.splice(targetIndex, 0, moved);
-          setDrivers(newDrivers);
-        }
-      }
-      setDraggedDriverId(null);
+  const handleDeleteDriver = async (driverId) => {
+    if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per eliminare autisti.');
+    if (columns[driverId] && columns[driverId].length > 0) {
+      appAlert('Non puoi eliminare un autista che ha viaggi assegnati! Sposta o elimina prima i suoi viaggi.');
+      return;
+    }
+    if (await appConfirm('Sei sicuro di voler eliminare questo autista?', 'Elimina Autista')) {
+      setDrivers(drivers.filter(d => d.id !== driverId));
+      const newCols = { ...columns };
+      delete newCols[driverId];
+      setColumns(newCols);
+    }
+  };
+
+  const handleSendWhatsApp = (driver, trip) => {
+    if (!driver.phone) {
+      appAlert(`Nessun numero di telefono salvato per ${driver.name}. Modifica l'anagrafica dell'autista per inserire il numero.`);
       return;
     }
 
-    // Drop Viaggi
-    const tripId = e.dataTransfer.getData('tripId');
-    if (tripId) moveTripToPosition(tripId, destColId, null);
+    const cleanPhone = driver.phone.replace(/[^0-9+]/g, '');
+    const pickupDate = format(new Date(trip.pickupTime), 'dd/MM/yyyy HH:mm');
+    const deliveryDate = format(new Date(trip.deliveryTime), 'dd/MM/yyyy HH:mm');
+    const notesStr = trip.notes && trip.notes.length > 0 ? trip.notes.join(', ') : 'Nessuna nota particolare';
+
+    const message =
+      `Ciao *${driver.name}*, ecco i dettagli del tuo prossimo viaggio:\n\n` +
+      `*Cliente:* ${trip.customer} (Rif: ${trip.ref})\n` +
+      `*Ritiro:* ${trip.pickup} - il ${pickupDate}\n` +
+      `*Consegna:* ${trip.delivery} - il ${deliveryDate}\n` +
+      `*Note:* ${notesStr}\n\n` +
+      `Buon viaggio!`;
+
+    const encodedMessage = encodeURIComponent(message);
+    window.open(`https://wa.me/${cleanPhone}?text=${encodedMessage}`, '_blank');
   };
 
-  // --- RENDERERS ---
-  const displayedColumns = useMemo(() => {
-    if (viewMode === 'TOTAL' || viewMode === 'TIMELINE') return columns;
+  // Filtered Columns for Kanban Date View
+  const displayColumns = useMemo(() => {
     const filtered = {};
-    for (const colId in columns) {
-      filtered[colId] = columns[colId].filter(trip => {
-        const start = (trip.pickupTime || '').slice(0, 10);
-        const end = (trip.deliveryTime || '').slice(0, 10);
-        if (!start && !end) return false;
-        if (trip.status === 'ADMIN') return selectedDate >= start && selectedDate <= end;
-        else return selectedDate === start || selectedDate === end;
-      });
-    }
+    Object.keys(columns).forEach(colId => {
+      const driverObj = drivers.find(d => d.id === colId);
+      const dName = driverObj ? `${driverObj.name} ${driverObj.vehicle}` : '';
+      filtered[colId] = (columns[colId] || [])
+        .filter(trip => {
+          const dateMatch = colId === 'unassigned' && showAllUnassignedDates
+            ? true
+            : tripOverlapsDate(trip, selectedDate);
+          return dateMatch && tripMatchesFilters(trip, dName);
+        })
+        .sort((a, b) => new Date(a.pickupTime) - new Date(b.pickupTime));
+    });
     return filtered;
-  }, [columns, viewMode, selectedDate]);
+  }, [columns, drivers, selectedDate, searchTerm, statusFilter, showAllUnassignedDates]);
 
-  const renderKanbanCard = (trip, colId) => {
-    const isSpecial = trip.status === 'ADMIN';
+  // Count total unassigned trips across all dates (to notify user if some are on other days)
+  const totalUnassignedAllDates = (columns['unassigned'] || []).length;
+
+  // Timeline configuration anchored on `selectedDate` (7-day window starting from selectedDate)
+  const timelineData = useMemo(() => {
+    const start = new Date(`${selectedDate}T00:00:00`);
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      days.push(addDays(start, i));
+    }
+    const end = new Date(days[6]);
+    end.setHours(23, 59, 59, 999);
+    return { start, end, days, totalHours: 7 * 24 };
+  }, [selectedDate]);
+
+  // KPI Metrics for the active view (Selected Day in Kanban, or 7-day window in Timeline)
+  const kpiStats = useMemo(() => {
+    let totalTrips = 0;
+    let unassignedCount = 0;
+    let inTransitCount = 0;
+    let deliveredCount = 0;
+    let exceptionCount = 0;
+    let totalRevenue = 0;
+    let totalCost = 0;
+    let activeDriversCount = 0;
+
+    const isTripInActiveWindow = (trip) => {
+      if (viewMode === 'CALENDAR') {
+        return tripOverlapsDate(trip, selectedDate);
+      }
+      const tStart = new Date(trip.pickupTime);
+      const tEnd = new Date(trip.deliveryTime);
+      return tStart <= timelineData.end && tEnd >= timelineData.start;
+    };
+
+    (columns['unassigned'] || []).forEach(t => {
+      if (isTripInActiveWindow(t)) {
+        totalTrips++;
+        unassignedCount++;
+        totalRevenue += Number(t.revenue) || 0;
+        totalCost += Number(t.cost) || 0;
+      }
+    });
+
+    drivers.forEach(d => {
+      const dTrips = (columns[d.id] || []).filter(isTripInActiveWindow);
+      if (dTrips.some(t => t.status !== 'ADMIN')) {
+        activeDriversCount++;
+      }
+      dTrips.forEach(t => {
+        if (t.status !== 'ADMIN') {
+          totalTrips++;
+        }
+        if (t.status === 'IN_TRANSIT' || t.status === 'ASSIGNED') inTransitCount++;
+        if (t.status === 'DELIVERED') deliveredCount++;
+        if (t.status === 'EXCEPTION') exceptionCount++;
+        totalRevenue += Number(t.revenue) || 0;
+        totalCost += Number(t.cost) || 0;
+      });
+    });
+
+    const netMargin = totalRevenue - totalCost;
+    const marginPct = totalRevenue > 0 ? Math.round((netMargin / totalRevenue) * 100) : 0;
+
+    return {
+      totalTrips,
+      unassignedCount,
+      inTransitCount,
+      deliveredCount,
+      exceptionCount,
+      totalRevenue,
+      totalCost,
+      netMargin,
+      marginPct,
+      activeDriversCount
+    };
+  }, [columns, drivers, selectedDate, viewMode, timelineData]);
+
+  const getTimelineBlockStyle = (trip) => {
+    const tStart = new Date(trip.pickupTime);
+    const tEnd = new Date(trip.deliveryTime);
+
+    if (tEnd < timelineData.start || tStart > timelineData.end) return { display: 'none' };
+
+    const clampedStart = tStart < timelineData.start ? timelineData.start : tStart;
+    const clampedEnd = tEnd > timelineData.end ? timelineData.end : tEnd;
+
+    const totalWindowMs = timelineData.end.getTime() - timelineData.start.getTime();
+    const offsetMs = clampedStart.getTime() - timelineData.start.getTime();
+    const durationMs = Math.max(clampedEnd.getTime() - clampedStart.getTime(), 3600000);
+
+    const leftPercent = (offsetMs / totalWindowMs) * 100;
+    const widthPercent = (durationMs / totalWindowMs) * 100;
+
+    return {
+      left: `${Math.max(0, leftPercent)}%`,
+      width: `${Math.min(100 - leftPercent, Math.max(widthPercent, 2.5))}%`
+    };
+  };
+
+  const renderTripCard = (trip, colId) => {
+    const isException = trip.status === 'EXCEPTION';
+    const isAdmin = trip.status === 'ADMIN';
+    const meta = STATUS_META[trip.status] || STATUS_META['UNASSIGNED'];
+    const driverObj = drivers.find(d => d.id === colId);
+    const margin = (Number(trip.revenue) || 0) - (Number(trip.cost) || 0);
+    const nextStatus = NEXT_STATUS_FLOW[trip.status];
 
     return (
       <div
-        draggable
-        onDragStart={e => {
-          e.stopPropagation();
-          e.dataTransfer.setData('tripId', trip.id);
-          e.dataTransfer.setData('type', 'trip');
-        }}
-        onClick={() => handleOpenTripModal(trip)}
-        onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
-        onDragEnter={e => { e.preventDefault(); e.currentTarget.classList.add('!border-t-4', '!border-brand-blue', 'scale-[1.02]'); }}
-        onDragLeave={e => { e.preventDefault(); e.currentTarget.classList.remove('!border-t-4', '!border-brand-blue', 'scale-[1.02]'); }}
-        
-        
-        onDrop={e => onNativeDropCard(e, colId, trip.id)}
-        className={`mb-3 p-4 rounded-xl border-l-4 bg-slate-950 border-y border-r border-y-slate-800 border-r-slate-800 shadow-lg transition-all cursor-grab active:cursor-grabbing hover:border-r-slate-600 hover:bg-slate-900/80 ${STATUS_COLORS[trip.status].split(' ')[0]} `}
+        key={trip.id}
+        draggable={canManageTMS}
+        onDragStart={(e) => handleDragStart(e, trip, colId)}
+        className={`p-3.5 rounded-xl border ${meta.cardClass} mb-3 ${canManageTMS ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} shadow-lg transition-all hover:border-slate-500/80 hover:shadow-xl relative group select-none`}
       >
-        {isSpecial ? (
-          <>
-            <div className="flex items-center justify-between py-2">
-              <div className="flex items-center">
-                <Briefcase className="mr-3 text-fuchsia-500" size={24} />
-                <h3 className="text-xl font-bold text-fuchsia-400 uppercase tracking-widest">{trip.title || trip.customer}</h3>
+        {/* Top Header: Status Pill + Ref + Quick Actions */}
+        <div className="flex justify-between items-start gap-2 mb-2.5">
+          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+            <GripVertical size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0 -ml-1" />
+            <span className={`inline-flex items-center gap-1.5 text-[10px] font-black px-2 py-0.5 rounded-md border uppercase tracking-wider ${meta.badgeClass}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${meta.dotClass}`} />
+              {meta.shortLabel}
+            </span>
+            {!isAdmin && (
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-950/70 text-slate-400 border border-slate-800 truncate">
+                {trip.ref}
+              </span>
+            )}
+          </div>
+
+          {/* Action Toolbar */}
+          <div className="flex items-center gap-0.5 opacity-85 group-hover:opacity-100 transition-opacity bg-slate-950/90 px-1.5 py-1 rounded-lg border border-slate-800 shrink-0">
+            {canManageTMS && !isAdmin && nextStatus && colId !== 'unassigned' && (
+              <button
+                type="button"
+                onClick={() => handleQuickStatusChange(trip.id, colId, nextStatus)}
+                title={`Avanza stato a: ${STATUS_META[nextStatus]?.label}`}
+                className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/15 p-1 rounded transition-colors"
+              >
+                <CheckCircle2 size={13} />
+              </button>
+            )}
+            {canManageTMS && (
+              <button
+                type="button"
+                onClick={() => handleOpenTripModal(trip, colId)}
+                title="Modifica Viaggio"
+                className="text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 p-1 rounded transition-colors"
+              >
+                <Edit2 size={13} />
+              </button>
+            )}
+            {canManageTMS && !isAdmin && (
+              <button
+                type="button"
+                onClick={() => handleDuplicate(trip, colId)}
+                title="Duplica Viaggio"
+                className="text-slate-400 hover:text-white hover:bg-slate-800 p-1 rounded transition-colors"
+              >
+                <Copy size={13} />
+              </button>
+            )}
+            {!isAdmin && colId !== 'unassigned' && driverObj && (
+              <button
+                type="button"
+                onClick={() => handleSendWhatsApp(driverObj, trip)}
+                title="Invia dettagli su WhatsApp all'autista"
+                className="text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 p-1 rounded transition-colors"
+              >
+                <MessageCircle size={13} />
+              </button>
+            )}
+            {canManageTMS && (
+              <button
+                type="button"
+                onClick={() => handleDeleteTrip(trip.id, colId)}
+                title="Elimina Viaggio"
+                className="text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 p-1 rounded transition-colors"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Customer / Admin Title */}
+        <div className="mb-2.5">
+          {isAdmin ? (
+            <div className="flex items-center gap-2 font-bold text-sm text-fuchsia-300">
+              <Briefcase size={15} className="shrink-0" />
+              <span>{trip.title || trip.customer}</span>
+            </div>
+          ) : (
+            <div className="font-bold text-white text-sm leading-snug flex items-center justify-between gap-2">
+              <span className="truncate">{trip.customer}</span>
+              {isException && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-black text-rose-400 bg-rose-500/15 px-1.5 py-0.5 rounded border border-rose-500/30 shrink-0">
+                  <AlertTriangle size={11} /> ALERT
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Route Details (Pickup -> Delivery) */}
+        {!isAdmin ? (
+          <div className="space-y-2 text-xs bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80 mb-2.5">
+            <div className="flex items-start gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-400 mt-1 shrink-0 ring-4 ring-emerald-500/15" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400/90">Ritiro</span>
+                  <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                    <Clock size={10} />
+                    {format(new Date(trip.pickupTime), 'dd/MM HH:mm')}
+                  </span>
+                </div>
+                <p className="font-bold text-slate-200 truncate">{trip.pickup || '-'}</p>
               </div>
             </div>
-            <div className="flex flex-col gap-1 mt-2 text-xs font-mono text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800">
-                <div className="flex justify-between"><span>Dal:</span> <span>{trip.pickupTime ? format(new Date(trip.pickupTime), "dd/MM HH:mm") : 'N/D'}</span></div>
-                <div className="flex justify-between"><span>Al:</span> <span>{trip.deliveryTime ? format(new Date(trip.deliveryTime), "dd/MM HH:mm") : 'N/D'}</span></div>
+
+            <div className="border-t border-dashed border-slate-800/90 my-1" />
+
+            <div className="flex items-start gap-2">
+              <div className="w-2 h-2 rounded-full bg-rose-400 mt-1 shrink-0 ring-4 ring-rose-500/15" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400/90">Consegna</span>
+                  <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                    <Clock size={10} />
+                    {format(new Date(trip.deliveryTime), 'dd/MM HH:mm')}
+                  </span>
+                </div>
+                <p className="font-bold text-slate-200 truncate">{trip.delivery || '-'}</p>
+              </div>
             </div>
-          </>
+          </div>
         ) : (
-          <>
-            <div className="flex justify-between items-start mb-3">
-              <div>
-                <h4 className="font-bold text-white leading-tight">{trip.customer}</h4>
-                <span className="text-xs font-mono text-slate-500">{trip.ref}</span>
-              </div>
-              <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${STATUS_COLORS[trip.status]}`}>{trip.status.replace('_', ' ')}</div>
-            </div>
-            <div className="space-y-3 mb-4 relative">
-              <div className="absolute left-2 top-3 bottom-3 w-px bg-slate-700"></div>
-              <div className="flex items-start gap-3 relative z-10">
-                <div className="mt-1 bg-slate-950 p-0.5 rounded-full"><MapPin size={14} className="text-brand-blue" /></div>
-                <div>
-                  <div className="text-sm text-slate-300 font-semibold">{trip.pickup || 'N/D'}</div>
-                  <div className="text-[11px] font-mono text-slate-500 flex items-center gap-1"><Calendar size={10} /> {trip.pickupTime ? format(new Date(trip.pickupTime), "dd MMM HH:mm", { locale: it }) : 'N/A'}</div>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 relative z-10">
-                <div className="mt-1 bg-slate-950 p-0.5 rounded-full"><MapPin size={14} className="text-emerald-500" /></div>
-                <div>
-                  <div className="text-sm text-slate-300 font-semibold">{trip.delivery || 'N/D'}</div>
-                  <div className="text-[11px] font-mono text-slate-500 flex items-center gap-1"><Calendar size={10} /> {trip.deliveryTime ? format(new Date(trip.deliveryTime), "dd MMM HH:mm", { locale: it }) : 'N/A'}</div>
-                </div>
-              </div>
-            </div>
-          </>
+          <div className="text-xs bg-slate-950/60 p-2.5 rounded-xl border border-fuchsia-500/20 mb-2.5 flex items-center justify-between text-fuchsia-200/80">
+            <span className="flex items-center gap-1.5 font-medium">
+              <Calendar size={12} /> Dal {format(new Date(trip.pickupTime), 'dd/MM HH:mm')}
+            </span>
+            <ArrowRight size={12} className="text-fuchsia-400" />
+            <span className="font-medium">Al {format(new Date(trip.deliveryTime), 'dd/MM HH:mm')}</span>
+          </div>
         )}
-        
+
+        {/* Notes Badges */}
         {trip.notes && trip.notes.length > 0 && (
-          <div className="flex flex-wrap gap-1 mb-2">
-            {trip.notes.map((note, idx) => (
-              <span key={idx} className="bg-slate-900 text-slate-400 text-[10px] font-bold px-2 py-1 rounded-md border border-slate-700/50 flex items-center gap-1">
-                <FileText size={10} /> {note}
+          <div className="flex flex-wrap gap-1 mb-2.5">
+            {trip.notes.map((n, idx) => (
+              <span
+                key={idx}
+                className="text-[10px] bg-slate-950/80 text-slate-300 px-2 py-0.5 rounded-md border border-slate-800 flex items-center gap-1"
+              >
+                <FileText size={10} className="text-brand-blue shrink-0" /> {n}
               </span>
             ))}
           </div>
         )}
-        
-        <div className="flex justify-end gap-2 border-t border-slate-800/50 pt-2 mt-2">
-          <button onClick={(e) => { e.stopPropagation(); handleOpenTripModal(trip); }} className="p-1.5 rounded-lg bg-slate-900 text-slate-400 hover:text-white transition-colors" title="Modifica"><Edit2 size={14} /></button>
-          {!isSpecial && (
-            <>
-              <button onClick={(e) => handleCopy(trip, e)} className="p-1.5 rounded-lg bg-slate-900 text-slate-400 hover:text-white transition-colors" title="Duplica"><Copy size={14} /></button>
-              <button onClick={(e) => handleWhatsApp(trip, e)} className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white transition-colors" title="WhatsApp"><MessageCircle size={14} /></button>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  };
 
-  const renderTimeline = () => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const days = Array.from({ length: 7 }).map((_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() + i);
-      return d;
-    });
-
-    const HOUR_WIDTH = 12; // px per ora
-    const DAY_WIDTH = 24 * HOUR_WIDTH;
-    const TOTAL_WIDTH = 7 * DAY_WIDTH;
-
-    return (
-      <div className="flex flex-1 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl relative">
-        <div className="flex-1 overflow-auto custom-scrollbar relative flex bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTAgMGgyNHYyNEgweiIgZmlsbD0ibm9uZSIvPjxwYXRoIGQ9Ik0yNCAwdjI0SDBWMHoiIGZpbGw9Im5vbmUiLz48cGF0aCBkPSJNMCAwdjI0aDFWMHoiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L3N2Zz4=')]">
-          
-          <div className="w-64 shrink-0 bg-slate-900/90 border-r border-slate-800 flex flex-col sticky left-0 z-30 backdrop-blur-md">
-            <div className="h-16 shrink-0 border-b border-slate-800 p-4 font-bold text-slate-400 uppercase text-xs tracking-widest flex items-center bg-slate-900 sticky top-0 z-40">
-              Risorse (Autisti)
+        {/* Financial Footer: Ricavo, Costo, Margine */}
+        {!isAdmin && (
+          <div className="flex justify-between items-center pt-2 border-t border-slate-800/80 text-[11px]">
+            <div className="flex items-center gap-3">
+              <span className="text-slate-400">
+                Ricavo: <strong className="text-emerald-400 font-bold">€{Number(trip.revenue) || 0}</strong>
+              </span>
+              <span className="text-slate-400">
+                Costo: <strong className="text-rose-400 font-bold">€{Number(trip.cost) || 0}</strong>
+              </span>
             </div>
-            {drivers.map(driver => (
-              <div 
-                key={driver.id} 
-                draggable
-                onDragStart={(e) => {
-                  setDraggedDriverId(driver.id);
-                  e.dataTransfer.setData('type', 'driver');
-                }}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => onNativeDrop(e, driver.id)}
-                className={`h-24 shrink-0 border-b border-slate-800/50 p-4 flex flex-col justify-center group relative cursor-pointer transition-colors ${draggedDriverId === driver.id ? 'opacity-50 bg-slate-800' : 'hover:bg-slate-800/80'}`}
-                onClick={() => handleOpenDriverModal(driver)}
-              >
-                <div className="absolute left-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 text-slate-600 cursor-grab"><GripVertical size={14}/></div>
-                <h3 className="font-bold text-white text-sm truncate ml-2">{driver.name}</h3>
-                <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-1 truncate ml-2"><Truck size={10} className="shrink-0"/> {driver.vehicle}</div>
-              </div>
-            ))}
-            
-            <button onClick={() => handleOpenDriverModal()} className="h-16 shrink-0 border-b border-dashed border-slate-800 p-4 flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-800/80 transition-colors font-bold text-xs gap-2">
-              <Plus size={14} /> AGGIUNGI MEZZO
-            </button>
-          </div>
-
-          <div className="flex flex-col" style={{ width: TOTAL_WIDTH }}>
-            <div className="h-16 shrink-0 flex border-b border-slate-800 bg-slate-900/95 sticky top-0 z-20 shadow-sm backdrop-blur-md">
-              {days.map((d, i) => (
-                <div key={i} className="border-r border-slate-800/50 relative" style={{ width: DAY_WIDTH }}>
-                  <div className="absolute top-0 left-0 right-0 p-1.5 text-center text-xs font-bold text-slate-300 bg-slate-800/40 border-b border-slate-800/50">
-                    {format(d, 'EEEE dd MMM', { locale: it })}
-                  </div>
-                  <div className="absolute bottom-0 left-0 right-0 flex text-[9px] text-slate-500 font-mono">
-                    {[0,6,12,18].map(h => (
-                      <div key={h} className="border-l border-slate-800/40 pl-1 pb-1 flex items-end h-7" style={{ width: DAY_WIDTH / 4 }}>{h}:00</div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {drivers.map(driver => (
-              <div 
-                key={driver.id} 
-                className={`h-24 shrink-0 border-b border-slate-800/30 relative hover:bg-white/[0.02] transition-colors group ${draggedDriverId === driver.id ? 'bg-slate-800/20' : ''}`}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => onNativeDrop(e, driver.id)}
-              >
-                <div className="absolute inset-0 pointer-events-none flex">
-                   {Array.from({length: 7*4}).map((_, i) => (
-                     <div key={i} className="border-l border-slate-800/20 h-full" style={{ width: DAY_WIDTH / 4 }}></div>
-                   ))}
-                </div>
-
-                {displayedColumns[driver.id]?.map(trip => {
-                  const pTime = new Date(trip.pickupTime || today);
-                  const dTime = new Date(trip.deliveryTime || new Date(pTime.getTime() + 7200000));
-                  const startDiffHours = differenceInMinutes(pTime, today) / 60;
-                  const durationHours = differenceInMinutes(dTime, pTime) / 60;
-                  const leftPx = startDiffHours * HOUR_WIDTH;
-                  const widthPx = Math.max(80, durationHours * HOUR_WIDTH);
-                  if (leftPx + widthPx < 0 || leftPx > TOTAL_WIDTH) return null;
-                  const isSpecial = trip.status === 'ADMIN';
-
-                  return (
-                    <div 
-                      key={trip.id}
-                      draggable
-                      onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('tripId', trip.id); e.dataTransfer.setData('type', 'trip'); }}
-                      onClick={() => handleOpenTripModal(trip)}
-                      className={`absolute top-3 bottom-3 rounded-lg border shadow-lg cursor-grab active:cursor-grabbing p-2 overflow-hidden flex flex-col justify-center transition-all hover:scale-[1.02] hover:z-50 hover:shadow-brand-blue/20 group/card ${STATUS_COLORS[trip.status]} ${STATUS_BG[trip.status]}`}
-                      style={{ left: `${Math.max(0, leftPx)}px`, width: `${widthPx}px`, borderLeftWidth: '4px' }}
-                    >
-                      {isSpecial ? (
-                        <div className="font-bold text-[10px] uppercase truncate flex items-center gap-1"><Briefcase size={10}/> {trip.title || 'ADMIN'}</div>
-                      ) : (
-                        <>
-                          <div className="font-bold text-xs truncate text-white leading-tight pr-6">{trip.customer}</div>
-                          <div className="text-[9px] truncate text-slate-400 mt-0.5">{trip.pickup?.split(' ')[0]} ➔ {trip.delivery?.split(' ')[0]}</div>
-                          <div className="text-[8px] font-mono mt-1 opacity-70">{trip.pickupTime ? format(pTime, "HH:mm") : '--:--'} - {trip.deliveryTime ? format(dTime, "HH:mm") : '--:--'}</div>
-                        </>
-                      )}
-
-                      {trip.notes && trip.notes.length > 0 && !isSpecial && (
-                        <div className="flex gap-1 mt-1">
-                          <span className="bg-slate-900 text-slate-400 text-[8px] font-bold px-1.5 py-0.5 rounded border border-slate-700/50">+{trip.notes.length} note</span>
-                        </div>
-                      )}
-
-                      {!isSpecial && (
-                        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex flex-col justify-center gap-1 opacity-0 group-hover/card:opacity-100 transition-opacity bg-slate-900/90 px-1 py-1 rounded backdrop-blur z-20">
-                          <button onClick={(e) => handleCopy(trip, e)} className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700" title="Duplica"><Copy size={12} /></button>
-                          <button onClick={(e) => handleWhatsApp(trip, e)} className="p-1 rounded text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20" title="WhatsApp"><MessageCircle size={12} /></button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  if (loading) return <div className="flex h-screen items-center justify-center bg-brand-black"><div className="text-white text-xl animate-pulse">Caricamento TMS...</div></div>;
-
-  return (
-    <div className="flex flex-col h-screen bg-brand-black overflow-hidden relative">
-      <div className="p-4 pb-4 shrink-0 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 z-30">
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-4 md:gap-6 w-full md:w-auto">
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <Truck className="text-brand-blue" size={28} />
-            TMS Board
-          </h1>
-          <div className="flex items-center bg-slate-950 rounded-lg p-1 border border-slate-800 shadow-inner">
-            <button onClick={() => setViewMode('TOTAL')} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'TOTAL' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}><LayoutTemplate size={16} /> Totale</button>
-            <button onClick={() => setViewMode('CALENDAR')} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'CALENDAR' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}><CalendarDays size={16} /> Giorno</button>
-            <button onClick={() => setViewMode('TIMELINE')} className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'TIMELINE' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}><StretchHorizontal size={16} /> Timeline</button>
-          </div>
-          {viewMode === 'CALENDAR' && (
-            <div className="flex items-center gap-3 bg-brand-blue/10 border border-brand-blue/30 px-3 py-1.5 rounded-lg">
-              <Calendar size={18} className="text-brand-blue" />
-              <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="bg-transparent text-white font-bold outline-none [color-scheme:dark] text-sm" />
-            </div>
-          )}
-        </div>
-        <button onClick={() => handleOpenTripModal()} className="px-4 py-2 bg-brand-blue text-brand-black font-bold text-sm rounded-lg hover:bg-sky-400 transition-colors flex items-center gap-2 shadow-[0_0_15px_rgba(56,189,248,0.3)]">
-          <Plus size={18} /> Nuova Card
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto lg:overflow-hidden p-2 md:p-4 flex flex-col lg:flex-row gap-4">
-        
-        {/* UNASSIGNED COMMON LIST */}
-        <div 
-          className="w-full lg:w-72 shrink-0 flex flex-col h-[40vh] lg:h-full bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl"
-          onDragOver={e => e.preventDefault()}
-          onDrop={e => onNativeDrop(e, 'unassigned')}
-        >
-          <div className="p-3 bg-slate-950/80 border-b border-slate-800 flex justify-between items-center backdrop-blur-md">
-            <h2 className="font-bold text-slate-300 text-sm">Da Assegnare</h2>
-            <span className="bg-slate-800 text-slate-300 text-xs font-bold px-2 py-0.5 rounded-full">{displayedColumns['unassigned']?.length || 0}</span>
-          </div>
-          <div className="flex-1 p-3 overflow-y-auto custom-scrollbar">
-            {displayedColumns['unassigned']?.map(trip => (
-              viewMode === 'TIMELINE' ? (
-                // Compact Timeline Unassigned Card
-                <div 
-                  key={trip.id}
-                  draggable
-                  onDragStart={e => { e.dataTransfer.setData('tripId', trip.id); e.dataTransfer.setData('type', 'trip'); }}
-                  onClick={() => handleOpenTripModal(trip)}
-                  className={`mb-2 p-3 rounded-xl border-l-4 border-y border-r border-y-slate-800 border-r-slate-800 shadow-lg cursor-grab active:cursor-grabbing hover:bg-slate-800/50 transition-colors ${STATUS_COLORS[trip.status]} ${STATUS_BG[trip.status]} group/card relative`}
-                >
-                  <div className="font-bold text-white text-sm truncate pr-6">{trip.customer}</div>
-                  <div className="text-[10px] text-slate-400 truncate mt-1">{trip.pickup?.split(' ')[0] || 'N/D'} ➔ {trip.delivery?.split(' ')[0] || 'N/D'}</div>
-                  <div className="text-[9px] text-slate-500 font-mono mt-1">{trip.pickupTime ? format(new Date(trip.pickupTime), "dd/MM HH:mm") : 'N/D'}</div>
-                  
-                  {trip.notes && trip.notes.length > 0 && (
-                    <div className="flex gap-1 mt-2">
-                      <span className="bg-slate-900 text-slate-400 text-[8px] font-bold px-1.5 py-0.5 rounded border border-slate-700/50">+{trip.notes.length} note</span>
-                    </div>
-                  )}
-
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 flex flex-col justify-center gap-1 opacity-0 group-hover/card:opacity-100 transition-opacity bg-slate-900/90 px-1 py-1 rounded backdrop-blur z-20">
-                    <button onClick={(e) => handleCopy(trip, e)} className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700" title="Duplica"><Copy size={12} /></button>
-                    <button onClick={(e) => handleWhatsApp(trip, e)} className="p-1 rounded text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20" title="WhatsApp"><MessageCircle size={12} /></button>
-                  </div>
-                </div>
-              ) : (
-                // Full Kanban Unassigned Card
-                <React.Fragment key={trip.id}>
-                  {renderKanbanCard(trip, 'unassigned')}
-                </React.Fragment>
-              )
-            ))}
-          </div>
-        </div>
-
-        {viewMode === 'TIMELINE' ? (
-          renderTimeline()
-        ) : (
-          <div className="flex-1 overflow-x-hidden overflow-y-visible lg:overflow-x-auto lg:overflow-y-hidden custom-scrollbar">
-            <div className="flex flex-col lg:flex-row gap-4 h-auto lg:h-full items-start lg:min-w-max lg:pr-4">
-              {drivers.map(driver => (
-                <div 
-                  key={driver.id} 
-                  className={`w-full lg:w-80 shrink-0 flex flex-col h-[50vh] lg:h-full bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl transition-all ${draggedDriverId === driver.id ? 'opacity-50' : ''}`}
-                  onDragOver={e => e.preventDefault()}
-                  onDrop={e => onNativeDrop(e, driver.id)}
-                >
-                  <div 
-                    draggable
-                    onDragStart={e => { e.dataTransfer.setData('driverId', driver.id); e.dataTransfer.setData('type', 'driver'); setDraggedDriverId(driver.id); }}
-                    onDragEnd={() => setDraggedDriverId(null)}
-                    className="p-3 bg-slate-950/80 border-b border-slate-800 flex flex-col relative group backdrop-blur-md cursor-grab active:cursor-grabbing hover:bg-slate-900/90 transition-colors"
-                  >
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-600 opacity-0 group-hover:opacity-100"><GripVertical size={14}/></div>
-                    <div className="flex justify-between items-center mb-1 ml-4">
-                      <h2 className="font-bold text-white text-base pr-8 truncate">{driver.name}</h2>
-                      <span className="bg-brand-blue/20 text-brand-blue text-[10px] font-bold px-1.5 py-0.5 rounded-full">{displayedColumns[driver.id]?.length || 0}</span>
-                    </div>
-                    <div className="text-[10px] text-slate-500 flex items-center gap-1 truncate pr-8 ml-4"><Truck size={10} className="shrink-0" /> {driver.vehicle}</div>
-                    <button onClick={(e) => { e.stopPropagation(); handleOpenDriverModal(driver); }} className="absolute top-3 right-10 p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" title="Modifica"><Edit2 size={12} /></button>
-                  </div>
-                  
-                  <div className="flex-1 p-3 overflow-y-auto custom-scrollbar">
-                    {displayedColumns[driver.id]?.map(trip => (
-                      <React.Fragment key={trip.id}>
-                        {renderKanbanCard(trip, driver.id)}
-                      </React.Fragment>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              
-              <button onClick={() => handleOpenDriverModal()} className="w-full lg:w-16 shrink-0 py-6 lg:py-0 lg:h-[calc(100vh-200px)] border-2 border-dashed border-slate-800 rounded-2xl flex items-center justify-center text-slate-600 hover:text-white hover:border-slate-500 hover:bg-slate-800/50 transition-all shadow-lg lg:mt-4 mb-32 lg:mb-0">
-                <div className="lg:rotate-90 font-bold whitespace-nowrap tracking-wider flex items-center gap-2">
-                  <Plus size={16} /> AGGIUNGI MEZZO
-                </div>
-              </button>
-            </div>
+            <span
+              className={`px-2 py-0.5 rounded font-black text-[10px] border ${
+                margin >= 0
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+                  : 'bg-rose-500/10 text-rose-400 border-rose-500/25'
+              }`}
+            >
+              {margin >= 0 ? `+€${margin}` : `-€${Math.abs(margin)}`}
+            </span>
           </div>
         )}
       </div>
-      
-      {/* MODALS */}
-      {isDriverModalOpen && (
-        <div className="absolute inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-white">{editingDriver.isNew ? 'Nuovo Autista' : 'Modifica Autista'}</h2>
-              <button onClick={() => setIsDriverModalOpen(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
+    );
+  };
+
+  return (
+    <div className="h-[calc(100vh-3.5rem)] flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
+      {/* Top Control Header */}
+      <div className="px-6 py-4 bg-slate-900/95 border-b border-slate-800 shrink-0 space-y-3.5">
+        <div className="flex flex-wrap justify-between items-center gap-4">
+          {/* Title */}
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-brand-blue/15 border border-brand-blue/30 flex items-center justify-center text-brand-blue shadow-lg shadow-brand-blue/10">
+              <Truck size={24} />
             </div>
-            <form onSubmit={handleSaveDriver} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Nome Autista</label>
-                <input type="text" value={editingDriver.name} onChange={e => setEditingDriver({...editingDriver, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" required />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Veicolo e Targa</label>
-                <input type="text" value={editingDriver.vehicle} onChange={e => setEditingDriver({...editingDriver, vehicle: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" required />
-              </div>
-              <div className="flex justify-between pt-4 border-t border-slate-800 mt-6">
-                {!editingDriver.isNew ? <button type="button" onClick={handleDeleteDriver} className="p-2 bg-rose-500/10 text-rose-500 rounded-lg hover:bg-rose-500 hover:text-white transition-colors"><Trash2 size={18} /></button> : <div></div>}
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setIsDriverModalOpen(false)} className="px-4 py-2 bg-slate-800 text-slate-300 font-bold rounded-lg hover:bg-slate-700">Annulla</button>
-                  <button type="submit" className="px-4 py-2 bg-brand-blue text-brand-black font-bold rounded-lg hover:bg-sky-400 flex items-center gap-2"><Check size={18} /> Salva</button>
+            <div>
+              <h1 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+                TMS · Pianificazione Trasporti
+              </h1>
+              <p className="text-slate-400 text-xs">
+                Gestione operativa viaggi, assegnazione rapida autisti e controllo marginalità
+              </p>
+            </div>
+          </div>
+
+          {/* Center: Date Navigation with Left & Right Arrows + View Switcher */}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Date Navigator (< Date > + Oggi) */}
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 shadow-inner">
+              <button
+                type="button"
+                onClick={() => handleShiftDate(-1)}
+                title="Giorno precedente"
+                className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors active:scale-95"
+              >
+                <ChevronLeft size={18} />
+              </button>
+
+              <div className="flex items-center gap-2 px-3 py-1 border-x border-slate-800/80">
+                <Calendar size={15} className="text-brand-blue shrink-0" />
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-brand-blue leading-none mb-0.5 capitalize">
+                    {viewMode === 'TIMELINE' ? 'Inizio Timeline (7 gg)' : formattedSelectedDate}
+                  </span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+                    className="bg-transparent text-xs text-white font-bold focus:outline-none cursor-pointer"
+                  />
                 </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleShiftDate(1)}
+                title="Giorno successivo"
+                className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors active:scale-95"
+              >
+                <ChevronRight size={18} />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleResetToday}
+                title="Torna alla data di oggi"
+                className={`ml-1 px-2.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${
+                  isSelectedToday
+                    ? 'bg-brand-blue/20 text-brand-blue border border-brand-blue/30'
+                    : 'bg-slate-900 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-800'
+                }`}
+              >
+                Oggi
+              </button>
+            </div>
+
+            {/* View Switcher: ONLY Kanban con le date & Timeline */}
+            <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setViewMode('CALENDAR')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${
+                  viewMode === 'CALENDAR'
+                    ? 'bg-brand-blue text-slate-950 shadow-lg shadow-brand-blue/20'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <CalendarDays size={15} /> Kanban Giornaliero
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('TIMELINE')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${
+                  viewMode === 'TIMELINE'
+                    ? 'bg-brand-blue text-slate-950 shadow-lg shadow-brand-blue/20'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <StretchHorizontal size={15} /> Timeline 7 Giorni
+              </button>
+            </div>
+
+            {/* Action Buttons */}
+            {canManageTMS && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenDriverModal()}
+                  className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs border border-slate-700 transition-all shadow-sm"
+                >
+                  <Plus size={15} className="text-brand-blue" /> Nuovo Autista
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenTripModal(null, 'unassigned')}
+                  className="bg-brand-blue hover:bg-sky-400 text-slate-950 font-black px-4 py-2 rounded-xl flex items-center gap-2 text-xs shadow-lg shadow-brand-blue/20 transition-all"
+                >
+                  <Plus size={16} /> Nuovo Viaggio
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* KPI Bar & Search/Filter Row */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-center pt-1">
+          {/* 4 Compact KPI Cards */}
+          <div className="xl:col-span-7 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Viaggi {viewMode === 'CALENDAR' ? 'del Giorno' : '(7 Giorni)'}
+                </p>
+                <div className="flex items-baseline gap-2 mt-0.5">
+                  <span className="text-lg font-black text-white">{kpiStats.totalTrips}</span>
+                  {kpiStats.unassignedCount > 0 && (
+                    <span className="text-[10px] font-bold text-amber-400">
+                      ({kpiStats.unassignedCount} da assegnare)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-lg bg-brand-blue/10 border border-brand-blue/20 flex items-center justify-center text-brand-blue">
+                <Navigation size={16} />
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Autisti Impegnati</p>
+                <div className="flex items-baseline gap-1.5 mt-0.5">
+                  <span className="text-lg font-black text-white">{kpiStats.activeDriversCount}</span>
+                  <span className="text-xs font-bold text-slate-500">/ {drivers.length}</span>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                <UserCheck size={16} />
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Ricavi / Costi</p>
+                <div className="flex items-baseline gap-2 mt-0.5 text-xs font-bold">
+                  <span className="text-emerald-400 font-black text-sm">€{kpiStats.totalRevenue}</span>
+                  <span className="text-slate-600">/</span>
+                  <span className="text-rose-400 font-bold">€{kpiStats.totalCost}</span>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                <Euro size={16} />
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Margine Operativo</p>
+                <div className="flex items-baseline gap-1.5 mt-0.5">
+                  <span
+                    className={`text-lg font-black ${
+                      kpiStats.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                    }`}
+                  >
+                    {kpiStats.netMargin >= 0 ? `+€${kpiStats.netMargin}` : `-€${Math.abs(kpiStats.netMargin)}`}
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-400">({kpiStats.marginPct}%)</span>
+                </div>
+              </div>
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center border ${
+                  kpiStats.netMargin >= 0
+                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                    : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                }`}
+              >
+                <TrendingUp size={16} />
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Status Quick Filters */}
+          <div className="xl:col-span-5 flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Cerca cliente, rif, località, autista, note..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-brand-blue"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 overflow-x-auto">
+              {[
+                { id: 'ALL', label: 'Tutti' },
+                { id: 'ASSIGNED', label: 'Assegnati' },
+                { id: 'IN_TRANSIT', label: 'In Viaggio' },
+                { id: 'DELIVERED', label: 'Consegnati' },
+                { id: 'EXCEPTION', label: 'Problemi' }
+              ].map(f => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setStatusFilter(f.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${
+                    statusFilter === f.id
+                      ? 'bg-slate-800 text-brand-blue border border-brand-blue/30'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-5">
+        {viewMode === 'TIMELINE' ? (
+          /* ================= TIMELINE ORIZZONTALE (7 GIORNI) ================= */
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl h-full flex flex-col overflow-hidden shadow-2xl">
+            {/* Timeline Navigation Sub-bar */}
+            <div className="px-4 py-2.5 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 text-slate-300 font-bold">
+                <StretchHorizontal size={15} className="text-brand-blue" />
+                <span>
+                  Finestra Temporale: dal{' '}
+                  <strong className="text-white">{format(timelineData.start, 'dd MMM yyyy', { locale: it })}</strong> al{' '}
+                  <strong className="text-white">{format(timelineData.end, 'dd MMM yyyy', { locale: it })}</strong>
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleShiftDate(-7)}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 font-bold flex items-center gap-1"
+                >
+                  <ChevronLeft size={13} /> -7 gg
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleShiftDate(7)}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 font-bold flex items-center gap-1"
+                >
+                  +7 gg <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+
+            {/* Timeline Days Header */}
+            <div className="flex border-b border-slate-800 bg-slate-950/60 shrink-0">
+              <div className="w-72 shrink-0 p-3.5 border-r border-slate-800 font-black text-xs uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                <span>Autisti / Risorse</span>
+                <span className="text-[10px] text-brand-blue font-bold">Clicca + per assegnare</span>
+              </div>
+              <div className="flex-1 grid grid-cols-7 divide-x divide-slate-800">
+                {timelineData.days.map((d, i) => {
+                  const dayIso = format(d, 'yyyy-MM-dd');
+                  const isToday = dayIso === todayStr;
+                  return (
+                    <button
+                      type="button"
+                      key={i}
+                      onClick={() => {
+                        setSelectedDate(dayIso);
+                        setViewMode('CALENDAR');
+                      }}
+                      title="Clicca per aprire il Kanban di questo giorno"
+                      className={`p-2.5 text-center transition-colors hover:bg-slate-800/50 ${
+                        isToday ? 'bg-brand-blue/10' : ''
+                      }`}
+                    >
+                      <div className="text-[10px] text-slate-400 uppercase font-black tracking-wider">
+                        {format(d, 'EEE', { locale: it })}
+                      </div>
+                      <div className={`text-sm font-black ${isToday ? 'text-brand-blue' : 'text-slate-200'}`}>
+                        {format(d, 'dd MMM', { locale: it })}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Timeline Rows */}
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-800/70">
+              {/* Optional Unassigned Row in Timeline if there are unassigned trips */}
+              {(columns['unassigned'] || []).length > 0 && (
+                <div
+                  className="flex min-h-[84px] bg-slate-950/40 hover:bg-slate-900/60 transition-colors"
+                  onDragOver={(e) => handleDragOver(e, 'unassigned')}
+                  onDrop={(e) => handleDrop(e, 'unassigned')}
+                >
+                  <div className="w-72 shrink-0 p-3.5 border-r border-slate-800 flex items-center justify-between gap-2 bg-slate-950/60">
+                    <div>
+                      <div className="font-black text-amber-400 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                        Da Assegnare ({(columns['unassigned'] || []).length})
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        Trascina su un autista o clicca sul viaggio
+                      </div>
+                    </div>
+                    {canManageTMS && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTripModal(null, 'unassigned')}
+                        title="Nuovo viaggio da assegnare"
+                        className="w-7 h-7 rounded-lg bg-amber-500/15 hover:bg-amber-500 text-amber-400 hover:text-slate-950 border border-amber-500/30 flex items-center justify-center transition-all shrink-0"
+                      >
+                        <Plus size={15} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex-1 relative grid grid-cols-7 divide-x divide-slate-800/40">
+                    {timelineData.days.map((_, i) => (
+                      <div key={i} className="h-full" />
+                    ))}
+                    <div className="absolute inset-0 py-2 px-1">
+                      {(columns['unassigned'] || [])
+                        .filter(t => tripMatchesFilters(t, 'Da Assegnare'))
+                        .map((trip, idx) => {
+                          const style = getTimelineBlockStyle(trip);
+                          if (style.display === 'none') return null;
+                          const meta = STATUS_META[trip.status] || STATUS_META['UNASSIGNED'];
+                          return (
+                            <div
+                              key={trip.id}
+                              style={{ ...style, top: `${(idx % 2) * 38 + 6}px`, height: '34px' }}
+                              draggable={canManageTMS}
+                              onDragStart={(e) => handleDragStart(e, trip, 'unassigned')}
+                              onClick={() => handleOpenTripModal(trip, 'unassigned')}
+                              className={`absolute rounded-lg border px-2.5 py-1 flex items-center justify-between text-xs shadow-md overflow-hidden cursor-pointer hover:z-20 hover:scale-[1.01] transition-all ${meta.timelineClass}`}
+                              title={`${trip.customer} | ${trip.pickup} -> ${trip.delivery}`}
+                            >
+                              <div className="truncate font-bold flex items-center gap-1.5">
+                                <span className="truncate">{trip.customer}</span>
+                                <span className="opacity-70 text-[10px]">({trip.pickup} → {trip.delivery})</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Driver Rows in Timeline */}
+              {drivers.map(driver => {
+                const driverTrips = (columns[driver.id] || []).filter(t =>
+                  tripMatchesFilters(t, `${driver.name} ${driver.vehicle}`)
+                );
+                return (
+                  <div
+                    key={driver.id}
+                    className={`flex min-h-[104px] relative group transition-colors ${
+                      dragOverCol === driver.id ? 'bg-brand-blue/10' : 'hover:bg-slate-800/20'
+                    }`}
+                    onDragOver={(e) => handleDragOver(e, driver.id)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDrop(e, driver.id)}
+                  >
+                    {/* Driver Info & '+' Quick Assign Button */}
+                    <div className="w-72 shrink-0 p-3.5 border-r border-slate-800 flex items-center justify-between gap-2 bg-slate-900/90 z-10">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-white text-sm flex items-center gap-1.5 truncate">
+                          <Truck size={14} className="text-brand-blue shrink-0" />
+                          <span className="truncate">{driver.name}</span>
+                        </div>
+                        <div className="text-xs text-slate-400 font-mono truncate mt-0.5">{driver.vehicle}</div>
+                        {driver.phone && (
+                          <div className="text-[10px] text-emerald-400 font-mono mt-0.5 flex items-center gap-1">
+                            <Phone size={10} /> {driver.phone}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* '+' Button to Directly Assign a Trip to this Driver */}
+                      {canManageTMS && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenTripModal(null, driver.id)}
+                            title={`Assegna nuovo viaggio a ${driver.name}`}
+                            className="w-8 h-8 rounded-xl bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-slate-950 border border-brand-blue/30 flex items-center justify-center transition-all shadow-sm active:scale-95"
+                          >
+                            <Plus size={16} strokeWidth={2.5} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDriverModal(driver)}
+                            title="Modifica Autista"
+                            className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Timeline Grid for this Driver */}
+                    <div className="flex-1 relative grid grid-cols-7 divide-x divide-slate-800/50">
+                      {timelineData.days.map((d, i) => {
+                        const isToday = format(d, 'yyyy-MM-dd') === todayStr;
+                        return <div key={i} className={`h-full ${isToday ? 'bg-brand-blue/[0.03]' : ''}`} />;
+                      })}
+
+                      <div className="absolute inset-0 py-2 px-1">
+                        {driverTrips.map((trip, idx) => {
+                          const style = getTimelineBlockStyle(trip);
+                          if (style.display === 'none') return null;
+                          const isAdmin = trip.status === 'ADMIN';
+                          const meta = STATUS_META[trip.status] || STATUS_META['ASSIGNED'];
+
+                          return (
+                            <div
+                              key={trip.id}
+                              style={{ ...style, top: `${(idx % 2) * 44 + 8}px`, height: '40px' }}
+                              draggable={canManageTMS}
+                              onDragStart={(e) => handleDragStart(e, trip, driver.id)}
+                              onClick={() => handleOpenTripModal(trip, driver.id)}
+                              className={`absolute rounded-xl border px-2.5 py-1 flex items-center justify-between text-xs shadow-lg overflow-hidden cursor-pointer hover:z-20 hover:scale-[1.01] transition-all ${meta.timelineClass}`}
+                              title={`${trip.customer} | ${trip.pickup} (${format(new Date(trip.pickupTime), 'dd/MM HH:mm')}) -> ${trip.delivery} (${format(new Date(trip.deliveryTime), 'dd/MM HH:mm')})`}
+                            >
+                              <div className="truncate font-bold flex items-center gap-1.5">
+                                {trip.status === 'EXCEPTION' && (
+                                  <AlertTriangle size={12} className="text-rose-400 shrink-0" />
+                                )}
+                                <span className="truncate">{isAdmin ? (trip.title || trip.customer) : trip.customer}</span>
+                                {!isAdmin && (
+                                  <span className="opacity-75 font-normal text-[10px] truncate">
+                                    ({trip.pickup} → {trip.delivery})
+                                  </span>
+                                )}
+                              </div>
+                              {!isAdmin && (
+                                <div className="text-[10px] font-mono font-bold opacity-90 shrink-0 ml-2 bg-slate-950/50 px-1.5 py-0.5 rounded">
+                                  €{trip.revenue}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          /* ================= KANBAN CON LE DATE (VISTA GIORNALIERA) ================= */
+          <div className="flex gap-5 h-full items-start">
+            {/* Column 1: Viaggi Da Assegnare */}
+            <div
+              className={`w-80 shrink-0 bg-slate-900/95 border rounded-2xl flex flex-col h-full max-h-full shadow-xl transition-colors ${
+                dragOverCol === 'unassigned' ? 'border-brand-blue bg-brand-blue/5' : 'border-slate-800'
+              }`}
+              onDragOver={(e) => handleDragOver(e, 'unassigned')}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, 'unassigned')}
+            >
+              <div className="p-4 border-b border-slate-800 bg-slate-900/60 rounded-t-2xl space-y-2">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+                    <h2 className="font-black text-white text-sm uppercase tracking-wider">Da Assegnare</h2>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="bg-slate-800 text-slate-200 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-700">
+                      {displayColumns['unassigned']?.length || 0}
+                    </span>
+                    {canManageTMS && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTripModal(null, 'unassigned')}
+                        title="Crea nuovo viaggio da assegnare"
+                        className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-brand-blue text-slate-300 hover:text-slate-950 border border-slate-700 flex items-center justify-center transition-all"
+                      >
+                        <Plus size={15} strokeWidth={2.5} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Toggle to see unassigned trips from all dates if any exist outside selectedDate */}
+                {totalUnassignedAllDates > 0 && (
+                  <div className="flex items-center justify-between pt-1 text-[11px]">
+                    <span className="text-slate-400">
+                      Totale in bacheca: <strong className="text-white">{totalUnassignedAllDates}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAllUnassignedDates(prev => !prev)}
+                      className={`px-2 py-0.5 rounded font-bold border transition-colors ${
+                        showAllUnassignedDates
+                          ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
+                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                      }`}
+                    >
+                      {showAllUnassignedDates ? 'Filtra per data' : 'Mostra tutte le date'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 flex-1 overflow-y-auto">
+                {displayColumns['unassigned']?.map(trip => renderTripCard(trip, 'unassigned'))}
+                {(!displayColumns['unassigned'] || displayColumns['unassigned'].length === 0) && (
+                  <div className="h-44 border-2 border-dashed border-slate-800/80 rounded-xl flex flex-col items-center justify-center text-slate-500 text-xs p-4 text-center gap-2">
+                    <Sparkles size={20} className="text-slate-600" />
+                    <span>Nessun viaggio da assegnare per questa data</span>
+                    {canManageTMS && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTripModal(null, 'unassigned')}
+                        className="mt-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] flex items-center gap-1 transition-colors"
+                      >
+                        <Plus size={12} /> Crea Viaggio
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Driver Columns */}
+            {drivers.map(driver => {
+              const driverTrips = displayColumns[driver.id] || [];
+              const dayRevenue = driverTrips.reduce((s, t) => s + (Number(t.revenue) || 0), 0);
+              const dayCost = driverTrips.reduce((s, t) => s + (Number(t.cost) || 0), 0);
+              const dayMargin = dayRevenue - dayCost;
+              const hasAdminAbsence = driverTrips.some(t => t.status === 'ADMIN');
+              const hasInTransit = driverTrips.some(t => t.status === 'IN_TRANSIT');
+
+              return (
+                <div
+                  key={driver.id}
+                  className={`w-80 shrink-0 bg-slate-900/95 border rounded-2xl flex flex-col h-full max-h-full shadow-xl transition-all ${
+                    dragOverCol === driver.id ? 'border-brand-blue bg-brand-blue/5 ring-2 ring-brand-blue/20' : 'border-slate-800'
+                  }`}
+                  onDragOver={(e) => handleDragOver(e, driver.id)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, driver.id)}
+                >
+                  {/* Driver Card Header with '+' Direct Assignment Button */}
+                  <div className="p-4 border-b border-slate-800 bg-slate-900/70 rounded-t-2xl group">
+                    <div className="flex justify-between items-start gap-2 mb-1.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-xs shrink-0 border ${
+                            hasAdminAbsence
+                              ? 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30'
+                              : hasInTransit
+                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                              : driverTrips.length > 0
+                              ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
+                              : 'bg-slate-800 text-slate-400 border-slate-700'
+                          }`}
+                        >
+                          {driver.name
+                            .split(' ')
+                            .map(p => p[0])
+                            .join('')
+                            .slice(0, 2)
+                            .toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="font-black text-white text-sm truncate">{driver.name}</h2>
+                          <p className="text-[11px] text-slate-400 font-mono truncate">{driver.vehicle}</p>
+                        </div>
+                      </div>
+
+                      {/* Right Actions: Prominent '+' Button to assign trip directly + Edit/Delete Driver */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {canManageTMS && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenTripModal(null, driver.id)}
+                            title={`Assegna subito un nuovo viaggio a ${driver.name}`}
+                            className="w-8 h-8 rounded-xl bg-brand-blue hover:bg-sky-400 text-slate-950 font-black flex items-center justify-center shadow-md shadow-brand-blue/20 transition-all active:scale-95"
+                          >
+                            <Plus size={17} strokeWidth={2.75} />
+                          </button>
+                        )}
+                        {canManageTMS && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDriverModal(driver)}
+                            title="Modifica Autista"
+                            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                        )}
+                        {canManageTMS && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDriver(driver.id)}
+                            title="Elimina Autista"
+                            className="p-1.5 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Driver Sub-Header: Phone + Daily Summary Badges */}
+                    <div className="flex items-center justify-between pt-2 mt-2 border-t border-slate-800/80 text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        <span className="bg-slate-950 text-slate-300 font-bold px-2 py-0.5 rounded-md border border-slate-800">
+                          {driverTrips.length} {driverTrips.length === 1 ? 'viaggio' : 'viaggi'}
+                        </span>
+                        {driver.phone && (
+                          <span className="text-emerald-400 font-mono text-[10px] flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                            <Phone size={10} /> {driver.phone}
+                          </span>
+                        )}
+                      </div>
+
+                      {driverTrips.length > 0 && !hasAdminAbsence && (
+                        <span
+                          className={`font-black text-[10px] px-2 py-0.5 rounded border ${
+                            dayMargin >= 0
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                          }`}
+                        >
+                          Margine: {dayMargin >= 0 ? `+€${dayMargin}` : `-€${Math.abs(dayMargin)}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Driver Trips List */}
+                  <div className="p-3 flex-1 overflow-y-auto">
+                    {driverTrips.map(trip => renderTripCard(trip, driver.id))}
+                    {driverTrips.length === 0 && (
+                      <div className="h-44 border-2 border-dashed border-slate-800/70 rounded-xl flex flex-col items-center justify-center text-slate-500 text-xs p-4 text-center gap-2">
+                        <Truck size={20} className="text-slate-600" />
+                        <span>Nessun viaggio per {driver.name} in questa data</span>
+                        {canManageTMS && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenTripModal(null, driver.id)}
+                            className="mt-1 px-3 py-1.5 rounded-lg bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-slate-950 border border-brand-blue/30 font-bold text-[11px] flex items-center gap-1 transition-all"
+                          >
+                            <Plus size={13} /> Assegna Viaggio
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Footer Button on Driver Column */}
+                  {canManageTMS && driverTrips.length > 0 && (
+                    <div className="p-2.5 border-t border-slate-800/80 bg-slate-950/40 rounded-b-2xl">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTripModal(null, driver.id)}
+                        className="w-full py-2 rounded-xl bg-slate-800/80 hover:bg-brand-blue text-slate-300 hover:text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition-all border border-slate-700/70 hover:border-brand-blue"
+                      >
+                        <Plus size={14} /> Aggiungi viaggio a {driver.name.split(' ')[0]}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ================= TRIP MODAL (CREA / MODIFICA / ASSEGNA VIAGGIO) ================= */}
+      {isTripModalOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center px-6 py-4 border-b border-slate-800 bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-brand-blue/15 border border-brand-blue/30 flex items-center justify-center text-brand-blue">
+                  <Truck size={18} />
+                </div>
+                <div>
+                  <h3 className="font-black text-white text-base">
+                    {editingTrip ? 'Modifica Viaggio / Attività' : 'Nuovo Viaggio / Attività'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {tripForm.targetDriverId && tripForm.targetDriverId !== 'unassigned'
+                      ? `Assegnazione diretta a: ${drivers.find(d => d.id === tripForm.targetDriverId)?.name || 'Autista'}`
+                      : 'In bacheca "Da Assegnare" o scegli direttamente un autista'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTripModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveTrip} className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+              {/* Row 1: Direct Driver Selector + Status Selector */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+                <div>
+                  <label className="block text-[11px] font-black text-brand-blue uppercase tracking-wider mb-1">
+                    Autista Assegnato
+                  </label>
+                  <select
+                    value={tripForm.targetDriverId || 'unassigned'}
+                    onChange={(e) => {
+                      const newDriverId = e.target.value;
+                      setTripForm(prev => ({
+                        ...prev,
+                        targetDriverId: newDriverId,
+                        status:
+                          newDriverId !== 'unassigned' && prev.status === 'UNASSIGNED'
+                            ? 'ASSIGNED'
+                            : newDriverId === 'unassigned' && prev.status !== 'ADMIN'
+                            ? 'UNASSIGNED'
+                            : prev.status
+                      }));
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white text-sm font-bold focus:outline-none focus:border-brand-blue"
+                  >
+                    <option value="unassigned">📌 Da Assegnare (Bacheca)</option>
+                    {drivers.map(d => (
+                      <option key={d.id} value={d.id}>
+                        🚛 {d.name} ({d.vehicle})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                    Stato / Tipo Attività
+                  </label>
+                  <select
+                    value={tripForm.status}
+                    onChange={(e) => setTripForm({ ...tripForm, status: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white text-sm font-bold focus:outline-none focus:border-brand-blue"
+                  >
+                    <option value="UNASSIGNED">Da Assegnare</option>
+                    <option value="ASSIGNED">Assegnato (Pianificato)</option>
+                    <option value="IN_TRANSIT">In Viaggio (In Corso)</option>
+                    <option value="DELIVERED">Consegnato (Completato)</option>
+                    <option value="EXCEPTION">Ritardo / Problema (Alert)</option>
+                    <option value="ADMIN">Ferie / Permesso / Fermo Mezzo</option>
+                  </select>
+                </div>
+              </div>
+
+              {tripForm.status === 'ADMIN' ? (
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                    Motivo Assenza / Fermo (es. Ferie, Permesso, Officina)
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={tripForm.title}
+                    onChange={(e) =>
+                      setTripForm({ ...tripForm, title: e.target.value, customer: e.target.value })
+                    }
+                    placeholder="Es. Ferie Estive, Revisione Mezzo..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Cliente *</label>
+                      <input
+                        required
+                        type="text"
+                        value={tripForm.customer}
+                        onChange={(e) => setTripForm({ ...tripForm, customer: e.target.value })}
+                        placeholder="Ragione Sociale Cliente"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                        Riferimento / DDT *
+                      </label>
+                      <input
+                        required
+                        type="text"
+                        value={tripForm.ref}
+                        onChange={(e) => setTripForm({ ...tripForm, ref: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm font-mono focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-emerald-400 uppercase mb-1">
+                        Luogo di Ritiro *
+                      </label>
+                      <input
+                        required
+                        type="text"
+                        placeholder="Es. Settala (MI)"
+                        value={tripForm.pickup}
+                        onChange={(e) => setTripForm({ ...tripForm, pickup: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-rose-400 uppercase mb-1">
+                        Luogo di Consegna *
+                      </label>
+                      <input
+                        required
+                        type="text"
+                        placeholder="Es. Bologna (BO)"
+                        value={tripForm.delivery}
+                        onChange={(e) => setTripForm({ ...tripForm, delivery: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                    Data e Ora Inizio / Ritiro *
+                  </label>
+                  <input
+                    required
+                    type="datetime-local"
+                    value={tripForm.pickupTime}
+                    onChange={(e) => setTripForm({ ...tripForm, pickupTime: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                    Data e Ora Fine / Consegna *
+                  </label>
+                  <input
+                    required
+                    type="datetime-local"
+                    value={tripForm.deliveryTime}
+                    onChange={(e) => setTripForm({ ...tripForm, deliveryTime: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                  />
+                </div>
+              </div>
+
+              {tripForm.status !== 'ADMIN' && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end bg-slate-950/60 p-3.5 rounded-xl border border-slate-800">
+                    <div>
+                      <label className="block text-xs font-bold text-emerald-400 uppercase mb-1">
+                        Ricavo (€)
+                      </label>
+                      <input
+                        type="number"
+                        value={tripForm.revenue}
+                        onChange={(e) => setTripForm({ ...tripForm, revenue: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-white text-sm font-bold focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-rose-400 uppercase mb-1">
+                        Costo Viaggio (€)
+                      </label>
+                      <input
+                        type="number"
+                        value={tripForm.cost}
+                        onChange={(e) => setTripForm({ ...tripForm, cost: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-white text-sm font-bold focus:outline-none focus:border-brand-blue"
+                      />
+                    </div>
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-2 text-center">
+                      <span className="block text-[10px] font-bold uppercase text-slate-400">Margine Stimato</span>
+                      <span
+                        className={`text-sm font-black ${
+                          (Number(tripForm.revenue) || 0) - (Number(tripForm.cost) || 0) >= 0
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }`}
+                      >
+                        €{(Number(tripForm.revenue) || 0) - (Number(tripForm.cost) || 0)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                      Note Operative (separate da virgola)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Es. Sponda idraulica, Tassativo ore 10, Chiamare prima..."
+                      value={tripForm.notes}
+                      onChange={(e) => setTripForm({ ...tripForm, notes: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="pt-3 flex justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsTripModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-brand-blue hover:bg-sky-400 text-slate-950 text-xs font-black flex items-center gap-2 shadow-lg shadow-brand-blue/20"
+                >
+                  <Check size={16} /> {editingTrip ? 'Salva Modifiche' : 'Conferma e Assegna'}
+                </button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {isTripModalOpen && (
-        <div className="absolute inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl shadow-2xl w-full max-w-2xl overflow-y-auto max-h-[90vh] custom-scrollbar">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-white">{editingTrip.isNew ? 'Nuova Card' : 'Modifica Card'}</h2>
-              <button onClick={() => setIsTripModalOpen(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
+      {/* ================= DRIVER MODAL ================= */}
+      {isDriverModalOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="flex justify-between items-center px-6 py-4 border-b border-slate-800 bg-slate-950/60">
+              <h3 className="font-black text-white text-base">
+                {editingDriver ? 'Modifica Autista' : 'Nuovo Autista'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsDriverModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+              >
+                <X size={20} />
+              </button>
             </div>
-            <form onSubmit={handleSaveTrip} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Status (Colore)</label>
-                  <select value={editingTrip.status} onChange={e => setEditingTrip({...editingTrip, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue">
-                    <option value="UNASSIGNED">Da Assegnare</option>
-                    <option value="ASSIGNED">Assegnato</option>
-                    <option value="IN_TRANSIT">In Viaggio</option>
-                    <option value="DELIVERED">Consegnato</option>
-                    <option value="EXCEPTION">Eccezione / Ritardo</option>
-                    <option value="ADMIN">Amministrativo / Ferie</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1">Riferimento (Ref)</label>
-                  <input type="text" value={editingTrip.ref} onChange={e => setEditingTrip({...editingTrip, ref: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" required />
-                </div>
-              </div>
-
-              {editingTrip.status === 'ADMIN' ? (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 mb-1">Titolo Evento Speciale</label>
-                    <input type="text" value={editingTrip.title || ''} onChange={e => setEditingTrip({...editingTrip, title: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-fuchsia-500" required />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800">
-                      <div className="text-slate-300 font-bold mb-3 flex items-center gap-2"><Calendar size={16}/> Data Inizio Evento</div>
-                      <input type="datetime-local" value={(editingTrip.pickupTime || '').slice(0, 16).replace('Z','')} onChange={e => setEditingTrip({...editingTrip, pickupTime: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-fuchsia-500 [color-scheme:dark]" />
-                    </div>
-                    <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800">
-                      <div className="text-slate-300 font-bold mb-3 flex items-center gap-2"><Calendar size={16}/> Data Fine Evento</div>
-                      <input type="datetime-local" value={(editingTrip.deliveryTime || '').slice(0, 16).replace('Z','')} onChange={e => setEditingTrip({...editingTrip, deliveryTime: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-fuchsia-500 [color-scheme:dark]" />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 mb-1">Cliente</label>
-                    <input type="text" value={editingTrip.customer} onChange={e => setEditingTrip({...editingTrip, customer: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" required />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800 hover:border-brand-blue/50">
-                      <div className="text-brand-blue font-bold mb-2 flex items-center gap-2"><MapPin size={16}/> Ritiro</div>
-                      <input type="text" placeholder="Luogo" value={editingTrip.pickup} onChange={e => setEditingTrip({...editingTrip, pickup: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue mb-2" />
-                      <input type="datetime-local" value={(editingTrip.pickupTime || '').slice(0, 16).replace('Z','')} onChange={e => setEditingTrip({...editingTrip, pickupTime: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue [color-scheme:dark]" />
-                    </div>
-                    <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800 hover:border-emerald-500/50">
-                      <div className="text-emerald-500 font-bold mb-2 flex items-center gap-2"><MapPin size={16}/> Consegna</div>
-                      <input type="text" placeholder="Luogo" value={editingTrip.delivery} onChange={e => setEditingTrip({...editingTrip, delivery: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-emerald-500 mb-2" />
-                      <input type="datetime-local" value={(editingTrip.deliveryTime || '').slice(0, 16).replace('Z','')} onChange={e => setEditingTrip({...editingTrip, deliveryTime: e.target.value})} className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-emerald-500 [color-scheme:dark]" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-1">Ricavo EUR</label>
-                      <input type="number" step="0.01" value={editingTrip.revenue} onChange={e => setEditingTrip({...editingTrip, revenue: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-1">Costi Straordinari EUR</label>
-                      <input type="number" step="0.01" value={editingTrip.cost} onChange={e => setEditingTrip({...editingTrip, cost: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" />
-                    </div>
-                  </div>
-                </>
-              )}
+            <form onSubmit={handleSaveDriver} className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1">Note Custom</label>
-                <input type="text" value={Array.isArray(editingTrip.notes) ? editingTrip.notes.join(', ') : editingTrip.notes} onChange={e => setEditingTrip({...editingTrip, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg p-2.5 outline-none focus:border-brand-blue" />
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Nome e Cognome *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Es. Mario Rossi"
+                  value={driverForm.name}
+                  onChange={(e) => setDriverForm({ ...driverForm, name: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                />
               </div>
-              <div className="flex justify-between pt-4 border-t border-slate-800 mt-6">
-                {!editingTrip.isNew ? <button type="button" onClick={handleDeleteTrip} className="px-4 py-2 bg-rose-500/10 text-rose-500 font-bold rounded-lg hover:bg-rose-500 hover:text-white flex items-center gap-2"><Trash2 size={16} /> Elimina</button> : <div></div>}
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setIsTripModalOpen(false)} className="px-4 py-2 bg-slate-800 text-slate-300 font-bold rounded-lg hover:bg-slate-700">Annulla</button>
-                  <button type="submit" className="px-6 py-2 bg-brand-blue text-brand-black font-bold rounded-lg hover:bg-sky-400 flex items-center gap-2"><Check size={18} /> Salva</button>
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Veicolo e Targa *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Es. IVECO Stralis - AB123CD"
+                  value={driverForm.vehicle}
+                  onChange={(e) => setDriverForm({ ...driverForm, vehicle: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Telefono cellulare (per invio rapido WhatsApp)
+                </label>
+                <input
+                  type="tel"
+                  placeholder="Es. +39 333 1234567"
+                  value={driverForm.phone}
+                  onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm focus:outline-none focus:border-brand-blue"
+                />
+              </div>
+              <div className="pt-3 flex justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsDriverModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-brand-blue text-slate-950 text-xs font-black flex items-center gap-2 shadow-lg shadow-brand-blue/20"
+                >
+                  <Check size={16} /> Salva Autista
+                </button>
               </div>
             </form>
           </div>

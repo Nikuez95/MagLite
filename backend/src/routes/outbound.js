@@ -2,6 +2,7 @@ const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 const PDFDocument = require('pdfkit');
 const bwipjs = require('bwip-js');
+const { consolidateLocationPallets } = require('../utils/palletConsolidation');
 
 async function getRoutingSettings(connection) {
   const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
@@ -177,6 +178,7 @@ function sortPickingTour(items, zonePriority, posPriority) {
 }
 
 async function allocateOutboundItems(items, connection, excludeOrderId = null) {
+  await consolidateLocationPallets(connection);
   const allocatedPallets = [];
   const { zonePriority, posPriority } = await getRoutingSettings(connection);
   const inMemoryUsedByPalletId = new Map();
@@ -328,7 +330,26 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
     allocatedPallets.push(...allocatedForThisReq);
   }
   sortPickingTour(allocatedPallets, zonePriority, posPriority);
-  return allocatedPallets;
+  const mergedAllocations = [];
+  const allocMap = new Map();
+  for (const item of allocatedPallets) {
+    const locKey = (item.location || '').trim().toUpperCase();
+    const batchKey = (item.batch || '').trim().toUpperCase();
+    const uomKey = item.requested_uom || 'Pezzi';
+    const mergeKey = locKey
+      ? `LOC__${locKey}__${item.pallet_id || item.pallet_code}__${item.product_id}__${batchKey}__${uomKey}`
+      : `PAL__${item.pallet_id || item.pallet_code}__${item.product_id}__${batchKey}__${uomKey}`;
+    if (allocMap.has(mergeKey)) {
+      const existing = allocMap.get(mergeKey);
+      existing.quantity_required = parseFloat((parseFloat(existing.quantity_required) + parseFloat(item.quantity_required)).toFixed(4));
+    } else {
+      const cloned = { ...item };
+      allocMap.set(mergeKey, cloned);
+      mergedAllocations.push(cloned);
+    }
+  }
+  sortPickingTour(mergedAllocations, zonePriority, posPriority);
+  return mergedAllocations;
 }
 
 async function outboundRoutes(fastify, options) {
@@ -794,6 +815,9 @@ async function outboundRoutes(fastify, options) {
 
       if (order.status === 'SHIPPED') {
         return reply.code(400).send({ error: 'Ordine già spedito' });
+      }
+      await consolidateLocationPallets(db);
+      if (false) {
       }
 
       const [items] = await db.query(`

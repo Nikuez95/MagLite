@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -405,15 +406,20 @@ async function inboundRoutes(fastify, options) {
       }
 
       const status = discrepancy ? 'DISCREPANCY' : 'COMPLETED';
-      const notes = discrepancy
-        ? `Rilevata discrepanza in spunta (${totalDiff > 0 ? '+' : ''}${totalDiff}) — In attesa di approvazione o rifiuto da Backoffice`
-        : 'Spunta completata regolarmente senza discrepanze';
+
+
+
+
+      const notes = discrepancy ? `Rilevata discrepanza in spunta (${totalDiff > 0 ? '+' : ''}${totalDiff}) — In attesa di approvazione o rifiuto da Backoffice` : 'Spunta completata regolarmente senza discrepanze';
 
       await connection.query(
         'UPDATE INBOUND_DDTS SET status = ?, closed_at = NOW(), notes = ? WHERE id = ?',
         [status, notes, ddtId]
       );
 
+      if (!discrepancy) {
+        await consolidateLocationPallets(connection);
+      }
       if (discrepancy) {
         await connection.query(
           `INSERT INTO INBOUND_DISCREPANCY_LOGS (inbound_ddt_id, ddt_number, customer_id, decision, reason, items_snapshot, username, source)
@@ -546,6 +552,7 @@ async function inboundRoutes(fastify, options) {
         fastify.io.emit('stow_updated');
       }
 
+      await consolidateLocationPallets(connection);
       return { success: true, status: 'COMPLETED', reason: cleanReason, resolved_by: username };
     } catch (err) {
       await connection.rollback();

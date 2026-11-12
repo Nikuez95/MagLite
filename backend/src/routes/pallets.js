@@ -1,6 +1,7 @@
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
+const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 
 async function ensureLocationExists(connection, locStr, username) {
   if (!locStr) return;
@@ -58,7 +59,7 @@ async function palletRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
-        (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
+        (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code AND p2.status != 'SHIPPED' AND p2.quantity > 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -79,7 +80,7 @@ async function palletRoutes(fastify, options) {
         SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                l.zone, l.col, l.pos,
-               (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code) as is_mixed
+               (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code AND p2.status != 'SHIPPED' AND p2.quantity > 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
@@ -139,7 +140,7 @@ async function palletRoutes(fastify, options) {
       const nextPalletCode = await createPalletCodeGenerator(connection, noBarcode ? 'NOBAR' : 'PAL');
       
       if (isMixed || noBarcode) {
-        // Generate ONLY ONE pallet code for the whole cart
+        // Generate or reuse ONE pallet code for the whole cart
         const firstCartLoc = cart.map(i => (i.location || '').trim().toUpperCase()).find(Boolean) || '';
         const finalLocation = noBarcode ? freeLocation.trim().toUpperCase() : (firstCartLoc || null);
         const finalStatus = (noBarcode || finalLocation) ? 'STOCKED' : 'PENDING';
@@ -148,21 +149,28 @@ async function palletRoutes(fastify, options) {
           await ensureLocationExists(connection, finalLocation, request.user.username);
         }
 
-        const code = nextPalletCode();
+        // Se nella posizione è già presente una paletta attiva, riutilizziamo il suo barcode esistente
+        const existingCode = finalLocation
+          ? await findExistingLocationBarcode(connection, finalLocation, noBarcode)
+          : null;
+        const code = existingCode || nextPalletCode();
+
         if (finalLocation && !noBarcode) {
           await connection.query(
-            "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED'",
+            "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED' AND quantity > 0",
             [code, finalLocation]
           );
         }
         
         for (const item of cart) {
-          const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
+          const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date, num_pallets } = item;
           const cleanExpDate = sanitizeExpirationDate(expiration_date);
+          const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
+          const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
           
           await connection.query(
             'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-            [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
           );
           
           if (item.units_per_box || item.boxes_per_pallet) {
@@ -172,30 +180,69 @@ async function palletRoutes(fastify, options) {
             );
           }
         }
+
+        if (finalLocation) {
+          await consolidateLocationPallets(connection, finalLocation);
+        }
         
         await connection.query(
           "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-          ['INBOUND', noBarcode ? `Carico libero in ${freeLocation} (${cart.length} art.)` : `Creata paletta frammentata ${code} (${cart.length} articoli)${finalLocation ? ' in ' + finalLocation : ''}`, 'Gestionale', request.user.username]
+          ['INBOUND', noBarcode ? `Carico libero in ${freeLocation} (${cart.length} art.)` : `${existingCode ? 'Agganciato a' : 'Creata'} paletta frammentata ${code} (${cart.length} articoli)${finalLocation ? ' in ' + finalLocation : ''}`, 'Gestionale', request.user.username]
         );
         
         if (!noBarcode) {
-          const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [cart[0].customer_id]);
-          generatedLabelsData.push({
-            code,
-            customer_name: customer.business_name,
-            product_name: `PALETTA MISTA (${cart.length} Articoli)`,
-            quantity: '-',
-            batch: '-',
-            warehouse: cart[0].warehouse,
-            client_pallet_number: cart[0].client_pallet_number,
-            client_article_number: '-',
-            expiration_date: sanitizeExpirationDate(cart[0].expiration_date),
-            location: finalLocation
-          });
+          const [activeRows] = await connection.query(`
+            SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
+            FROM PALLETS p
+            JOIN PRODUCTS pr ON p.product_id = pr.id
+            JOIN CUSTOMERS c ON p.customer_id = c.id
+            WHERE p.pallet_code = ? AND p.status != 'SHIPPED' AND p.quantity > 0
+            ORDER BY p.id ASC
+          `, [code]);
+
+          if (activeRows.length === 1) {
+            const r = activeRows[0];
+            generatedLabelsData.push({
+              code,
+              customer_name: r.customer_name,
+              product_name: r.product_name,
+              quantity: r.quantity,
+              uom: r.uom,
+              batch: r.batch || '-',
+              warehouse: r.warehouse,
+              client_pallet_number: r.client_pallet_number,
+              client_article_number: r.client_article_number || '-',
+              expiration_date: sanitizeExpirationDate(r.expiration_date),
+              location: finalLocation
+            });
+          } else {
+            const rowsForLabel = activeRows.length > 0 ? activeRows : cart;
+            const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [cart[0].customer_id]);
+            const uniqueProdNames = activeRows.length > 0 ? [...new Set(activeRows.map(r => r.product_name))] : [];
+            const uniqueBatches = [...new Set(rowsForLabel.map(r => r.batch).filter(Boolean))];
+            const uniqueArticles = [...new Set(rowsForLabel.map(r => r.client_article_number).filter(Boolean))];
+            const labelProdName = uniqueProdNames.length === 1
+              ? `${uniqueProdNames[0]} (${rowsForLabel.length} LOTTI)`
+              : `PALETTA MISTA (${rowsForLabel.length} Articoli)`;
+
+            generatedLabelsData.push({
+              code,
+              customer_name: activeRows[0]?.customer_name || customer.business_name,
+              product_name: labelProdName,
+              quantity: '-',
+              batch: uniqueBatches.length > 0 ? uniqueBatches.join(', ') : '-',
+              warehouse: cart[0].warehouse,
+              client_pallet_number: cart[0].client_pallet_number,
+              client_article_number: uniqueArticles.length > 0 ? uniqueArticles.join(', ') : '-',
+              expiration_date: sanitizeExpirationDate(cart[0].expiration_date),
+              location: finalLocation
+            });
+          }
         }
       } else {
         // Generazione rigorosamente progressiva e in ordine di riga (1° riga -> 1° barcode, 2° riga -> 2° barcode, ecc.)
-        // Se più righe condividono la stessa identica posizione, si frammentano nel barcode assegnato alla prima riga di quella posizione.
+        // Se la posizione ha già una paletta con barcode esistente, si aggancia a quel barcode senza cambiarlo.
+        // Se più righe condividono la stessa identica posizione, si frammentano/unificano nel barcode di quella posizione.
         const orderedSlots = [];
         const locSlotMap = new Map();
 
@@ -211,13 +258,14 @@ async function palletRoutes(fastify, options) {
             let slot = locSlotMap.get(itemLoc);
             if (!slot) {
               await ensureLocationExists(connection, itemLoc, request.user.username);
-              const code = nextPalletCode();
-              // Unifica eventuali palette già stivate nella medesima posizione sotto il nuovo codice progressivo
+              // Se c'è già un barcode attivo nella posizione, agganciati ad esso senza generarne uno nuovo
+              const existingCode = await findExistingLocationBarcode(connection, itemLoc, false);
+              const code = existingCode || nextPalletCode();
               await connection.query(
-                "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED'",
+                "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED' AND quantity > 0",
                 [code, itemLoc]
               );
-              slot = { type: 'LOC', loc: itemLoc, code, rows: [] };
+              slot = { type: 'LOC', loc: itemLoc, code, existedBefore: Boolean(existingCode), rows: [] };
               locSlotMap.set(itemLoc, slot);
               orderedSlots.push(slot);
             }
@@ -232,7 +280,7 @@ async function palletRoutes(fastify, options) {
 
             await connection.query(
               "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-              ['INBOUND', `Creata/stivata paletta ${slot.code} in ${itemLoc} (${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
+              ['INBOUND', `${slot.existedBefore ? 'Agganciata merce a paletta' : 'Creata/stivata paletta'} ${slot.code} in ${itemLoc} (${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
             );
 
             slot.rows.push({
@@ -287,34 +335,51 @@ async function palletRoutes(fastify, options) {
           }
         }
 
+        // Consolida tutte le posizioni toccate (somma eventuali righe identiche per prodotto + lotto nella stessa posizione)
+        for (const loc of locSlotMap.keys()) {
+          await consolidateLocationPallets(connection, loc);
+        }
+
         // Compila generatedLabelsData rispettando rigorosamente l'ordine di riga (orderedSlots)
         for (const slot of orderedSlots) {
           if (slot.type === 'DIRECT') {
             generatedLabelsData.push(slot.label);
           } else if (slot.type === 'LOC' && slot.rows.length > 0) {
-            if (slot.rows.length === 1) {
-              const r = slot.rows[0];
+            const [activeRows] = await connection.query(`
+              SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
+              FROM PALLETS p
+              JOIN PRODUCTS pr ON p.product_id = pr.id
+              JOIN CUSTOMERS c ON p.customer_id = c.id
+              WHERE p.pallet_code = ? AND p.status != 'SHIPPED' AND p.quantity > 0
+              ORDER BY p.id ASC
+            `, [slot.code]);
+
+            const effectiveRows = activeRows.length > 0 ? activeRows : slot.rows;
+
+            if (effectiveRows.length === 1) {
+              const r = effectiveRows[0];
               generatedLabelsData.push({
                 code: slot.code,
                 customer_name: r.customer_name,
                 product_name: r.product_name,
                 quantity: r.quantity,
+                uom: r.uom,
                 batch: r.batch,
                 warehouse: r.warehouse,
                 client_pallet_number: r.client_pallet_number,
                 client_article_number: r.client_article_number,
-                expiration_date: r.expiration_date,
+                expiration_date: sanitizeExpirationDate(r.expiration_date),
                 location: slot.loc
               });
             } else {
-              const first = slot.rows[0];
-              const uniqueProdNames = [...new Set(slot.rows.map(r => r.product_name))];
-              const uniqueBatches = [...new Set(slot.rows.map(r => r.batch).filter(Boolean))];
-              const uniqueArticles = [...new Set(slot.rows.map(r => r.client_article_number).filter(Boolean))];
+              const first = effectiveRows[0];
+              const uniqueProdNames = [...new Set(effectiveRows.map(r => r.product_name))];
+              const uniqueBatches = [...new Set(effectiveRows.map(r => r.batch).filter(Boolean))];
+              const uniqueArticles = [...new Set(effectiveRows.map(r => r.client_article_number).filter(Boolean))];
 
               const labelProdName = uniqueProdNames.length === 1
-                ? `${uniqueProdNames[0]} (${slot.rows.length} LOTTI)`
-                : `PALETTA MISTA (${slot.rows.length} Articoli)`;
+                ? `${uniqueProdNames[0]} (${effectiveRows.length} LOTTI)`
+                : `PALETTA MISTA (${effectiveRows.length} Articoli)`;
 
               generatedLabelsData.push({
                 code: slot.code,
@@ -325,7 +390,7 @@ async function palletRoutes(fastify, options) {
                 warehouse: first.warehouse,
                 client_pallet_number: first.client_pallet_number,
                 client_article_number: uniqueArticles.length > 0 ? uniqueArticles.join(', ') : '-',
-                expiration_date: first.expiration_date,
+                expiration_date: sanitizeExpirationDate(first.expiration_date),
                 location: slot.loc
               });
             }
@@ -671,15 +736,36 @@ async function palletRoutes(fastify, options) {
       if (qRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
         return reply.code(403).send({ error: 'Accesso negato: non puoi operare sulla merce di questo cliente.' });
       }
-      const [rows] = await db.query('SELECT id FROM PALLETS WHERE pallet_code = ?', [target_code]);
+      const [rows] = await db.query(
+        `SELECT id, location, status
+         FROM PALLETS
+         WHERE pallet_code = ? AND status != 'SHIPPED'
+         ORDER BY CASE WHEN status = 'STOCKED' AND quantity > 0 THEN 0 ELSE 1 END, id ASC`,
+        [target_code]
+      );
       if (rows.length === 0) return reply.code(404).send({ error: 'Paletta di destinazione non trovata' });
       
-      await db.query('UPDATE PALLETS SET pallet_code = ? WHERE pallet_code = ?', [target_code, source_code]);
+      const targetLoc = rows[0].location || null;
+      const targetStatus = targetLoc ? 'STOCKED' : (rows[0].status || 'PENDING');
+
+      await db.query(
+        "UPDATE PALLETS SET pallet_code = ?, location = COALESCE(?, location), status = ? WHERE pallet_code = ? AND status != 'SHIPPED'",
+        [target_code, targetLoc, targetStatus, source_code]
+      );
+
+      if (targetLoc) {
+        await consolidateLocationPallets(db, targetLoc);
+      }
       
       await db.query(
-          "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-          ['MERGE', `Paletta ${source_code} frammentata e unita a ${target_code}`, 'Gestionale', request.user ? request.user.username : 'Sistema']
-        );
+        "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+        ['MERGE', `Paletta ${source_code} frammentata e unita a ${target_code}${targetLoc ? ' in ' + targetLoc : ''}`, 'Gestionale', request.user ? request.user.username : 'Sistema']
+      );
+
+      if (fastify.io) {
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('dashboard_update');
+      }
       
       return { success: true };
     } catch (err) {
@@ -752,13 +838,16 @@ async function palletRoutes(fastify, options) {
       }
 
       const [result] = await db.query(
-        'UPDATE PALLETS SET location = ?, status = ? WHERE pallet_code = ?',
+        'UPDATE PALLETS SET location = ?, status = ? WHERE pallet_code = ? AND status != "SHIPPED"',
         [location, 'STOCKED', pallet_code]
       );
       
       if (result.affectedRows === 0) {
         return reply.code(404).send({ error: 'Paletta non trovata' });
       }
+
+      // Consolida eventuali righe identiche per prodotto + lotto nella stessa posizione e unifica il barcode esistente
+      await consolidateLocationPallets(db, location);
 
       await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
