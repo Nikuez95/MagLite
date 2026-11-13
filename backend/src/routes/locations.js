@@ -101,12 +101,15 @@ async function locationRoutes(fastify, options) {
         }
       }
 
+      await connection.commit();
+      connection.release();
+
       if (fastify.io) {
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('stow_updated');
         fastify.io.emit('dashboard_update');
       }
 
-      await connection.commit();
-      connection.release();
       return { success: true, message: `Generate ${created} nuove posizioni.` };
     } catch (err) {
       if (connection) {
@@ -126,24 +129,40 @@ async function locationRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
+    const connection = await db.getConnection();
     try {
-      const [[loc]] = await db.query('SELECT barcode FROM LOCATIONS WHERE id = ?', [id]);
-      if (!loc) return reply.code(404).send({ error: 'Posizione non trovata' });
+      await connection.beginTransaction();
+      const [[loc]] = await connection.query('SELECT barcode FROM LOCATIONS WHERE id = ? FOR UPDATE', [id]);
+      if (!loc) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'Posizione non trovata' });
+      }
 
-      const [pallets] = await db.query("SELECT id FROM PALLETS WHERE location = ? AND status = 'STOCKED'", [loc.barcode]);
+      const [pallets] = await connection.query("SELECT id FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 FOR UPDATE", [loc.barcode]);
       if (pallets.length > 0) {
+        await connection.rollback();
         return reply.code(400).send({ error: 'Impossibile eliminare: la posizione è attualmente occupata da una paletta!' });
       }
 
-      await db.query('DELETE FROM LOCATIONS WHERE id = ?', [id]);
-      await db.query(
+      await connection.query('DELETE FROM LOCATIONS WHERE id = ?', [id]);
+      await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['DELETE_LOC', `Eliminata posizione ${loc.barcode}`, 'Gestionale', request.user.username]
       );
+      await connection.commit();
+
+      if (fastify.io) {
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true };
     } catch (err) {
+      await connection.rollback();
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante l\'eliminazione' });
+    } finally {
+      connection.release();
     }
   });
 
@@ -155,28 +174,42 @@ async function locationRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Non hai i permessi per eliminare posizioni o zone di magazzino.' });
     }
 
+    const connection = await db.getConnection();
     try {
-      const [occupied] = await db.query(`
+      await connection.beginTransaction();
+      const [occupied] = await connection.query(`
         SELECT p.id 
         FROM PALLETS p
         JOIN LOCATIONS l ON p.location = l.barcode
-        WHERE l.zone = ? AND p.status = 'STOCKED'
+        WHERE l.zone = ? AND p.status = 'STOCKED' AND p.quantity > 0
         LIMIT 1
+        FOR UPDATE
       `, [zoneName]);
 
       if (occupied.length > 0) {
+        await connection.rollback();
         return reply.code(400).send({ error: 'Impossibile eliminare la zona: alcune posizioni sono occupate.' });
       }
 
-      await db.query('DELETE FROM LOCATIONS WHERE zone = ?', [zoneName]);
-      await db.query(
+      await connection.query('DELETE FROM LOCATIONS WHERE zone = ?', [zoneName]);
+      await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['DELETE_ZONE', `Eliminata intera zona ${zoneName}`, 'Gestionale', request.user.username]
       );
+      await connection.commit();
+
+      if (fastify.io) {
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true };
     } catch (err) {
+      await connection.rollback();
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante l\'eliminazione della zona' });
+    } finally {
+      connection.release();
     }
   });
 
@@ -273,6 +306,10 @@ async function locationRoutes(fastify, options) {
     if (!name || name.trim() === '') return reply.code(400).send({ error: 'Nome obbligatorio' });
     try {
       await db.query('INSERT INTO FREE_LOCATIONS (name) VALUES (?)', [name.trim().toUpperCase()]);
+      if (fastify.io) {
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -287,6 +324,10 @@ async function locationRoutes(fastify, options) {
     const { id } = request.params;
     try {
       await db.query('DELETE FROM FREE_LOCATIONS WHERE id = ?', [id]);
+      if (fastify.io) {
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true };
     } catch (err) {
       fastify.log.error(err);

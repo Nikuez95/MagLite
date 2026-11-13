@@ -5,6 +5,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Save, Loader2, Coins, GitBranch, Building2, Copy, ArrowLeft, ReceiptText, RotateCcw } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
 import { hasPerm } from '../../utils/permissions';
+import { io } from 'socket.io-client';
 
 const ClientTariffManager = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -57,6 +58,11 @@ const ClientTariffManager = () => {
       }
     };
     fetchCustomers();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('billing_updated', () => {
+      if (searchParams.get('clientId')) fetchTariffs(searchParams.get('clientId'));
+    });
+    return () => socket.disconnect();
   }, []);
 
   const formatOption = (c) => ({
@@ -177,11 +183,16 @@ const ClientTariffManager = () => {
                 }`}
               >
                 <div className="pr-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-bold text-slate-200">{t.description}</span>
                     {isDepositRule && (
                       <span className="px-2 py-0.5 text-[10px] font-black uppercase rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                         Deposito
+                      </span>
+                    )}
+                    {t.rule_code === 'SOSTA_GIORNO' && (
+                      <span className="px-2 py-0.5 text-[10px] font-black uppercase rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        Giornaliero (30 gg ≈ €{(parseFloat(t.final_price || 0) * 30).toFixed(2)}/mese)
                       </span>
                     )}
                   </div>

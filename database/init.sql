@@ -145,7 +145,8 @@ INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_ty
 ('OUT_PALLET', 'Uscita Paletta', 20.00, 'EVENT'),
 ('SOSTA_15', 'Sosta (Ingresso <= 15)', 4.00, 'STORAGE'),
 ('SOSTA_MAGGIORE_15', 'Sosta (Ingresso > 15)', 8.00, 'STORAGE'),
-('DEPOSITO_PALLET', 'Deposito Paletta (Giacenza Rimasta)', 10.00, 'STORAGE');
+('DEPOSITO_PALLET', 'Deposito Paletta (Giacenza Rimasta)', 10.00, 'STORAGE'),
+('SOSTA_GIORNO', 'Sosta Giornaliera (Prezzo al Giorno per Paletta)', 0.50, 'STORAGE');
 
 CREATE TABLE IF NOT EXISTS client_tariffs (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -248,7 +249,9 @@ CREATE TABLE IF NOT EXISTS TMS_DRIVERS (
     id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     vehicle VARCHAR(255) NOT NULL,
-    sort_order INT DEFAULT 0
+    phone VARCHAR(50) DEFAULT NULL,
+    sort_order INT DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS TMS_TRIPS (
@@ -265,8 +268,19 @@ CREATE TABLE IF NOT EXISTS TMS_TRIPS (
     status VARCHAR(50) DEFAULT 'UNASSIGNED',
     title VARCHAR(255),
     notes TEXT,
-    sort_order INT DEFAULT 0
+    sort_order INT DEFAULT 0,
+    version INT NOT NULL DEFAULT 1,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS TMS_META (
+    id INT PRIMARY KEY,
+    version INT NOT NULL DEFAULT 1,
+    updated_by VARCHAR(100) DEFAULT 'Sistema',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+INSERT IGNORE INTO TMS_META (id, version, updated_by) VALUES (1, 1, 'Sistema');
 
 
 CREATE TABLE IF NOT EXISTS OUTBOUND_RETURNS (

@@ -490,6 +490,44 @@ async function runMigrations() {
       console.warn('[MIGRATE CUSTOM FORMS WARNING]', formInitErr.message);
     }
 
+    // 5b. Regola Sosta Giornaliera & Tabelle/Colonne Concorrenza TMS
+    try {
+      await connection.query(
+        `INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_type)
+         VALUES ('SOSTA_GIORNO', 'Sosta Giornaliera (Prezzo al Giorno per Paletta)', 0.50, 'STORAGE')`
+      );
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS TMS_META (
+          id INT PRIMARY KEY,
+          version INT NOT NULL DEFAULT 1,
+          updated_by VARCHAR(100) DEFAULT 'Sistema',
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      await connection.query(`INSERT IGNORE INTO TMS_META (id, version, updated_by) VALUES (1, 1, 'Sistema')`);
+
+      const [tmsDriverCols] = await connection.query(`SHOW COLUMNS FROM TMS_DRIVERS`);
+      const driverColNames = new Set(tmsDriverCols.map(c => c.Field));
+      if (!driverColNames.has('phone')) {
+        await connection.query(`ALTER TABLE TMS_DRIVERS ADD COLUMN phone VARCHAR(50) DEFAULT NULL AFTER vehicle`);
+      }
+      if (!driverColNames.has('updated_at')) {
+        await connection.query(`ALTER TABLE TMS_DRIVERS ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
+      }
+
+      const [tmsTripCols] = await connection.query(`SHOW COLUMNS FROM TMS_TRIPS`);
+      const tripColNames = new Set(tmsTripCols.map(c => c.Field));
+      if (!tripColNames.has('version')) {
+        await connection.query(`ALTER TABLE TMS_TRIPS ADD COLUMN version INT NOT NULL DEFAULT 1 AFTER sort_order`);
+      }
+      if (!tripColNames.has('updated_at')) {
+        await connection.query(`ALTER TABLE TMS_TRIPS ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
+      }
+    } catch (tmsBilErr) {
+      console.warn('[MIGRATE TMS/BILLING WARNING]', tmsBilErr.message);
+    }
+
     // 6. Consolidamento automatico posizioni e merce identica (stessa posizione + stesso prodotto + stesso lotto)
     try {
       const { consolidateLocationPallets } = require('../utils/palletConsolidation');

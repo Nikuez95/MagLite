@@ -5,6 +5,7 @@ import { appAlert, appConfirm } from '../../utils/alerts';
 import { hasPerm } from '../../utils/permissions';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
+import { io } from 'socket.io-client';
 
 const BillingRulesManager = () => {
   const [rules, setRules] = useState([]);
@@ -41,6 +42,9 @@ const BillingRulesManager = () => {
   useEffect(() => {
     fetchRules();
     fetchFlags();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('billing_updated', fetchRules);
+    return () => socket.disconnect();
   }, []);
 
   const handleCreateRule = async (e) => {

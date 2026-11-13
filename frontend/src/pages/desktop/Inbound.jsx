@@ -29,6 +29,7 @@ import {
   CheckCircle2,
   Link2
 } from 'lucide-react';
+import { io } from 'socket.io-client';
 
 const Inbound = () => {
   const [customers, setCustomers] = useState([]);
@@ -111,6 +112,17 @@ const Inbound = () => {
 
   useEffect(() => {
     fetchData();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    const refresh = () => fetchData();
+    socket.on('inbound_updated', refresh);
+    socket.on('inventory_updated', refresh);
+    socket.on('locations_updated', refresh);
+    return () => {
+      socket.off('inbound_updated', refresh);
+      socket.off('inventory_updated', refresh);
+      socket.off('locations_updated', refresh);
+      socket.disconnect();
+    };
   }, []);
 
   // Lookup automatico check-in associato a DDT / Container
@@ -1043,7 +1055,7 @@ const Inbound = () => {
 
   const handleGenerate = async () => {
     if (!canCreateInbound) return appAlert('Permesso Operatività IN richiesto per generare DDT o etichette.');
-    if (cart.length === 0) return;
+    if (cart.length === 0 || isGenerating) return;
 
     const invalidRow = cart.find(item => !item.quantity || isNaN(parseFloat(item.quantity)) || parseFloat(item.quantity) <= 0);
     if (invalidRow) {

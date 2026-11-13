@@ -251,10 +251,24 @@ const Inventory = () => {
   useEffect(() => {
     fetchData();
     const socket = io(`http://${window.location.hostname}:3000`);
-    socket.on('stow_updated', () => fetchData());
-    socket.on('dashboard_update', () => fetchData());
-    socket.on('quarantine_updated', () => fetchData());
-    return () => socket.disconnect();
+    const refresh = () => fetchData();
+    socket.on('inventory_updated', refresh);
+    socket.on('inbound_updated', refresh);
+    socket.on('outbound_updated', refresh);
+    socket.on('locations_updated', refresh);
+    socket.on('stow_updated', refresh);
+    socket.on('dashboard_update', refresh);
+    socket.on('quarantine_updated', refresh);
+    return () => {
+      socket.off('inventory_updated', refresh);
+      socket.off('inbound_updated', refresh);
+      socket.off('outbound_updated', refresh);
+      socket.off('locations_updated', refresh);
+      socket.off('stow_updated', refresh);
+      socket.off('dashboard_update', refresh);
+      socket.off('quarantine_updated', refresh);
+      socket.disconnect();
+    };
   }, []);
 
   const savePreferences = async (newColumns) => {
@@ -850,15 +864,28 @@ const Inventory = () => {
       {/* Header + Export */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-5">
         <div>
-          <h2 className="text-3xl font-black text-brand-white tracking-tight flex items-center gap-3">
-            <Layers className="text-brand-blue" size={32} />
-            Inventario Globale
-          </h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-3xl font-black text-brand-white tracking-tight flex items-center gap-3">
+              <Layers className="text-brand-blue" size={32} />
+              Inventario Globale
+            </h2>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Live Multi-Utente
+            </span>
+          </div>
           <p className="text-slate-400 text-sm mt-1">
             Esplora, filtra per scadenza o magazzino e stampa solo ciò che ti serve.
           </p>
         </div>
         <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            onClick={fetchData}
+            className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 font-bold text-sm transition-colors"
+            title="Aggiorna giacenze"
+          >
+            <RotateCcw size={16} className={loading ? 'animate-spin' : ''} />
+          </button>
           <button
             type="button"
             onClick={() => setShowColumnManager(!showColumnManager)}

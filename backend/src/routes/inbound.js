@@ -2,6 +2,7 @@ const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
+const { withNamedLock } = require('../utils/concurrency');
 
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -22,73 +23,83 @@ async function inboundRoutes(fastify, options) {
 
     const connection = await db.getConnection();
     try {
-      await connection.beginTransaction();
+      const result = await withNamedLock(connection, 'maglite_inbound_ddt', async () => {
+        await connection.beginTransaction();
+        try {
+          let effectiveCheckinId = checkin_id || null;
+          let effectiveSessionCode = checkin_session_code || null;
+          const cleanClientDdt = client_ddt && String(client_ddt).trim() ? String(client_ddt).trim() : null;
 
-      let effectiveCheckinId = checkin_id || null;
-      let effectiveSessionCode = checkin_session_code || null;
-      const cleanClientDdt = client_ddt && String(client_ddt).trim() ? String(client_ddt).trim() : null;
+          // Se fornito numero DDT / Container ma non checkin_id, cerchiamo automaticamente nei check-in
+          if (!effectiveCheckinId && cleanClientDdt) {
+            const [matched] = await connection.query(`
+              SELECT id, session_code FROM CUSTOM_FORM_SUBMISSIONS
+              WHERE JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_ddt')) = ?
+                 OR JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_container')) = ?
+                 OR session_code = ?
+              ORDER BY id DESC LIMIT 1
+            `, [cleanClientDdt, cleanClientDdt, cleanClientDdt]);
+            if (matched.length > 0) {
+              effectiveCheckinId = matched[0].id;
+              effectiveSessionCode = matched[0].session_code;
+            }
+          }
 
-      // Se fornito numero DDT / Container ma non checkin_id, cerchiamo automaticamente nei check-in
-      if (!effectiveCheckinId && cleanClientDdt) {
-        const [matched] = await connection.query(`
-          SELECT id, session_code FROM CUSTOM_FORM_SUBMISSIONS
-          WHERE JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_ddt')) = ?
-             OR JSON_UNQUOTE(JSON_EXTRACT(answers, '$.step_container')) = ?
-             OR session_code = ?
-          ORDER BY id DESC LIMIT 1
-        `, [cleanClientDdt, cleanClientDdt, cleanClientDdt]);
-        if (matched.length > 0) {
-          effectiveCheckinId = matched[0].id;
-          effectiveSessionCode = matched[0].session_code;
+          // Generate DDT Number in modo incrementale sicuro senza rischio di collisioni post-eliminazione
+          const year = new Date().getFullYear();
+          const prefix = `IN-${year}-`;
+          const [seqRows] = await connection.query(
+            'SELECT ddt_number FROM INBOUND_DDTS WHERE ddt_number LIKE ?',
+            [`${prefix}%`]
+          );
+          let maxSeq = 0;
+          for (const r of seqRows) {
+            const numPart = String(r.ddt_number || '').replace(prefix, '');
+            const num = parseInt(numPart, 10);
+            if (!isNaN(num) && num > maxSeq) {
+              maxSeq = num;
+            }
+          }
+          const ddtNumber = `${prefix}${String(maxSeq + 1).padStart(4, '0')}`;
+
+          const [resDdt] = await connection.query(
+            'INSERT INTO INBOUND_DDTS (ddt_number, customer_id, status, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?)',
+            [ddtNumber, customer_id, 'PENDING', cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+          );
+          const ddtId = resDdt.insertId;
+
+          for (const item of cart) {
+            const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
+            const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
+            const itemName = prodRow?.name || item.product_name || item.name;
+            const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
+            await connection.query(
+              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemLocation]
+            );
+          }
+
+          await connection.query(
+            "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+            ['CREATE_INBOUND_DDT', `Creato DDT Entrata ${ddtNumber} (${cart.length} righe attese)`, 'Gestionale', request.user?.username || 'Operatore']
+          );
+
+          await connection.commit();
+          return { success: true, ddt_id: ddtId, ddt_number: ddtNumber };
+        } catch (txErr) {
+          await connection.rollback();
+          throw txErr;
         }
+      });
+
+      if (fastify.io) {
+        fastify.io.emit('inbound_updated');
+        fastify.io.emit('dashboard_update');
       }
-
-      // Generate DDT Number in modo incrementale sicuro senza rischio di collisioni post-eliminazione
-      const year = new Date().getFullYear();
-      const prefix = `IN-${year}-`;
-      const [seqRows] = await connection.query(
-        'SELECT ddt_number FROM INBOUND_DDTS WHERE ddt_number LIKE ?',
-        [`${prefix}%`]
-      );
-      let maxSeq = 0;
-      for (const r of seqRows) {
-        const numPart = String(r.ddt_number || '').replace(prefix, '');
-        const num = parseInt(numPart, 10);
-        if (!isNaN(num) && num > maxSeq) {
-          maxSeq = num;
-        }
-      }
-      const ddtNumber = `${prefix}${String(maxSeq + 1).padStart(4, '0')}`;
-
-      const [resDdt] = await connection.query(
-        'INSERT INTO INBOUND_DDTS (ddt_number, customer_id, status, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?)',
-        [ddtNumber, customer_id, 'PENDING', cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
-      );
-      const ddtId = resDdt.insertId;
-
-      for (const item of cart) {
-        const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
-        const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
-        const itemName = prodRow?.name || item.product_name || item.name;
-        const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
-        await connection.query(
-          'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemLocation]
-        );
-      }
-
-      await connection.query(
-        "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-        ['CREATE_INBOUND_DDT', `Creato DDT Entrata ${ddtNumber} (${cart.length} righe attese)`, 'Gestionale', request.user?.username || 'Operatore']
-      );
-
-      await connection.commit();
-      if (fastify.io) fastify.io.emit('dashboard_update');
-      return { success: true, ddt_id: ddtId, ddt_number: ddtNumber };
+      return result;
     } catch (err) {
-      await connection.rollback();
       fastify.log.error(err);
-      return reply.code(500).send({ error: 'Errore creazione DDT' });
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore creazione DDT' });
     } finally {
       connection.release();
     }
@@ -268,82 +279,101 @@ async function inboundRoutes(fastify, options) {
     const ddt_id = request.params.id;
     const connection = await db.getConnection();
     try {
-      await connection.beginTransaction();
+      const outcome = await withNamedLock(connection, 'maglite_pallet_gen', async () => {
+        await connection.beginTransaction();
+        try {
+          // Get item (locked FOR UPDATE to avoid concurrent double-scan race)
+          const [items] = await connection.query('SELECT * FROM INBOUND_DDT_ITEMS WHERE id = ? AND inbound_ddt_id = ? FOR UPDATE', [item_id, ddt_id]);
+          if (items.length === 0) throw new Error('Item non trovato nel DDT');
+          const item = items[0];
 
-      // Get item
-      const [items] = await connection.query('SELECT * FROM INBOUND_DDT_ITEMS WHERE id = ? AND inbound_ddt_id = ?', [item_id, ddt_id]);
-      if (items.length === 0) throw new Error('Item non trovato nel DDT');
-      const item = items[0];
-
-      const [ddts] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddt_id]);
-      if (ddts.length === 0) throw new Error('DDT non trovato');
-      if (!canAccessCustomer(request.user, ddts[0].customer_id)) {
-        await connection.rollback();
-        return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
-      }
-      if (ddts[0].status === 'PENDING') {
-        await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
-      }
-
-      // Generate or use existing pallet code based on location
-      let palletCode = null;
-      let locStr = null;
-      if (location) {
-        locStr = location.toUpperCase().trim();
-        const [existing] = await connection.query(
-          "SELECT pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 LIMIT 1",
-          [locStr]
-        );
-        if (existing.length > 0) {
-          palletCode = existing[0].pallet_code;
-        }
-      }
-      
-      if (!palletCode) {
-        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const basePrefix = `PAL-${dateStr}-`;
-        const [seqRows] = await connection.query(
-          'SELECT DISTINCT pallet_code FROM PALLETS WHERE pallet_code LIKE ?',
-          [`${basePrefix}%`]
-        );
-        let maxSeq = 0;
-        for (const r of seqRows) {
-          const suffix = String(r.pallet_code || '').slice(basePrefix.length);
-          if (/^\d+$/.test(suffix)) {
-            const num = parseInt(suffix, 10);
-            if (num > maxSeq) maxSeq = num;
+          const [ddts] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ? FOR UPDATE', [ddt_id]);
+          if (ddts.length === 0) throw new Error('DDT non trovato');
+          if (!canAccessCustomer(request.user, ddts[0].customer_id)) {
+            await connection.rollback();
+            return { status: 403, body: { error: 'Accesso negato: cliente limitato per il tuo profilo.' } };
           }
+          if (ddts[0].status === 'COMPLETED') {
+            await connection.rollback();
+            return { status: 409, body: { error: 'Questo DDT è già stato chiuso da un altro operatore.' } };
+          }
+          if (ddts[0].status === 'PENDING') {
+            await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
+          }
+
+          // Generate or use existing pallet code based on location
+          let palletCode = null;
+          let locStr = null;
+          if (location) {
+            locStr = location.toUpperCase().trim();
+            palletCode = await findExistingLocationBarcode(connection, locStr, false);
+          }
+          
+          if (!palletCode) {
+            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            const basePrefix = `PAL-${dateStr}-`;
+            const [seqRows] = await connection.query(
+              'SELECT DISTINCT pallet_code FROM PALLETS WHERE pallet_code LIKE ?',
+              [`${basePrefix}%`]
+            );
+            let maxSeq = 0;
+            for (const r of seqRows) {
+              const suffix = String(r.pallet_code || '').slice(basePrefix.length);
+              if (/^\d+$/.test(suffix)) {
+                const num = parseInt(suffix, 10);
+                if (num > maxSeq) maxSeq = num;
+              }
+            }
+            palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
+          }
+
+          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata)
+          await connection.query(`
+            INSERT INTO PALLETS 
+            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
+            warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
+            sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id,
+            ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
+          ]);
+
+          if (locStr) {
+            await consolidateLocationPallets(connection, locStr);
+          }
+          
+          await connection.query(
+            "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+            ['INBOUND', `Spunta Zebra (${ddts[0].ddt_number}): Creata/aggiornata paletta ${palletCode} (${quantity} ${item.product_uom || 'pz'}) per ${item.product_name || 'Articolo'}${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
+          );
+
+          // Update actual quantity
+          await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = actual_quantity + ? WHERE id = ?', [quantity, item_id]);
+
+          await connection.commit();
+          return { status: 200, body: { success: true, pallet_code: palletCode } };
+        } catch (txErr) {
+          await connection.rollback();
+          throw txErr;
         }
-        palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
+      });
+
+      if (outcome.status !== 200) {
+        return reply.code(outcome.status).send(outcome.body);
       }
 
-      // Insert Pallet (eredita client_ddt e check-in dal DDT entrata)
-      await connection.query(`
-        INSERT INTO PALLETS 
-        (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
-        warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
-        sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id,
-        ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
-      ]);
-      
-      await connection.query(
-        "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-        ['INBOUND', `Spunta Zebra (${ddts[0].ddt_number}): Creata paletta ${palletCode} (${quantity} ${item.product_uom || 'pz'}) per ${item.product_name || 'Articolo'}${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
-      );
-
-      // Update actual quantity
-      await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = actual_quantity + ? WHERE id = ?', [quantity, item_id]);
-
-      await connection.commit();
-      if (fastify.io) fastify.io.emit('dashboard_update');
-      return { success: true, pallet_code: palletCode };
+      if (fastify.io) {
+        fastify.io.emit('inbound_updated');
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
+      return outcome.body;
     } catch (err) {
-      await connection.rollback();
       fastify.log.error(err);
-      return reply.code(500).send({ error: err.message || 'Errore scan' });
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore scan' });
     } finally {
       connection.release();
     }
@@ -360,7 +390,7 @@ async function inboundRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
 
-      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ? FOR UPDATE', [ddtId]);
       if (!ddt) {
         await connection.rollback();
         return reply.code(404).send({ error: 'DDT non trovato' });
@@ -368,6 +398,10 @@ async function inboundRoutes(fastify, options) {
       if (!canAccessCustomer(request.user, ddt.customer_id)) {
         await connection.rollback();
         return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+      }
+      if (ddt.status === 'COMPLETED') {
+        await connection.rollback();
+        return reply.code(409).send({ error: 'DDT già completato da un altro operatore' });
       }
 
       const [items] = await connection.query(`
@@ -447,6 +481,9 @@ async function inboundRoutes(fastify, options) {
 
       await connection.commit();
       if (fastify.io) {
+        fastify.io.emit('inbound_updated');
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('locations_updated');
         fastify.io.emit('dashboard_update');
         fastify.io.emit('stow_updated');
       }
@@ -480,7 +517,7 @@ async function inboundRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
 
-      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ?', [ddtId]);
+      const [[ddt]] = await connection.query('SELECT * FROM INBOUND_DDTS WHERE id = ? FOR UPDATE', [ddtId]);
       if (!ddt) {
         await connection.rollback();
         return reply.code(404).send({ error: 'DDT non trovato' });
@@ -488,6 +525,10 @@ async function inboundRoutes(fastify, options) {
       if (!canAccessCustomer(request.user, ddt.customer_id)) {
         await connection.rollback();
         return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
+      }
+      if (ddt.status === 'COMPLETED') {
+        await connection.rollback();
+        return reply.code(409).send({ error: 'Discrepanza già accettata da un altro operatore' });
       }
 
       const [items] = await connection.query(`
@@ -546,13 +587,16 @@ async function inboundRoutes(fastify, options) {
         ]
       );
 
+      await consolidateLocationPallets(connection);
       await connection.commit();
       if (fastify.io) {
+        fastify.io.emit('inbound_updated');
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('locations_updated');
         fastify.io.emit('dashboard_update');
         fastify.io.emit('stow_updated');
       }
 
-      await consolidateLocationPallets(connection);
       return { success: true, status: 'COMPLETED', reason: cleanReason, resolved_by: username };
     } catch (err) {
       await connection.rollback();

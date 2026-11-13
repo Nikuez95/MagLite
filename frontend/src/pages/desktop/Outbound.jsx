@@ -293,9 +293,17 @@ const Outbound = () => {
 
     const socket = io(`http://${window.location.hostname}:3000`);
     socket.on('outbound_updated', fetchOrders);
+    socket.on('inventory_updated', fetchOrders);
+    socket.on('locations_updated', fetchOrders);
     socket.on('dashboard_update', fetchOrders);
 
-    return () => socket.disconnect();
+    return () => {
+      socket.off('outbound_updated', fetchOrders);
+      socket.off('inventory_updated', fetchOrders);
+      socket.off('locations_updated', fetchOrders);
+      socket.off('dashboard_update', fetchOrders);
+      socket.disconnect();
+    };
   }, []);
 
   const toggleIncludePending = (checked) => {
@@ -401,6 +409,7 @@ const Outbound = () => {
   };
 
   const handleCreateOrder = async () => {
+    if (isProcessing) return;
     if (!newOrder.customer_id || cart.length === 0) {
       appAlert('Seleziona cliente e inserisci almeno un articolo.');
       return;
@@ -448,7 +457,9 @@ const Outbound = () => {
   };
 
   const confirmOrder = async (code) => {
+    if (isProcessing) return;
     if (!await appConfirm('Vuoi confermare la spedizione? Questo scaricherà la merce dal magazzino definitivamente.')) return;
+    setIsProcessing(true);
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/outbound/${code}/confirm`, {}, {
         headers: { Authorization: `Bearer ${token}` }
@@ -457,6 +468,8 @@ const Outbound = () => {
       appAlert('Spedizione confermata e merce scaricata!', 'Successo', 'success');
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore');
+    } finally {
+      setIsProcessing(false);
     }
   };
 

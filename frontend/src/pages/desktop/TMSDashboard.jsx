@@ -36,6 +36,7 @@ import { it } from 'date-fns/locale';
 import { appAlert, appConfirm } from '../../utils/alerts';
 import { hasPerm } from '../../utils/permissions';
 import axios from 'axios';
+import { io } from 'socket.io-client';
 
 const INITIAL_DRIVERS = [
   { id: 'driver-1', name: 'Mario Rossi', vehicle: 'IVECO Stralis - AB123CD', phone: '' },
@@ -126,10 +127,13 @@ const NEXT_STATUS_FLOW = {
 };
 
 const TMSDashboard = () => {
-  const [drivers, setDrivers] = useState(INITIAL_DRIVERS);
-  const [columns, setColumns] = useState(INITIAL_TRIPS);
+  const [drivers, setDrivers] = useState([]);
+  const [columns, setColumns] = useState({ unassigned: [] });
+  const [boardVersion, setBoardVersion] = useState(1);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
   const canManageTMS = hasPerm('tms_manage');
+  const getAuthHeaders = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` } });
 
   // Views: ONLY 'CALENDAR' (Kanban con le date) and 'TIMELINE' (Timeline orizzontale)
   const [viewMode, setViewMode] = useState('CALENDAR');
@@ -177,59 +181,37 @@ const TMSDashboard = () => {
     phone: ''
   });
 
-  // Load State from Database
+  // Load State from Database & listen to real-time multi-user updates via Socket.IO
+  const fetchTMS = async (silent = false) => {
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/tms`, getAuthHeaders());
+      setDrivers(res.data.drivers || []);
+      setColumns(res.data.columns || { unassigned: [] });
+      if (res.data.version !== undefined) setBoardVersion(res.data.version);
+    } catch (err) {
+      if (!silent) console.error('Failed to load TMS from DB.', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchTMS = async () => {
-      try {
-        const res = await axios.get(`http://${window.location.hostname}:3000/api/tms`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` }
-        });
-        if (res.data.drivers.length > 0 || Object.keys(res.data.columns).length > 1) {
-          setDrivers(res.data.drivers);
-          setColumns(res.data.columns);
-        }
-      } catch (err) {
-        console.error('Failed to load TMS from DB, using initial data.', err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchTMS();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('tms_updated', () => {
+      fetchTMS(true);
+    });
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
-  const prevDrivers = useRef(drivers);
-  const prevColumns = useRef(columns);
-  const isInitialMount = useRef(true);
-
-  // Persist State to DB on change
-  useEffect(() => {
-    if (loading) return;
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      prevDrivers.current = drivers;
-      prevColumns.current = columns;
-      return;
-    }
-
-    if (prevDrivers.current === drivers && prevColumns.current === columns) return;
-    prevDrivers.current = drivers;
-    prevColumns.current = columns;
-
-    const saveTMS = async () => {
-      try {
-        await axios.post(
-          `http://${window.location.hostname}:3000/api/tms/sync`,
-          { drivers, columns },
-          { headers: { Authorization: `Bearer ${localStorage.getItem('maglite_token')}` } }
-        );
-      } catch (err) {
-        console.error('Failed to sync TMS to DB', err);
-      }
-    };
-
-    const timeoutId = setTimeout(saveTMS, 400);
-    return () => clearTimeout(timeoutId);
-  }, [drivers, columns, loading]);
+  const handleTmsError = async (err, fallbackMsg) => {
+    const status = err?.response?.status;
+    const msg = err?.response?.data?.error || fallbackMsg;
+    await fetchTMS(true);
+    appAlert(status === 409 || status === 404 ? `Conflitto multi-utente: ${msg}` : msg);
+  };
 
   // Date navigation helpers (Frecce Sinistra / Destra)
   const handleShiftDate = (daysDelta) => {
@@ -302,66 +284,108 @@ const TMSDashboard = () => {
     setDragOverCol(null);
   };
 
-  const handleDrop = (e, targetCol) => {
+  const handleDrop = async (e, targetCol) => {
     e.preventDefault();
     setDragOverCol(null);
     if (!canManageTMS) return;
     if (!draggedTrip || draggedFrom === targetCol) return;
 
-    const sourceList = [...(columns[draggedFrom] || [])].filter(t => t.id !== draggedTrip.id);
-    const targetList = [...(columns[targetCol] || [])];
+    const movingTrip = draggedTrip;
+    const fromCol = draggedFrom;
+    setDraggedTrip(null);
+    setDraggedFrom(null);
 
-    const updatedTrip = { ...draggedTrip };
+    const sourceList = [...(columns[fromCol] || [])].filter(t => t.id !== movingTrip.id);
+    const targetList = [...(columns[targetCol] || [])];
+    const updatedTrip = { ...movingTrip };
     if (targetCol !== 'unassigned' && updatedTrip.status === 'UNASSIGNED') {
       updatedTrip.status = 'ASSIGNED';
     } else if (targetCol === 'unassigned') {
       updatedTrip.status = 'UNASSIGNED';
     }
-
     targetList.push(updatedTrip);
 
     setColumns({
       ...columns,
-      [draggedFrom]: sourceList,
+      [fromCol]: sourceList,
       [targetCol]: targetList
     });
 
-    setDraggedTrip(null);
-    setDraggedFrom(null);
+    setIsSyncing(true);
+    try {
+      await axios.patch(
+        `http://${window.location.hostname}:3000/api/tms/trips/${encodeURIComponent(movingTrip.id)}/move`,
+        {
+          driver_id: targetCol,
+          sort_order: targetList.length - 1,
+          expected_version: movingTrip.version
+        },
+        getAuthHeaders()
+      );
+      await fetchTMS(true);
+    } catch (err) {
+      await handleTmsError(err, 'Errore nello spostamento del viaggio.');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   // Quick 1-click status change directly from card
-  const handleQuickStatusChange = (tripId, colId, newStatus) => {
+  const handleQuickStatusChange = async (tripId, colId, newStatus) => {
     if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
     setColumns(prev => ({
       ...prev,
       [colId]: (prev[colId] || []).map(t => (t.id === tripId ? { ...t, status: newStatus } : t))
     }));
+    setIsSyncing(true);
+    try {
+      await axios.patch(
+        `http://${window.location.hostname}:3000/api/tms/trips/${encodeURIComponent(tripId)}/status`,
+        { status: newStatus },
+        getAuthHeaders()
+      );
+      await fetchTMS(true);
+    } catch (err) {
+      await handleTmsError(err, 'Errore aggiornamento stato.');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   // Trip Actions
-  const handleDuplicate = (trip, colId) => {
+  const handleDuplicate = async (trip, colId) => {
     if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per duplicare viaggi.');
     const newTrip = {
       ...trip,
-      id: 'trip-' + Date.now(),
+      id: 'trip-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      driver_id: colId,
       ref: `${trip.ref}-COPY`,
       status: colId === 'unassigned' ? 'UNASSIGNED' : 'ASSIGNED'
     };
-    setColumns({
-      ...columns,
-      [colId]: [...(columns[colId] || []), newTrip]
-    });
+    setIsSyncing(true);
+    try {
+      await axios.post(`http://${window.location.hostname}:3000/api/tms/trips`, newTrip, getAuthHeaders());
+      await fetchTMS(true);
+    } catch (err) {
+      await handleTmsError(err, 'Errore duplicazione viaggio.');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleDeleteTrip = async (tripId, colId) => {
     if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto per eliminare viaggi.');
     const confirmed = await appConfirm('Sei sicuro di voler eliminare definitivamente questo viaggio?', 'Elimina Viaggio');
     if (confirmed) {
-      setColumns({
-        ...columns,
-        [colId]: (columns[colId] || []).filter(t => t.id !== tripId)
-      });
+      setIsSyncing(true);
+      try {
+        await axios.delete(`http://${window.location.hostname}:3000/api/tms/trips/${encodeURIComponent(tripId)}`, getAuthHeaders());
+        await fetchTMS(true);
+      } catch (err) {
+        await handleTmsError(err, 'Errore eliminazione viaggio.');
+      } finally {
+        setIsSyncing(false);
+      }
     }
   };
 
@@ -405,9 +429,10 @@ const TMSDashboard = () => {
     setIsTripModalOpen(true);
   };
 
-  const handleSaveTrip = (e) => {
+  const handleSaveTrip = async (e) => {
     e.preventDefault();
     if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
+    if (isSyncing) return;
     const notesArray = String(tripForm.notes || '')
       .split(',')
       .map(n => n.trim())
@@ -433,32 +458,25 @@ const TMSDashboard = () => {
       status: finalStatus,
       title: tripForm.title,
       notes: notesArray,
-      id: editingTrip ? editingTrip.id : 'trip-' + Date.now()
+      driver_id: destinationCol,
+      expected_version: editingTrip?.version
     };
 
-    if (editingTrip) {
-      if (editingCol === destinationCol) {
-        setColumns({
-          ...columns,
-          [destinationCol]: (columns[destinationCol] || []).map(t => (t.id === editingTrip.id ? tripData : t))
-        });
+    setIsSyncing(true);
+    try {
+      if (editingTrip) {
+        await axios.put(`http://${window.location.hostname}:3000/api/tms/trips/${encodeURIComponent(editingTrip.id)}`, tripData, getAuthHeaders());
       } else {
-        // Moved driver inside modal
-        const sourceList = (columns[editingCol] || []).filter(t => t.id !== editingTrip.id);
-        const destList = [...(columns[destinationCol] || []), tripData];
-        setColumns({
-          ...columns,
-          [editingCol]: sourceList,
-          [destinationCol]: destList
-        });
+        tripData.id = 'trip-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+        await axios.post(`http://${window.location.hostname}:3000/api/tms/trips`, tripData, getAuthHeaders());
       }
-    } else {
-      setColumns({
-        ...columns,
-        [destinationCol]: [...(columns[destinationCol] || []), tripData]
-      });
+      setIsTripModalOpen(false);
+      await fetchTMS(true);
+    } catch (err) {
+      await handleTmsError(err, 'Errore salvataggio viaggio.');
+    } finally {
+      setIsSyncing(false);
     }
-    setIsTripModalOpen(false);
   };
 
   // Driver Actions
@@ -474,17 +492,25 @@ const TMSDashboard = () => {
     setIsDriverModalOpen(true);
   };
 
-  const handleSaveDriver = (e) => {
+  const handleSaveDriver = async (e) => {
     e.preventDefault();
     if (!canManageTMS) return appAlert('Permesso Gestione TMS richiesto.');
-    if (editingDriver) {
-      setDrivers(drivers.map(d => (d.id === editingDriver.id ? { ...d, ...driverForm } : d)));
-    } else {
-      const newId = 'driver-' + Date.now();
-      setDrivers([...drivers, { id: newId, ...driverForm }]);
-      setColumns({ ...columns, [newId]: [] });
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      if (editingDriver) {
+        await axios.put(`http://${window.location.hostname}:3000/api/tms/drivers/${encodeURIComponent(editingDriver.id)}`, driverForm, getAuthHeaders());
+      } else {
+        const newId = 'driver-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+        await axios.post(`http://${window.location.hostname}:3000/api/tms/drivers`, { id: newId, ...driverForm }, getAuthHeaders());
+      }
+      setIsDriverModalOpen(false);
+      await fetchTMS(true);
+    } catch (err) {
+      await handleTmsError(err, 'Errore salvataggio autista.');
+    } finally {
+      setIsSyncing(false);
     }
-    setIsDriverModalOpen(false);
   };
 
   const handleDeleteDriver = async (driverId) => {
@@ -494,10 +520,15 @@ const TMSDashboard = () => {
       return;
     }
     if (await appConfirm('Sei sicuro di voler eliminare questo autista?', 'Elimina Autista')) {
-      setDrivers(drivers.filter(d => d.id !== driverId));
-      const newCols = { ...columns };
-      delete newCols[driverId];
-      setColumns(newCols);
+      setIsSyncing(true);
+      try {
+        await axios.delete(`http://${window.location.hostname}:3000/api/tms/drivers/${encodeURIComponent(driverId)}`, getAuthHeaders());
+        await fetchTMS(true);
+      } catch (err) {
+        await handleTmsError(err, 'Errore eliminazione autista.');
+      } finally {
+        setIsSyncing(false);
+      }
     }
   };
 
@@ -840,8 +871,12 @@ const TMSDashboard = () => {
               <Truck size={24} />
             </div>
             <div>
-              <h1 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+              <h1 className="text-xl font-black text-white tracking-tight flex items-center gap-2.5 flex-wrap">
                 TMS · Pianificazione Trasporti
+                <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full border ${isSyncing ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`} />
+                  {isSyncing ? 'Salvataggio...' : `Live Multi-Utente · v${boardVersion}`}
+                </span>
               </h1>
               <p className="text-slate-400 text-xs">
                 Gestione operativa viaggi, assegnazione rapida autisti e controllo marginalità

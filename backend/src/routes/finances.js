@@ -32,6 +32,11 @@ async function financesRoutes(fastify, options) {
         ['SAVE_INVOICE', `Salvata proforma per cliente ID: ${customer_id}, Periodo: ${period_month}/${period_year}`, 'Gestionale Finanza', request.user.username]
       );
 
+      if (fastify.io) {
+        fastify.io.emit('finances_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -69,6 +74,10 @@ async function financesRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['DELETE_INVOICE', `Eliminata proforma ID: ${request.params.id}`, 'Gestionale Finanza', request.user.username]
       );
+      if (fastify.io) {
+        fastify.io.emit('finances_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -95,6 +104,10 @@ async function financesRoutes(fastify, options) {
         ['TOGGLE_PAYMENT', `Impostato stato ${newStatus ? 'PAGATO' : 'DA PAGARE'} su proforma ID: ${request.params.id}`, 'Gestionale Finanza', request.user.username]
       );
       
+      if (fastify.io) {
+        fastify.io.emit('finances_updated');
+        fastify.io.emit('dashboard_update');
+      }
       return { success: true, is_paid: newStatus };
     } catch (err) {
       fastify.log.error(err);
@@ -133,6 +146,11 @@ async function financesRoutes(fastify, options) {
         ['CREATE_EXPENSE', `Registrata spesa: ${description} di EUR ${amount}`, 'Gestionale Finanza', request.user.username]
       );
 
+      if (fastify.io) {
+        fastify.io.emit('finances_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -152,6 +170,11 @@ async function financesRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['DELETE_EXPENSE', `Eliminata spesa ID: ${request.params.id}`, 'Gestionale Finanza', request.user.username]
       );
+
+      if (fastify.io) {
+        fastify.io.emit('finances_updated');
+        fastify.io.emit('dashboard_update');
+      }
 
       return { success: true };
     } catch (err) {

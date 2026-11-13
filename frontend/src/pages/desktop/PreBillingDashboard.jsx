@@ -9,8 +9,35 @@ import {
   FileText, User, Tag, Search, ExternalLink, MessageSquare
 } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { generateProformaPdf, formatDateIT } from '../../utils/invoicePdf';
+import { io } from 'socket.io-client';
+
+const STORAGE_MODES = [
+  {
+    id: 'GIORNALIERO',
+    title: 'Giorni di Sosta (Mensile)',
+    desc: 'Tariffa giornaliera (SOSTA_GIORNO) × giorni effettivi nel mese selezionato. Se in deposito da mesi, fattura solo i gg del mese.',
+    accent: 'amber'
+  },
+  {
+    id: 'DEPOSITO_FINE_MESE',
+    title: 'Deposito Mensile Fisso',
+    desc: 'Fattura una quota fissa mensile (DEPOSITO_PALLET) per ogni paletta rimasta in giacenza a fine mese.',
+    accent: 'emerald'
+  },
+  {
+    id: 'QUINDICINA',
+    title: 'Sosta a Quindicina',
+    desc: 'Applica gli scaglioni SOSTA_15 (ingresso <= 15) e SOSTA_MAGGIORE_15 (ingresso > 15).',
+    accent: 'sky'
+  },
+  {
+    id: 'NESSUNO',
+    title: 'Solo Eventi IN/OUT & Extra',
+    desc: 'Nessun addebito deposito/sosta: calcola esclusivamente ingressi, uscite e servizi extra (Tag).',
+    accent: 'slate'
+  }
+];
 
 const PreBillingDashboard = () => {
   const [searchParams] = useSearchParams();
@@ -22,8 +49,8 @@ const PreBillingDashboard = () => {
   const [year, setYear] = useState(new Date().getFullYear());
 
   // Opzioni di calcolo e stampa PDF
-  const [includeDeposit, setIncludeDeposit] = useState(true);
-  const [includeStorage, setIncludeStorage] = useState(false);
+  const [storageMode, setStorageMode] = useState('GIORNALIERO');
+  const [capToToday, setCapToToday] = useState(false);
   const [includeHistorical, setIncludeHistorical] = useState(true);
   const [includeNotesInPdf, setIncludeNotesInPdf] = useState(true);
   const [vatRate, setVatRate] = useState(22);
@@ -32,6 +59,7 @@ const PreBillingDashboard = () => {
   const [invoiceItems, setInvoiceItems] = useState([]);
   const [palletDetails, setPalletDetails] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Pop-up Dettaglio & Storico Paletta Cliccabile
   const [palletModal, setPalletModal] = useState({
@@ -90,6 +118,10 @@ const PreBillingDashboard = () => {
       }
     };
     fetchData();
+
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('billing_updated', fetchData);
+    return () => socket.disconnect();
   }, []);
 
   const customerOptions = useMemo(() => {
@@ -107,6 +139,7 @@ const PreBillingDashboard = () => {
   const handleCalculate = async (overrideClientId) => {
     const targetId = overrideClientId || selectedCustomer?.value;
     if (!targetId) return appAlert('Seleziona un cliente');
+    if (isGenerating) return;
     setIsGenerating(true);
     try {
       const res = await axios.post(`http://${window.location.hostname}:3000/api/billing/calculate`, {
@@ -114,9 +147,11 @@ const PreBillingDashboard = () => {
         month,
         year,
         includeHistorical,
-        includeDeposit,
-        includeStorage,
-        storageMode: includeDeposit ? 'DEPOSITO_FINE_MESE' : (includeStorage ? 'QUINDICINA' : 'NESSUNO')
+        includeDeposit: storageMode === 'DEPOSITO_FINE_MESE',
+        includeStorage: storageMode === 'QUINDICINA',
+        includeDailyStorage: storageMode === 'GIORNALIERO',
+        capToToday,
+        storageMode
       }, { headers: { Authorization: `Bearer ${getToken()}` } });
 
       setReportData(res.data);
@@ -278,257 +313,61 @@ const PreBillingDashboard = () => {
   }, [invoiceItems, vatRate, reportData]);
 
   const exportPDF = async () => {
-    if (!reportData) return;
-    const doc = new jsPDF();
-    const cust = selectedCustomer.raw;
-
+    if (!reportData || isExporting) return;
+    setIsExporting(true);
     try {
-      const resp = await fetch('/logo_scuro.png');
-      const blob = await resp.blob();
-      const base64Logo = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.readAsDataURL(blob);
-      });
-      doc.addImage(base64Logo, 'PNG', 12, 13, 28, 20);
-    } catch (e) {}
+      const cust = selectedCustomer.raw;
+      const modeObj = STORAGE_MODES.find(m => m.id === storageMode);
+      const storageModeLabel = modeObj ? modeObj.title : storageMode;
+      const visibleItems = invoiceItems.filter(i => i.visible);
+      const visiblePallets = palletDetails.filter(p => p.visibleInPdf);
 
-    doc.setFontSize(16);
-    doc.setFont("helvetica", "bold");
-    const companyName = companySettings.company_name || 'La Mia Azienda';
-    const companyNameLines = doc.splitTextToSize(companyName, 75);
-    doc.text(companyNameLines, 43, 22);
-
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
-    let startY = 22 + (companyNameLines.length * 6);
-    if (companySettings.company_address) { doc.text(companySettings.company_address, 43, startY); startY += 5; }
-    if (companySettings.company_piva) { doc.text(`P.IVA: ${companySettings.company_piva}`, 43, startY); startY += 5; }
-    if (companySettings.company_cf) { doc.text(`CF: ${companySettings.company_cf}`, 43, startY); startY += 5; }
-    if (companySettings.company_email) { doc.text(`Email: ${companySettings.company_email}`, 43, startY); }
-
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
-    doc.text('Spett.le Cliente:', 120, 24);
-    doc.setFontSize(14);
-    doc.text(cust.business_name || '', 120, 31);
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
-    const addrLines = doc.splitTextToSize(cust.address || '', 70);
-    doc.text(addrLines, 120, 37);
-    doc.text(`P.IVA: ${cust.vat_number || '-'}`, 120, 37 + (addrLines.length * 5));
-
-    doc.setLineWidth(0.5);
-    doc.line(14, 58, 196, 58);
-    doc.setFontSize(13.5);
-    doc.setFont("helvetica", "bold");
-    doc.text(`PROFORMA FATTURA DETTAGLIATA - ${cust.business_name} (${reportData.period})`, 14, 66);
-
-    let currentY = 73;
-
-    // Suddivisione per ogni Frammentazione / Reparto
-    const sections = reportData.sections || [];
-    for (const sec of sections) {
-      const secPallets = palletDetails.filter(
-        p => p.visibleInPdf && String(p.sectionId) === String(sec.sectionId)
-      );
-      const secItems = invoiceItems.filter(
-        i => i.visible && String(i.sectionId) === String(sec.sectionId)
-      );
-      const secLines = sec.descriptiveLines || [];
-
-      if (secPallets.length === 0 && secItems.length === 0 && secLines.length === 0) continue;
-
-      if (currentY > 235) {
-        doc.addPage();
-        currentY = 20;
-      }
-
-      // Intestazione Frammentazione: es. "LOGISTICA REPARTO CARNE":
-      doc.setFillColor(15, 23, 42);
-      doc.rect(14, currentY - 5, 182, 8.5, 'F');
-      doc.setFontSize(11);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(255, 255, 255);
-      doc.text(`"${sec.sectionName}"`, 17, currentY + 0.8);
-      doc.setTextColor(0, 0, 0);
-      currentY += 8;
-
-      // Righe descrittive sintetiche con Nome Prodotto + Lotto
-      if (secLines.length > 0) {
-        doc.setFontSize(8.5);
-        doc.setFont("helvetica", "normal");
-        secLines.forEach(line => {
-          const splitLine = doc.splitTextToSize(`• ${line.text}`, 178);
-          if (currentY + splitLine.length * 4.2 > 272) {
-            doc.addPage();
-            currentY = 20;
-          }
-          doc.text(splitLine, 16, currentY);
-          currentY += splitLine.length * 4.4;
-        });
-        currentY += 2;
-      }
-
-      // 1) Tabella Dettagliata Articoli/Palette della Frammentazione:
-      // Cod. Articolo, Nome Prodotto, Lotto, Quantità, Rif. Paletta Cliente, Causale/Stato, Note (opz.), Prezzo
-      if (secPallets.length > 0) {
-        const hasAnyClientRef = secPallets.some(p => p.customer_pallet_ref);
-        const showNotesCol = includeNotesInPdf && secPallets.some(p => (p.customNote || p.notes || '').trim() !== '');
-
-        const headCols = ['Cod. Articolo', 'Nome Prodotto', 'Lotto', 'Quantità'];
-        if (hasAnyClientRef) headCols.push('Rif. Paletta Cl.');
-        headCols.push('Movimento / Stato');
-        if (showNotesCol) headCols.push('Note');
-        headCols.push('Prezzo');
-
-        const palletRowsData = secPallets.map(p => {
-          const row = [
-            p.sku || '-',
-            p.product_name || '-',
-            p.batch || '-',
-            `${p.quantity} ${p.pallet_uom || 'Pz'}`
-          ];
-          if (hasAnyClientRef) {
-            row.push(p.customer_pallet_ref || '-');
-          }
-          const chargesDesc = (p.charges || []).map(c => `${c.label}: €${parseFloat(c.price).toFixed(2)}`).join(' + ');
-          row.push(chargesDesc || p.movementSummary || (p.in_deposit ? 'In Deposito' : '-'));
-          if (showNotesCol) {
-            row.push((p.customNote !== undefined ? p.customNote : p.notes) || '-');
-          }
-          const rowPrice = p.customPrice !== undefined ? parseFloat(p.customPrice) : parseFloat(p.totalPrice || 0);
-          row.push(`${rowPrice.toFixed(2)} EUR`);
-          return row;
-        });
-
-        autoTable(doc, {
-          startY: currentY,
-          head: [headCols],
-          body: palletRowsData,
-          theme: 'grid',
-          headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
-          styles: { fontSize: 7.8, cellPadding: 2.5 },
-          columnStyles: {
-            [headCols.length - 1]: { halign: 'right', fontStyle: 'bold', cellWidth: 24 }
-          }
-        });
-        currentY = doc.lastAutoTable.finalY + 3;
-      }
-
-      // 2) Tabella Riepilogo Voci Tariffarie / Sconti / Servizi Extra della Frammentazione
-      if (secItems.length > 0) {
-        const summaryRows = secItems.map(i => {
-          const qtyStr = i.code === 'DISCOUNT_PERCENT' ? '-' : i.qty.toString();
-          const priceStr = i.code === 'DISCOUNT_PERCENT' ? `${Math.abs(i.price)} %` : `${parseFloat(i.price).toFixed(2)} EUR`;
-          return [
-            i.description,
-            qtyStr,
-            priceStr,
-            `${parseFloat(i.subtotal).toFixed(2)} EUR`
-          ];
-        });
-
-        autoTable(doc, {
-          startY: currentY,
-          head: [[`Riepilogo Voci Listino - ${sec.sectionName}`, 'Q.ta', 'Tariffa Unit.', 'Importo']],
-          body: summaryRows,
-          theme: 'striped',
-          headStyles: { fillColor: [14, 165, 233], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
-          styles: { fontSize: 8, cellPadding: 2.5 },
-          columnStyles: {
-            1: { halign: 'center', cellWidth: 18 },
-            2: { halign: 'right', cellWidth: 28 },
-            3: { halign: 'right', fontStyle: 'bold', cellWidth: 28 }
-          }
-        });
-        currentY = doc.lastAutoTable.finalY + 5;
-      }
-
-      const secTot = sectionTotalsMap[sec.sectionId] || 0;
-      doc.setFontSize(10.5);
-      doc.setFont("helvetica", "bold");
-      doc.text(`Totale ${sec.sectionName}: ${secTot.toFixed(2)} EUR`, 196, currentY, { align: 'right' });
-      currentY += 9;
-    }
-
-    if (currentY > 230) {
-      doc.addPage();
-      currentY = 25;
-    }
-
-    // Box Riepilogo Totali per Frammentazione + Totale Finale Cliente Madre
-    doc.setLineWidth(0.4);
-    doc.line(14, currentY, 196, currentY);
-    currentY += 6;
-
-    if (sections.length > 1) {
-      doc.setFontSize(9.5);
-      doc.setFont("helvetica", "bold");
-      doc.text('RIEPILOGO PER FRAMMENTAZIONE:', 14, currentY);
-      currentY += 5;
-      doc.setFont("helvetica", "normal");
-      sections.forEach(sec => {
-        const sTot = sectionTotalsMap[sec.sectionId] || 0;
-        doc.text(`• ${sec.sectionName}:`, 18, currentY);
-        doc.text(`${sTot.toFixed(2)} EUR`, 110, currentY, { align: 'right' });
-        currentY += 4.8;
-      });
-      currentY += 3;
-    }
-
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
-    doc.text(`Totale Cliente Madre (${cust.business_name}):`, 152, currentY, { align: 'right' });
-    doc.text(`${finalTotal.toFixed(2)} EUR`, 196, currentY, { align: 'right' });
-
-    doc.setFontSize(10.5);
-    doc.setFont("helvetica", "normal");
-    doc.text(`IVA (${vatRate}%):`, 152, currentY + 6, { align: 'right' });
-    doc.text(`${vatAmount.toFixed(2)} EUR`, 196, currentY + 6, { align: 'right' });
-
-    doc.setFontSize(13.5);
-    doc.setFont("helvetica", "bold");
-    doc.text('TOTALE FINALE DOCUMENTO:', 152, currentY + 14, { align: 'right' });
-    doc.text(`${grandTotal.toFixed(2)} EUR`, 196, currentY + 14, { align: 'right' });
-
-    if (vatRate === 0) {
-      doc.setFontSize(9);
-      doc.setFont("helvetica", "italic");
-      doc.text("* Operazione esente da IVA ai sensi della normativa vigente.", 14, currentY + 22);
-    }
-
-    const pageHeight = doc.internal.pageSize.height;
-    if (companySettings.company_iban) {
-      doc.setFontSize(9);
-      doc.setFont("helvetica", "normal");
-      doc.text(`Coordinate Bancarie (IBAN): ${companySettings.company_iban}`, 14, pageHeight - 15);
-    }
-
-    doc.save(`Proforma_${cust.business_name.replace(/\s/g, '_')}_${reportData.period.replace('/', '_')}.pdf`);
-
-    axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, {
-      customer_id: selectedCustomer.value,
-      period_month: month,
-      period_year: year,
-      base_total: baseTotal,
-      vat_amount: vatAmount,
-      grand_total: grandTotal,
-      invoice_data: {
-        clientName: cust.business_name,
+      await generateProformaPdf({
+        companySettings,
+        customer: cust,
+        period: reportData.period,
+        storageModeLabel,
+        sections: reportData.sections || [],
+        items: visibleItems,
+        pallets: visiblePallets,
+        sectionTotalsMap,
         includeNotesInPdf,
-        sections: (reportData.sections || []).map(sec => ({
-          ...sec,
-          sectionTotal: sectionTotalsMap[sec.sectionId] || 0
-        })),
-        items: invoiceItems.filter(i => i.visible),
-        pallets: palletDetails.filter(p => p.visibleInPdf),
         vatRate,
-        period: reportData.period
-      }
-    }, { headers: { Authorization: `Bearer ${getToken()}` } })
-      .then(() => appAlert('Proforma archiviata correttamente nel registro storico!'))
-      .catch(() => console.error('Impossibile archiviare la fattura'));
+        baseTotal: finalTotal,
+        vatAmount,
+        grandTotal
+      });
+
+      await axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, {
+        customer_id: selectedCustomer.value,
+        period_month: month,
+        period_year: year,
+        base_total: finalTotal,
+        vat_amount: vatAmount,
+        grand_total: grandTotal,
+        invoice_data: {
+          clientName: cust.business_name,
+          includeNotesInPdf,
+          storageMode,
+          storageModeLabel,
+          sections: (reportData.sections || []).map(sec => ({
+            ...sec,
+            sectionTotal: sectionTotalsMap[sec.sectionId] || 0
+          })),
+          items: visibleItems,
+          pallets: visiblePallets,
+          vatRate,
+          period: reportData.period
+        }
+      }, { headers: { Authorization: `Bearer ${getToken()}` } });
+
+      appAlert('PDF generato e Proforma archiviata correttamente nel registro storico!');
+    } catch (err) {
+      console.error(err);
+      appAlert('Errore durante il salvataggio della proforma');
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const selectStyles = {
@@ -628,123 +467,132 @@ const PreBillingDashboard = () => {
             </div>
           )}
 
-          {/* Opzioni Pre-Fatturazione & PDF */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-4 border-t border-slate-800/80">
-            <label
-              htmlFor="chkDeposit"
-              className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                includeDeposit
-                  ? 'bg-emerald-950/20 border-emerald-500/40 text-emerald-200'
-                  : 'bg-slate-950/50 border-slate-800 text-slate-400'
-              }`}
-            >
-              <input
-                type="checkbox"
-                id="chkDeposit"
-                checked={includeDeposit}
-                onChange={e => {
-                  const val = e.target.checked;
-                  setIncludeDeposit(val);
-                  if (val) setIncludeStorage(false);
-                }}
-                className="mt-0.5 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500"
-              />
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-                  <Boxes size={14} className="text-emerald-400" />
-                  Pre-Fattura per Deposito (Fine Mese)
-                </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Fattura le palette rimaste in deposito a listino. Disattiva la sosta quindicina per evitare doppio addebito.
-                </p>
-              </div>
-            </label>
+          {/* Modalità di Calcolo Giacenza / Sosta */}
+          <div className="pt-4 border-t border-slate-800/80 space-y-3">
+            <div className="text-[11px] font-black uppercase tracking-wider text-slate-400">
+              1. Modalità Addebito Sosta / Deposito nel Mese
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {STORAGE_MODES.map((m) => {
+                const active = storageMode === m.id;
+                const activeBorder =
+                  m.accent === 'amber'
+                    ? 'bg-amber-950/25 border-amber-500/60 text-amber-100 ring-1 ring-amber-500/30'
+                    : m.accent === 'emerald'
+                    ? 'bg-emerald-950/25 border-emerald-500/60 text-emerald-100 ring-1 ring-emerald-500/30'
+                    : m.accent === 'sky'
+                    ? 'bg-sky-950/25 border-sky-500/60 text-sky-100 ring-1 ring-sky-500/30'
+                    : 'bg-slate-800/70 border-slate-500/60 text-slate-100';
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setStorageMode(m.id)}
+                    className={`text-left p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                      active ? activeBorder : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-xs font-black uppercase tracking-wider">{m.title}</span>
+                      <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${active ? 'border-white bg-white/20' : 'border-slate-600'}`}>
+                        {active && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-snug">{m.desc}</p>
+                  </button>
+                );
+              })}
+            </div>
 
-            <label
-              htmlFor="chkStorage"
-              className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                includeStorage
-                  ? 'bg-sky-950/20 border-sky-500/40 text-sky-200'
-                  : 'bg-slate-950/50 border-slate-800 text-slate-400'
-              }`}
-            >
-              <input
-                type="checkbox"
-                id="chkStorage"
-                checked={includeStorage}
-                onChange={e => {
-                  const val = e.target.checked;
-                  setIncludeStorage(val);
-                  if (val) setIncludeDeposit(false);
-                }}
-                className="mt-0.5 rounded border-slate-700 bg-slate-800 text-brand-blue focus:ring-brand-blue"
-              />
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-                  <ReceiptText size={14} className="text-brand-blue" />
-                  Includi Soste Quindicina
-                </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Calcola le regole di sosta a scaglioni (<span className="font-mono">SOSTA_15</span> / <span className="font-mono">&gt;15</span>).
-                </p>
-              </div>
-            </label>
+            <div className="flex flex-wrap gap-3 pt-1">
+              <label
+                htmlFor="chkStorico"
+                className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
+                  includeHistorical ? 'bg-amber-950/20 border-amber-500/40 text-amber-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  id="chkStorico"
+                  checked={includeHistorical}
+                  onChange={e => setIncludeHistorical(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-amber-500 focus:ring-amber-500"
+                />
+                <History size={14} className="text-amber-400" />
+                Includi Giacenze Storiche (mesi precedenti ancora presenti)
+              </label>
 
-            <label
-              htmlFor="chkStorico"
-              className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                includeHistorical
-                  ? 'bg-amber-950/20 border-amber-500/40 text-amber-200'
-                  : 'bg-slate-950/50 border-slate-800 text-slate-400'
-              }`}
-            >
-              <input
-                type="checkbox"
-                id="chkStorico"
-                checked={includeHistorical}
-                onChange={e => setIncludeHistorical(e.target.checked)}
-                className="mt-0.5 rounded border-slate-700 bg-slate-800 text-amber-500 focus:ring-amber-500"
-              />
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-                  <History size={14} className="text-amber-400" />
-                  Giacenze Storiche
-                </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Include bancali entrati nei mesi precedenti e ancora presenti.
-                </p>
-              </div>
-            </label>
+              {storageMode === 'GIORNALIERO' && (
+                <label
+                  htmlFor="chkCapToday"
+                  className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
+                    capToToday ? 'bg-sky-950/20 border-sky-500/40 text-sky-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    id="chkCapToday"
+                    checked={capToToday}
+                    onChange={e => setCapToToday(e.target.checked)}
+                    className="rounded border-slate-700 bg-slate-800 text-brand-blue focus:ring-brand-blue"
+                  />
+                  <Clock size={14} className="text-brand-blue" />
+                  Mese corrente: conta giorni solo fino ad oggi (non fine mese)
+                </label>
+              )}
 
-            <label
-              htmlFor="chkNotesPdf"
-              className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
-                includeNotesInPdf
-                  ? 'bg-violet-950/20 border-violet-500/40 text-violet-200'
-                  : 'bg-slate-950/50 border-slate-800 text-slate-400'
-              }`}
-            >
-              <input
-                type="checkbox"
-                id="chkNotesPdf"
-                checked={includeNotesInPdf}
-                onChange={e => setIncludeNotesInPdf(e.target.checked)}
-                className="mt-0.5 rounded border-slate-700 bg-slate-800 text-violet-500 focus:ring-violet-500"
-              />
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
-                  <MessageSquare size={14} className="text-violet-400" />
-                  Includi Note nel PDF
-                </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Stampa nel PDF Proforma le eventuali note associate alle palette.
-                </p>
-              </div>
-            </label>
+              <label
+                htmlFor="chkNotesPdf"
+                className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
+                  includeNotesInPdf ? 'bg-violet-950/20 border-violet-500/40 text-violet-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  id="chkNotesPdf"
+                  checked={includeNotesInPdf}
+                  onChange={e => setIncludeNotesInPdf(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-violet-500 focus:ring-violet-500"
+                />
+                <MessageSquare size={14} className="text-violet-400" />
+                Includi Note nel Report PDF
+              </label>
+            </div>
           </div>
         </div>
 
         {reportData && (
+          <>
+            {/* KPI Summary Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6 animate-fade-in-up">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Bancali Coinvolti</div>
+                <div className="text-2xl font-black text-white mt-1">{palletDetails.length}</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">In Deposito</div>
+                <div className="text-2xl font-black text-emerald-400 mt-1">{palletDetails.filter(p => p.in_deposit).length}</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Usciti / Spediti</div>
+                <div className="text-2xl font-black text-rose-400 mt-1">{palletDetails.filter(p => !p.in_deposit).length}</div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Giorni Sosta Mese</div>
+                <div className="text-2xl font-black text-amber-400 mt-1">
+                  {palletDetails.reduce((s, p) => s + (Number(p.storageDays) || 0), 0)} <span className="text-xs font-bold">gg</span>
+                </div>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">Imponibile</div>
+                <div className="text-2xl font-black text-sky-400 mt-1">€{finalTotal.toFixed(2)}</div>
+              </div>
+              <div className="bg-slate-900 border border-emerald-500/30 rounded-2xl p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Totale c/IVA</div>
+                <div className="text-2xl font-black text-emerald-400 mt-1">€{grandTotal.toFixed(2)}</div>
+              </div>
+            </div>
+
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 animate-fade-in-up">
             {/* COLONNA PRINCIPALE: SUDDIVISIONE PER FRAMMENTAZIONI */}
             <div className="xl:col-span-2 space-y-6">
@@ -891,6 +739,9 @@ const PreBillingDashboard = () => {
                           <span className="px-2 py-0.5 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 font-mono font-bold">
                             DEPOSITO: €{Number(sec.tariffsSummary?.depositPallet || 0).toFixed(2)}
                           </span>
+                          <span className="px-2 py-0.5 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 font-mono font-bold">
+                            SOSTA/GG: €{Number(sec.tariffsSummary?.sostaGiorno || 0).toFixed(2)}/gg
+                          </span>
                         </div>
                       </div>
 
@@ -923,12 +774,15 @@ const PreBillingDashboard = () => {
                                   ? 'bg-rose-950/15 border-rose-500/25 text-rose-200'
                                   : line.type === 'IN'
                                   ? 'bg-sky-950/15 border-sky-500/25 text-sky-200'
+                                  : line.type === 'DAILY_STORAGE'
+                                  ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
                                   : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
                               }`}
                             >
                               <div className="flex items-center gap-2 font-black text-sm mb-2">
                                 {line.type === 'OUT' && <ArrowUpRight size={16} className="text-rose-400 shrink-0" />}
                                 {line.type === 'IN' && <ArrowDownLeft size={16} className="text-sky-400 shrink-0" />}
+                                {line.type === 'DAILY_STORAGE' && <Clock size={16} className="text-amber-400 shrink-0" />}
                                 {line.type === 'DEPOSIT' && <Boxes size={16} className="text-emerald-400 shrink-0" />}
                                 <span>{line.headerText || line.text}</span>
                               </div>
@@ -992,10 +846,12 @@ const PreBillingDashboard = () => {
                                 <th className="p-3">Cod. Articolo</th>
                                 <th className="p-3">Prodotto (Clicca per Storico)</th>
                                 <th className="p-3">Lotto</th>
-                                <th className="p-3 text-center">Quantità</th>
-                                <th className="p-3">Rif. Paletta Cl.</th>
-                                <th className="p-3">Movimento / Voci</th>
-                                {includeNotesInPdf && <th className="p-3">Note (Stampate se compilate)</th>}
+                                <th className="p-3 text-center">Scadenza</th>
+                                <th className="p-3 text-center">Arrivo (IN)</th>
+                                <th className="p-3 text-center">Uscita / Stato</th>
+                                <th className="p-3 text-center">Q.tà &amp; Gg Sosta</th>
+                                <th className="p-3">Rif. Cl. / Voci</th>
+                                {includeNotesInPdf && <th className="p-3">Note PDF</th>}
                                 <th className="p-3 text-right">Prezzo</th>
                               </tr>
                             </thead>
@@ -1032,13 +888,35 @@ const PreBillingDashboard = () => {
                                   <td className="p-3 font-mono font-bold text-amber-300">
                                     {pal.batch || '-'}
                                   </td>
-                                  <td className="p-3 text-center font-bold text-white">
-                                    {pal.quantity} {pal.pallet_uom}
+                                  <td className="p-3 text-center font-mono text-slate-300 whitespace-nowrap">
+                                    {pal.expiration_date_str || (pal.expiration_date ? formatDateIT(pal.expiration_date) : '-')}
                                   </td>
-                                  <td className="p-3 font-mono text-violet-300 font-bold">
-                                    {pal.customer_pallet_ref || '-'}
+                                  <td className="p-3 text-center font-mono text-sky-300 whitespace-nowrap">
+                                    {formatDateIT(pal.created_at)}
+                                  </td>
+                                  <td className="p-3 text-center whitespace-nowrap">
+                                    {pal.shipped_at ? (
+                                      <span className="px-2 py-0.5 rounded bg-rose-950/40 text-rose-300 border border-rose-500/30 font-mono text-[10px] font-bold">
+                                        OUT {formatDateIT(pal.shipped_at)}
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                                        In Deposito
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-center">
+                                    <div className="font-bold text-white whitespace-nowrap">{pal.quantity} {pal.pallet_uom}</div>
+                                    <div className="text-[10px] font-mono text-amber-400 font-bold">
+                                      {pal.storageDays || 0} gg sosta
+                                    </div>
                                   </td>
                                   <td className="p-3">
+                                    {pal.customer_pallet_ref && (
+                                      <div className="text-[10px] font-mono text-violet-300 font-bold mb-1">
+                                        Rif.Cl: {pal.customer_pallet_ref}
+                                      </div>
+                                    )}
                                     <div className="flex flex-wrap gap-1">
                                       {(pal.charges || []).map((ch, idx) => (
                                         <span key={idx} className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-slate-300">
@@ -1253,13 +1131,16 @@ const PreBillingDashboard = () => {
 
                 <button
                   onClick={exportPDF}
-                  className="w-full py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-base transition-all shadow-[0_0_25px_rgba(14,165,233,0.3)] flex items-center justify-center gap-2"
+                  disabled={isExporting}
+                  className="w-full py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-base transition-all shadow-[0_0_25px_rgba(14,165,233,0.3)] flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  <Download size={22} /> Scarica Proforma PDF Dettagliata
+                  {isExporting ? <Loader2 className="animate-spin" size={22} /> : <Download size={22} />}
+                  {isExporting ? 'Generazione & Salvataggio...' : 'Scarica Proforma PDF & Archivia'}
                 </button>
               </div>
             </div>
           </div>
+          </>
         )}
       </div>
 

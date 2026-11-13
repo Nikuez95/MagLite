@@ -35,6 +35,7 @@ async function billingRoutes(fastify, options) {
         'INSERT INTO billing_rules (rule_code, description, default_price, rule_type) VALUES (?, ?, ?, ?)',
         [rule_code, description, default_price || 0, rule_type]
       );
+      if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true, id: result.insertId };
     } catch (err) {
       fastify.log.error(err);
@@ -50,6 +51,7 @@ async function billingRoutes(fastify, options) {
         'UPDATE billing_rules SET description = ?, default_price = ?, rule_type = ? WHERE id = ?',
         [description, default_price, rule_type, request.params.id]
       );
+      if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -61,6 +63,7 @@ async function billingRoutes(fastify, options) {
   fastify.delete('/rules/:id', async (request, reply) => {
     try {
       await db.query('DELETE FROM billing_rules WHERE id = ?', [request.params.id]);
+      if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true };
     } catch (err) {
       fastify.log.error(err);
@@ -126,6 +129,7 @@ async function billingRoutes(fastify, options) {
         `, [clientId, t.rule_code, t.custom_price, t.custom_price]);
       }
       await conn.commit();
+      if (fastify.io) fastify.io.emit('billing_updated', { clientId });
       return { success: true };
     } catch (err) {
       await conn.rollback();
@@ -213,7 +217,7 @@ async function billingRoutes(fastify, options) {
     }
   });
 
-  // POST Calculate (Supporta Pre-Fatturazione per Deposito + Suddivisione per Frammentazioni + Dettaglio Completo Articolo/Lotto/Rif/Note/Prezzo)
+  // POST Calculate (Supporta Sosta Giornaliera Pro-Rata Mensile + Pre-Fatturazione per Deposito + Suddivisione per Frammentazioni + Dettaglio Completo Articolo/Lotto/Scadenza/Arrivo/Uscita)
   fastify.post('/calculate', async (request, reply) => {
     let {
       clientId,
@@ -222,20 +226,30 @@ async function billingRoutes(fastify, options) {
       includeHistorical = true,
       includeDeposit = true,
       includeStorage = true,
-      storageMode // 'DEPOSITO_FINE_MESE' | 'QUINDICINA' | 'ENTRAMBI' | 'NESSUNO'
+      includeDailyStorage = false,
+      capToToday = false,
+      storageMode // 'GIORNALIERO' | 'DEPOSITO_FINE_MESE' | 'QUINDICINA' | 'ENTRAMBI' | 'NESSUNO'
     } = request.body;
 
-    // Regola anti-doppio addebito stoccaggio a fine mese:
-    if (storageMode === 'DEPOSITO_FINE_MESE') {
+    // Regola anti-doppio addebito stoccaggio / selezione modalità:
+    if (storageMode === 'GIORNALIERO') {
+      includeDailyStorage = true;
+      includeStorage = false;
+      includeDeposit = false;
+    } else if (storageMode === 'DEPOSITO_FINE_MESE') {
+      includeDailyStorage = false;
       includeStorage = false;
       includeDeposit = true;
     } else if (storageMode === 'QUINDICINA') {
+      includeDailyStorage = false;
       includeStorage = true;
       includeDeposit = false;
     } else if (storageMode === 'NESSUNO') {
+      includeDailyStorage = false;
       includeStorage = false;
       includeDeposit = false;
     } else if (storageMode === 'ENTRAMBI') {
+      includeDailyStorage = false;
       includeStorage = true;
       includeDeposit = true;
     } else if (includeDeposit && includeStorage) {
@@ -269,14 +283,23 @@ async function billingRoutes(fastify, options) {
       const entitiesToProcess = [mainCustomer, ...childFragments];
       const hasFragments = childFragments.length > 0;
 
-      // Calcolo date del mese selezionato
+      // Calcolo date del mese selezionato (solo i giorni ricadenti nel mese selezionato per evitare doppi addebiti multi-mese)
       const startDate = new Date(year, month - 1, 1, 0, 0, 0);
       const endDate = new Date(year, month, 0, 23, 59, 59);
+      const now = new Date();
+      const effectiveMonthEnd = (capToToday && now >= startDate && now <= endDate) ? now : endDate;
+
+      const toDayIndex = (dt) => {
+        const d = new Date(dt);
+        return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+      };
+      const monthStartDay = toDayIndex(startDate);
+      const monthEndDay = toDayIndex(effectiveMonthEnd);
 
       const formatDateIT = (d) => {
         if (!d) return '';
         const dt = new Date(d);
-        return dt.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
       };
 
       const allItems = [];
@@ -306,6 +329,12 @@ async function billingRoutes(fastify, options) {
           tariffs['DEPOSITO_PALLET'] = {
             price: tariffs['SOSTA_15']?.price || 10.0,
             desc: 'Deposito Paletta (Giacenza Rimasta)'
+          };
+        }
+        if (!tariffs['SOSTA_GIORNO']) {
+          tariffs['SOSTA_GIORNO'] = {
+            price: 0.50,
+            desc: 'Sosta Giornaliera (Prezzo al Giorno per Paletta)'
           };
         }
 
@@ -361,6 +390,7 @@ async function billingRoutes(fastify, options) {
         const inboundByDayAndTag = new Map();
         const outboundByDayAndTag = new Map();
         const depositByTag = new Map();
+        const dailyStorageSummary = { palletCount: 0, totalDays: 0, totalAmount: 0, pallets: [] };
 
         const addSectionCost = (group, code, desc, qty, palletSummaryObj, priceOverride) => {
           const price = priceOverride !== undefined ? priceOverride : (tariffs[code]?.price || 0);
@@ -458,6 +488,19 @@ async function billingRoutes(fastify, options) {
             return;
           }
 
+          // Giorni esatti di sosta ricadenti esclusivamente nel mese selezionato (pro-rata mensile)
+          const inDay = toDayIndex(inDate);
+          const outDay = outDate ? toDayIndex(outDate) : null;
+          const effectiveStartDay = Math.max(inDay, monthStartDay);
+          const effectiveEndDay = outDay !== null ? Math.min(outDay, monthEndDay) : monthEndDay;
+          const storageDays = (effectiveEndDay >= effectiveStartDay) ? (effectiveEndDay - effectiveStartDay + 1) : 0;
+
+          const uniqueExpDates = [...new Set(
+            rows.map(r => (r.expiration_date ? formatDateIT(r.expiration_date) : '')).filter(Boolean)
+          )];
+          const expDateStr = uniqueExpDates.join(', ') || '-';
+          const rawFirstExpDate = rows.find(r => r.expiration_date)?.expiration_date || null;
+
           const palletCharges = [];
           let palletTotalPrice = 0;
 
@@ -470,7 +513,12 @@ async function billingRoutes(fastify, options) {
             quantity: totalQty,
             pallet_uom: uomStr,
             customer_pallet_ref: custRef,
-            notes: notesStr
+            notes: notesStr,
+            expiration_date: rawFirstExpDate,
+            expiration_date_str: expDateStr,
+            created_at: inDate,
+            shipped_at: outDate,
+            storageDays
           };
 
           // 1. INBOUND
@@ -526,6 +574,33 @@ async function billingRoutes(fastify, options) {
             }
           }
 
+          // 3b. DAILY STORAGE (Giorni di Sosta pro-rata nel mese selezionato)
+          const dailyRate = tariffs['SOSTA_GIORNO']?.price ?? 0;
+          if (includeDailyStorage && storageDays > 0) {
+            const c = addSectionCost(
+              'GIACENZA',
+              'SOSTA_GIORNO',
+              `${tariffs['SOSTA_GIORNO']?.desc || 'Sosta Giornaliera'} (Giorni-Paletta)`,
+              storageDays,
+              palletSummaryObj,
+              dailyRate
+            );
+            if (c > 0) {
+              palletCharges.push({
+                code: 'SOSTA_GIORNO',
+                label: `Sosta ${storageDays} gg (x €${dailyRate.toFixed(2)}/gg)`,
+                price: c,
+                days: storageDays,
+                rate: dailyRate
+              });
+              palletTotalPrice += c;
+              dailyStorageSummary.palletCount += 1;
+              dailyStorageSummary.totalDays += storageDays;
+              dailyStorageSummary.totalAmount += c;
+              dailyStorageSummary.pallets.push(palletSummaryObj);
+            }
+          }
+
           // 4. PRE-FATTURAZIONE PER DEPOSITO (Tutte le palette rimaste in deposito)
           if (isRemainingInDeposit) {
             const key = tagLabel || 'NO_TAG';
@@ -564,8 +639,11 @@ async function billingRoutes(fastify, options) {
 
           const movementParts = [];
           if (isEnteredInMonth) movementParts.push(`Entrata ${formatDateIT(inDate)}`);
+          else movementParts.push(`Giacenza da ${formatDateIT(inDate)}`);
           if (isExitedInMonth) movementParts.push(`Uscita ${formatDateIT(outDate)}`);
+          else if (outDate) movementParts.push(`Uscita ${formatDateIT(outDate)}`);
           if (isRemainingInDeposit) movementParts.push('In Deposito');
+          if (storageDays > 0) movementParts.push(`${storageDays} gg nel mese`);
           if (tagLabel) movementParts.push(`Tag: ${tagLabel}`);
 
           const palletRecord = {
@@ -582,11 +660,14 @@ async function billingRoutes(fastify, options) {
             notes: notesStr,
             location: rows[0].location || null,
             warehouse: rows[0].warehouse || 'Settala',
-            expiration_date: rows[0].expiration_date || null,
+            expiration_date: rawFirstExpDate,
+            expiration_date_str: expDateStr,
             inbound_ddt_number: rows[0].inbound_ddt_number || null,
             created_at: inDate,
             shipped_at: outDate,
             in_deposit: isRemainingInDeposit,
+            storageDays,
+            dailyRate,
             flags: uniqueFlags.length > 0 ? JSON.stringify(uniqueFlags) : null,
             tagLabel,
             movementSummary: movementParts.join(' • '),
@@ -651,6 +732,18 @@ async function billingRoutes(fastify, options) {
           });
         });
 
+        if (dailyStorageSummary.palletCount > 0) {
+          const rate = tariffs['SOSTA_GIORNO']?.price ?? 0;
+          descriptiveLines.push({
+            type: 'DAILY_STORAGE',
+            count: dailyStorageSummary.palletCount,
+            totalDays: dailyStorageSummary.totalDays,
+            pallets: dailyStorageSummary.pallets,
+            headerText: `${dailyStorageSummary.palletCount} ${dailyStorageSummary.palletCount === 1 ? 'Paletta' : 'Palette'} per ${dailyStorageSummary.totalDays} giorni totali di sosta nel mese (€${rate.toFixed(2)}/gg):`,
+            text: `${dailyStorageSummary.palletCount} palette × ${dailyStorageSummary.totalDays} gg totali nel mese`
+          });
+        }
+
         if (!hasFragments || entity.parent_id || sectionPallets.length > 0 || sectionItems.length > 0) {
           sections.push({
             sectionId: entity.id,
@@ -661,7 +754,8 @@ async function billingRoutes(fastify, options) {
               inPallet: tariffs['IN_PALLET']?.price || 0,
               outPallet: tariffs['OUT_PALLET']?.price || 0,
               depositPallet: tariffs['DEPOSITO_PALLET']?.price || 0,
-              sosta15: tariffs['SOSTA_15']?.price || 0
+              sosta15: tariffs['SOSTA_15']?.price || 0,
+              sostaGiorno: tariffs['SOSTA_GIORNO']?.price || 0
             },
             descriptiveLines,
             pallets: sectionPallets,
