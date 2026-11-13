@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useLocation } from 'react-router-dom';
-import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard, Layers } from 'lucide-react';
+import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard, Layers, Sparkles } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 
 // Estrae Piano (level) e Posizione Orizzontale (colIndex) da una posizione scaffale (es. "01", "12", "33", "010")
@@ -62,10 +62,26 @@ const Handling = () => {
   const [manualScanInput, setManualScanInput] = useState('');
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const scanDebounceRef = useRef(null);
+  const [slottingData, setSlottingData] = useState(null);
   
   const [requirePins, setRequirePins] = useState(true);
 
   const getToken = () => localStorage.getItem('maglite_token');
+
+  const fetchRecommendation = async (palletCode, zone = null) => {
+    if (!palletCode) return;
+    try {
+      const qs = zone
+        ? `pallet_code=${encodeURIComponent(palletCode)}&zone=${encodeURIComponent(zone)}`
+        : `pallet_code=${encodeURIComponent(palletCode)}`;
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/slotting/recommend?${qs}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setSlottingData(res.data);
+    } catch (err) {
+      // Fallback silenzioso se calcolo non disponibile
+    }
+  };
 
   const fetchInit = async () => {
     try {
@@ -120,8 +136,10 @@ const Handling = () => {
         }
 
         setPallet(res.data);
+        setSlottingData(null);
         setPinInput('');
         setStatus('SELECT_ZONE');
+        fetchRecommendation(res.data.pallet_code);
       } catch (err) {
         setStatus('ERROR');
         setMessage(err.response?.data?.error || 'Paletta non trovata');
@@ -392,6 +410,17 @@ const Handling = () => {
               {pallet.batch && <span className="text-amber-400">Lotto: {pallet.batch}</span>}
               {pallet.location && <span className="text-sky-400">Da: {pallet.location}</span>}
             </div>
+            {slottingData?.velocity && (
+              <div className="mt-2.5 pt-2 border-t border-slate-800 flex items-center justify-between gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 font-black text-sky-300">
+                  <Sparkles size={13} className="text-sky-400" />
+                  Rotazione {slottingData.velocity.tier} ({slottingData.velocity.shipCount} sped.)
+                </span>
+                <span className="font-mono font-black px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                  Consiglio: {slottingData.velocity.levelRangeLabel}
+                </span>
+              </div>
+            )}
           </div>
           
           <h3 className="text-2xl font-black text-brand-white mb-2">Nuova ZONA?</h3>
@@ -424,48 +453,89 @@ const Handling = () => {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-3 pb-4">
-            {zones.filter(z => z.toUpperCase().includes(zoneSearch)).map(z => (
-              <button 
-                key={z} 
-                onClick={() => {
-                  setSelectedZone(z);
-                  if (requirePins) {
-                    setPinInput('');
-                    setStatus('WAITING_PIN');
-                  } else {
-                    setStatus('SELECT_COL');
-                  }
-                }}
-                className="w-full py-4 px-6 bg-slate-900 border border-slate-700 rounded-2xl text-xl font-bold text-brand-white text-left hover:border-brand-blue active:bg-slate-800 transition-colors"
-              >
-                Zona: <span className="text-brand-blue ml-2">{z}</span>
-              </button>
-            ))}
+            {zones.filter(z => z.toUpperCase().includes(zoneSearch)).map(z => {
+              const zStat = (slottingData?.zoneStats || []).find(s => s.zone === z.toUpperCase());
+              return (
+                <button 
+                  key={z} 
+                  onClick={() => {
+                    setSelectedZone(z);
+                    fetchRecommendation(pallet.pallet_code, z);
+                    if (requirePins) {
+                      setPinInput('');
+                      setStatus('WAITING_PIN');
+                    } else {
+                      setStatus('SELECT_COL');
+                    }
+                  }}
+                  className="w-full py-3.5 px-5 bg-slate-900 border border-slate-700 rounded-2xl text-left hover:border-brand-blue active:bg-slate-800 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xl font-bold text-brand-white">
+                      Zona: <span className="text-brand-blue ml-1">{z}</span>
+                    </span>
+                    {zStat && (
+                      <span className={`text-xs font-black px-2 py-0.5 rounded-lg border ${
+                        zStat.freeSlots > 0
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                          : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                      }`}>
+                        {zStat.freeSlots}/{zStat.totalSlots} liberi
+                      </span>
+                    )}
+                  </div>
+                  {zStat?.hasSameBatch && (
+                    <div className="mt-1 text-[11px] font-bold text-amber-300">
+                      ★ Stesso lotto già presente ({zStat.sameBatchLocations.map(l => `${l.col}-${l.pos}`).slice(0, 2).join(', ')})
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
 
       {status === 'SELECT_COL' && pallet && !requirePins && (
         <div className="w-full max-w-sm animate-fade-in-up text-left flex flex-col h-full py-4">
-          <button onClick={() => setStatus('SELECT_ZONE')} className="flex items-center gap-2 text-slate-400 mb-4 active:text-brand-white">
+          <button onClick={() => setStatus('SELECT_ZONE')} className="flex items-center gap-2 text-slate-400 mb-3 active:text-brand-white">
             <ArrowLeft size={20} /> Cambia Zona
           </button>
-          <h3 className="text-2xl font-black text-brand-white mb-2">Zona: {selectedZone}</h3>
-          <p className="text-slate-400 mb-4">Scegli la Colonna (Lettera)</p>
+          <h3 className="text-2xl font-black text-brand-white mb-1">Zona: {selectedZone}</h3>
+          <p className="text-slate-400 mb-3 text-sm">Scegli la Colonna (Lettera)</p>
+
+          {slottingData?.recommended && slottingData.recommended.zone === selectedZone?.toUpperCase() && (
+            <div className="mb-3 p-3 rounded-2xl bg-sky-500/15 border border-sky-400/50 text-xs">
+              <div className="font-black text-sky-300 flex items-center gap-1.5">
+                <Sparkles size={14} /> CONSIGLIATA: {slottingData.recommended.barcode} (Piano {slottingData.recommended.level})
+              </div>
+              {slottingData.recommended.reasons?.[0] && (
+                <div className="text-sky-100/80 mt-0.5">{slottingData.recommended.reasons[0]}</div>
+              )}
+            </div>
+          )}
           
           <div className="flex-1 overflow-y-auto grid grid-cols-2 gap-3 pb-4">
-            {colsInZone.map(c => (
-              <button 
-                key={c} 
-                onClick={() => {
-                  setSelectedCol(c);
-                  setStatus('SELECT_POS');
-                }}
-                className="py-4 px-2 bg-slate-900 border border-slate-700 rounded-2xl text-2xl font-bold text-brand-blue text-center hover:border-brand-blue active:bg-slate-800 transition-colors"
-              >
-                {c}
-              </button>
-            ))}
+            {colsInZone.map(c => {
+              const isRecCol = slottingData?.recommended?.zone === selectedZone?.toUpperCase() && slottingData?.recommended?.col === c?.toUpperCase();
+              return (
+                <button 
+                  key={c} 
+                  onClick={() => {
+                    setSelectedCol(c);
+                    setStatus('SELECT_POS');
+                  }}
+                  className={`py-4 px-2 rounded-2xl text-2xl font-bold text-center active:bg-slate-800 transition-colors flex flex-col items-center justify-center ${
+                    isRecCol
+                      ? 'bg-sky-500/15 border-2 border-sky-400 text-sky-300 shadow-[0_0_20px_rgba(56,189,248,0.2)]'
+                      : 'bg-slate-900 border border-slate-700 text-brand-blue hover:border-brand-blue'
+                  }`}
+                >
+                  <span>{c}</span>
+                  {isRecCol && <span className="text-[10px] font-black uppercase tracking-wider text-sky-300 mt-1">★ Consigliata</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -522,6 +592,8 @@ const Handling = () => {
                       : [];
                     const isCurrentPalletHere = existingPallets.includes(pallet.pallet_code) || pallet.location === fullCode;
                     const isOccupiedByOther = existingPallets.some(code => code !== pallet.pallet_code);
+                    const isRecommendedSlot = slottingData?.recommended?.barcode === fullCode.toUpperCase();
+                    const isAlternativeSlot = !isRecommendedSlot && (slottingData?.alternatives || []).some(a => a.barcode === fullCode.toUpperCase());
 
                     return (
                       <button
@@ -530,20 +602,26 @@ const Handling = () => {
                         className={`py-3 px-1.5 rounded-xl border-2 flex flex-col items-center justify-center transition-all active:scale-95 ${
                           isCurrentPalletHere
                             ? 'bg-sky-500/20 border-sky-400 text-sky-300'
-                            : isOccupiedByOther
-                              ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 hover:border-amber-400'
-                              : 'bg-slate-950 border-emerald-500/50 text-emerald-400 hover:border-emerald-400 active:bg-slate-800'
+                            : isRecommendedSlot
+                              ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 shadow-[0_0_20px_rgba(34,211,238,0.35)] ring-2 ring-cyan-400/50'
+                              : isAlternativeSlot
+                                ? 'bg-emerald-500/15 border-emerald-400 text-emerald-300'
+                                : isOccupiedByOther
+                                  ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 hover:border-amber-400'
+                                  : 'bg-slate-950 border-emerald-500/50 text-emerald-400 hover:border-emerald-400 active:bg-slate-800'
                         }`}
                       >
                         <span className="text-2xl font-black leading-none tracking-tight">{item.pos}</span>
                         <span className={`text-[9px] font-black uppercase mt-1 px-1.5 py-0.5 rounded ${
                           isCurrentPalletHere
                             ? 'bg-sky-500/30 text-sky-200'
-                            : isOccupiedByOther
-                              ? 'bg-amber-500/25 text-amber-300'
-                              : 'bg-emerald-500/15 text-emerald-400'
+                            : isRecommendedSlot
+                              ? 'bg-cyan-400 text-brand-black'
+                              : isOccupiedByOther
+                                ? 'bg-amber-500/25 text-amber-300'
+                                : 'bg-emerald-500/15 text-emerald-400'
                         }`}>
-                          {isCurrentPalletHere ? 'QUI' : isOccupiedByOther ? 'OCC.' : 'LIBERA'}
+                          {isCurrentPalletHere ? 'QUI' : isRecommendedSlot ? '★ TOP' : isOccupiedByOther ? 'OCC.' : 'LIBERA'}
                         </span>
                       </button>
                     );
@@ -567,9 +645,37 @@ const Handling = () => {
           
           <div className="flex-1 flex flex-col items-center justify-center">
             <p className="text-brand-blue font-bold uppercase tracking-wider text-sm mb-1">Zona Selezionata</p>
-            <p className="text-5xl font-black text-brand-white mb-6">{selectedZone}</p>
+            <p className="text-4xl font-black text-brand-white mb-3">{selectedZone}</p>
+
+            {slottingData?.recommended && slottingData.recommended.zone === selectedZone?.toUpperCase() ? (
+              <div className="w-full mb-4 bg-sky-500/15 border-2 border-sky-400/60 rounded-2xl p-3 text-left shadow-[0_0_20px_rgba(56,189,248,0.18)]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-sky-300 flex items-center gap-1">
+                    <Sparkles size={13} /> Posizione Consigliata
+                  </span>
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-sky-500/20 text-sky-200">
+                    Piano {slottingData.recommended.level} ({slottingData.velocity?.levelRangeLabel})
+                  </span>
+                </div>
+                <div className="text-2xl font-mono font-black text-white mt-0.5">{slottingData.recommended.barcode}</div>
+                {slottingData.recommended.reasons?.length > 0 && (
+                  <div className="text-[11px] text-sky-100/85 mt-1 leading-snug">
+                    {slottingData.recommended.reasons.join(' · ')}
+                  </div>
+                )}
+                {slottingData.alternatives?.length > 1 && (
+                  <div className="text-[10px] text-slate-300 mt-1.5 pt-1.5 border-t border-sky-500/25">
+                    Alternative: <span className="font-mono font-bold text-slate-100">{slottingData.alternatives.slice(1, 3).map(a => a.barcode).join(', ')}</span>
+                  </div>
+                )}
+              </div>
+            ) : slottingData?.zoneInfo?.freeSlots === 0 && (
+              <div className="w-full mb-4 bg-amber-500/15 border border-amber-500/40 rounded-2xl p-2.5 text-xs font-bold text-amber-300">
+                Zona {selectedZone} attualmente piena: scegli una posizione da unire o cambia zona.
+              </div>
+            )}
             
-            <p className="text-slate-400 text-sm mb-4">Leggi e digita il PIN esatto dello scaffale:</p>
+            <p className="text-slate-400 text-sm mb-3">Leggi e digita il PIN esatto dello scaffale:</p>
             
             <div className="w-full flex gap-2 justify-center mb-6">
               {[0, 1, 2].map((i) => (

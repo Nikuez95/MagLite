@@ -8,6 +8,8 @@ import InboundZebra from './InboundZebra';
 import OutboundZebra from './OutboundZebra';
 import Handling from './Handling';
 import ZebraCheckinWizard from './ZebraCheckinWizard';
+import OptimizationZebra from './OptimizationZebra';
+import VerifyBarcodeZebra from './VerifyBarcodeZebra';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
 
 const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabled = false, onClick }) => {
@@ -174,13 +176,15 @@ const iconComponentMap = {
 
 const Dashboard = ({ user }) => {
   const navigate = useNavigate();
-  const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0 });
+  const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0, optimizeTasks: 0 });
   const [customForms, setCustomForms] = useState([]);
   const [showFormsModal, setShowFormsModal] = useState(false);
 
   const canInbound = hasPerm('inbound_create', user);
   const canHandling = hasPerm('pallet_move', user);
   const canPicking = hasPerm('outbound_pick', user);
+  const canOptimize = hasPerm('zebra_optimize', user);
+  const canVerify = hasPerm('zebra_verify', user);
 
   useEffect(() => {
     const token = localStorage.getItem('maglite_token');
@@ -193,12 +197,16 @@ const Dashboard = ({ user }) => {
             : Promise.resolve({ data: [] }),
           canPicking
             ? axios.get(`http://${window.location.hostname}:3000/api/outbound`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
-            : Promise.resolve({ data: [] })
+            : Promise.resolve({ data: [] }),
+          canOptimize
+            ? axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: { summary: { totalTasks: 0 } } }))
+            : Promise.resolve({ data: { summary: { totalTasks: 0 } } })
         ];
-        const [inRes, outRes] = await Promise.all(reqs);
+        const [inRes, outRes, optRes] = await Promise.all(reqs);
         const inboundPending = (inRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS').length;
         const outboundActive = (outRes.data || []).filter(o => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'PARTIAL').length;
-        setCounts({ inboundPending, outboundActive });
+        const optimizeTasks = optRes.data?.summary?.totalTasks || 0;
+        setCounts({ inboundPending, outboundActive, optimizeTasks });
 
         // Recupera moduli attivi per Zebra
         try {
@@ -212,7 +220,7 @@ const Dashboard = ({ user }) => {
       }
     };
     fetchCounts();
-  }, [canInbound, canPicking]);
+  }, [canInbound, canPicking, canOptimize]);
 
   // Se l'operatore spara direttamente un codice dalla Home, apriamo il modulo corrispondente se ha il permesso
   useBarcodeScanner((barcode) => {
@@ -220,6 +228,8 @@ const Dashboard = ({ user }) => {
     if (!code) return;
     if (code.startsWith('PAL-') && canHandling) {
       navigate('/zebra/handling', { state: { initialBarcode: code } });
+    } else if (code.startsWith('PAL-') && canVerify) {
+      navigate('/zebra/verify');
     } else if (code.startsWith('IN-') && canInbound) {
       navigate('/zebra/inbound');
     } else if (code.startsWith('OUT-') && canPicking) {
@@ -230,20 +240,6 @@ const Dashboard = ({ user }) => {
   return (
     <div className="flex-1 p-5 flex flex-col justify-between overflow-y-auto w-full max-w-md mx-auto">
       <div>
-        <div className="mb-5 mt-1 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-4 shadow-lg">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-[11px] font-black uppercase tracking-widest text-brand-blue">Terminale Operativo</span>
-              <h2 className="text-2xl font-black text-brand-white tracking-tight mt-0.5">Cosa devi fare?</h2>
-            </div>
-            <div className="w-12 h-12 rounded-2xl bg-brand-blue/10 border border-brand-blue/20 flex items-center justify-center text-brand-blue">
-              <Scan size={26} />
-            </div>
-          </div>
-          <p className="text-slate-400 text-xs font-medium mt-2">
-            Tocca un&apos;operazione oppure spara direttamente una paletta <span className="font-mono text-brand-blue font-bold">PAL-...</span> per stivarla o spostarla.
-          </p>
-        </div>
 
         {/* Calcolo form predefinito di arrivo e form extra */}
         {(() => {
@@ -315,6 +311,27 @@ const Dashboard = ({ user }) => {
                 disabled={!canPicking}
                 onClick={() => canPicking && navigate('/zebra/outbound')} 
               />
+
+              {canOptimize && (
+                <TouchCard
+                  icon={Sparkles}
+                  label="TASK OTTIMIZZAZIONE"
+                  subtitle="Riordino frequenze ABC, unione lotti e accorpamento scatole"
+                  badge={counts.optimizeTasks}
+                  accent="purple"
+                  onClick={() => navigate('/zebra/optimize')}
+                />
+              )}
+
+              {canVerify && (
+                <TouchCard
+                  icon={Scan}
+                  label="VERIFICA BARCODE"
+                  subtitle="Controlla prodotto, scatole, posizione ottimale e discrepanze"
+                  accent="cyan"
+                  onClick={() => navigate('/zebra/verify')}
+                />
+              )}
             </div>
           );
         })()}
@@ -478,6 +495,14 @@ const ZebraApp = () => {
         <Route
           path="/outbound"
           element={hasPerm('outbound_pick', user) ? <OutboundZebra /> : <Navigate to="/zebra" replace />}
+        />
+        <Route
+          path="/optimize"
+          element={hasPerm('zebra_optimize', user) ? <OptimizationZebra /> : <Navigate to="/zebra" replace />}
+        />
+        <Route
+          path="/verify"
+          element={hasPerm('zebra_verify', user) ? <VerifyBarcodeZebra /> : <Navigate to="/zebra" replace />}
         />
         <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
       </Routes>

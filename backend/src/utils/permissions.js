@@ -42,6 +42,8 @@ const PERMISSION_CATALOG = [
       { key: 'delete_inbound_ddt', label: 'Eliminare DDT Entrata (Spunta)', desc: 'Permette di cancellare definitivamente registrazioni e spunte DDT in ingresso.' },
       { key: 'pallet_edit', label: 'Modificare Quantità e Note Palette', desc: 'Permette di rettificare quantità, scadenze, lotti e metadati delle palette.' },
       { key: 'pallet_move', label: 'Spostare / Stivare Palette e Scaffali', desc: 'Permette di stivare, spostare o unire palette e creare posizioni.' },
+      { key: 'zebra_optimize', label: 'Task Ottimizzazione Spazi (Zebra)', desc: 'Abilita su terminale Zebra le task intelligenti di riordino livelli ABC, unione lotti uguali e frammentazione/accorpamento palette.' },
+      { key: 'zebra_verify', label: 'Verifica & Correzione Discrepanze (Zebra)', desc: 'Abilita su terminale Zebra la scansione barcode per controllo articolo, conversione scatole, posizione ottimale e rettifica discrepanze.' },
       { key: 'product_manage', label: 'Gestire Anagrafica Prodotti', desc: 'Permette di creare e modificare gli articoli a catalogo.' },
       { key: 'manage_custom_forms', label: 'Gestione Moduli & Form Dinamici', desc: 'Permette di creare, modificare e disattivare form e sequenze guidate.' },
       { key: 'delete_custom_forms', label: 'Eliminare Moduli & Form Dinamici', desc: 'Permette l\'eliminazione definitiva di template e moduli configurati.' },

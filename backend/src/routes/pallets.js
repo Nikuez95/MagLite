@@ -3,6 +3,7 @@ const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
+const { formatBoxesBreakdown, recommendSlotForPallet, computeOptimizationTasks } = require('../utils/slotting');
 
 async function ensureLocationExists(connection, locStr, username) {
   if (!locStr) return;
@@ -439,6 +440,449 @@ async function palletRoutes(fastify, options) {
       }
       fastify.log.error(err);
       return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore durante la generazione' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // SLOTTING INTELLIGENTE, OTTIMIZZAZIONE ZEBRA & VERIFICA DISCREPANZE BARCODE
+  // ---------------------------------------------------------------------------
+
+  // GET /api/pallets/slotting/recommend?pallet_code=PAL-...&zone=CELLA2
+  fastify.get('/slotting/recommend', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move') && !hasPermission(request.user, 'zebra_verify') && !hasPermission(request.user, 'zebra_optimize')) {
+      return reply.code(403).send({ error: 'Accesso negato allo slotting intelligente.' });
+    }
+    const { pallet_code, zone } = request.query || {};
+    if (!pallet_code) {
+      return reply.code(400).send({ error: 'pallet_code obbligatorio' });
+    }
+    try {
+      const rec = await recommendSlotForPallet(db, String(pallet_code).trim().toUpperCase(), zone || null);
+      if (!rec) {
+        return reply.code(404).send({ error: 'Paletta non trovata o non più attiva' });
+      }
+      return rec;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore calcolo posizionamento consigliato' });
+    }
+  });
+
+  // GET /api/pallets/inspect/:code (scansione barcode paletta o scaffale per verifica & discrepanze)
+  fastify.get('/inspect/:code', async (request, reply) => {
+    if (!hasPermission(request.user, 'zebra_verify') && !hasPermission(request.user, 'pallet_edit')) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso Verifica & Correzione Discrepanze richiesto.' });
+    }
+    const rawCode = String(request.params.code || '').trim().toUpperCase();
+    if (!rawCode) {
+      return reply.code(400).send({ error: 'Barcode mancante' });
+    }
+
+    try {
+      let targetPalletCode = rawCode;
+      let scannedAsLocation = false;
+
+      let [rows] = await db.query(`
+        SELECT p.*, pr.sku, pr.name AS product_name,
+               COALESCE(p.pallet_uom, pr.uom) AS uom,
+               COALESCE(p.units_per_box, pr.units_per_box, 1) AS units_per_box,
+               COALESCE(pr.boxes_per_pallet, 1) AS boxes_per_pallet,
+               c.business_name AS customer_name
+        FROM PALLETS p
+        JOIN PRODUCTS pr ON p.product_id = pr.id
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        WHERE UPPER(TRIM(p.pallet_code)) = ?
+        ORDER BY p.id ASC
+      `, [targetPalletCode]);
+
+      // Se non è un pallet_code diretto, controlla se l'operatore ha scansionato lo scaffale / posizione
+      if (rows.length === 0) {
+        const [locPallets] = await db.query(`
+          SELECT DISTINCT p.pallet_code
+          FROM PALLETS p
+          WHERE UPPER(TRIM(p.location)) = ? AND p.status = 'STOCKED' AND p.quantity > 0
+          ORDER BY p.id ASC
+        `, [rawCode]);
+        if (locPallets.length > 0) {
+          scannedAsLocation = true;
+          targetPalletCode = locPallets[0].pallet_code;
+          [rows] = await db.query(`
+            SELECT p.*, pr.sku, pr.name AS product_name,
+                   COALESCE(p.pallet_uom, pr.uom) AS uom,
+                   COALESCE(p.units_per_box, pr.units_per_box, 1) AS units_per_box,
+                   COALESCE(pr.boxes_per_pallet, 1) AS boxes_per_pallet,
+                   c.business_name AS customer_name
+            FROM PALLETS p
+            JOIN PRODUCTS pr ON p.product_id = pr.id
+            JOIN CUSTOMERS c ON p.customer_id = c.id
+            WHERE UPPER(TRIM(p.pallet_code)) = ?
+            ORDER BY p.id ASC
+          `, [targetPalletCode]);
+        }
+      }
+
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: `Nessuna paletta trovata per il codice ${rawCode}` });
+      }
+
+      if (rows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+        return reply.code(403).send({ error: 'Accesso negato: non puoi visualizzare la merce di questo cliente.' });
+      }
+
+      const activeRows = rows.filter(r => r.status !== 'SHIPPED' && parseFloat(r.quantity) > 0);
+      const displayRows = activeRows.length > 0 ? activeRows : rows;
+      const primary = displayRows[0];
+
+      const cleanLoc = String(primary.location || '').trim().toUpperCase();
+      const [[freeMatch]] = cleanLoc
+        ? await db.query('SELECT id, name FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [cleanLoc])
+        : [[null]];
+      const [[locMatch]] = cleanLoc
+        ? await db.query('SELECT id, zone, col, pos, barcode FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [cleanLoc])
+        : [[null]];
+
+      const items = displayRows.map(r => ({
+        id: r.id,
+        pallet_code: r.pallet_code,
+        customer_id: r.customer_id,
+        customer_name: r.customer_name,
+        product_id: r.product_id,
+        sku: r.sku,
+        product_name: r.product_name,
+        quantity: parseFloat(r.quantity) || 0,
+        units_per_box: parseInt(r.units_per_box, 10) || 1,
+        boxes_per_pallet: parseInt(r.boxes_per_pallet, 10) || 1,
+        uom: r.uom,
+        boxes_breakdown: formatBoxesBreakdown(r.quantity, r.units_per_box, r.uom),
+        batch: r.batch || null,
+        expiration_date: sanitizeExpirationDate(r.expiration_date),
+        notes: r.notes || null,
+        client_pallet_number: r.client_pallet_number || null,
+        client_article_number: r.client_article_number || null,
+        status: r.status,
+        is_quarantined: Boolean(r.is_quarantined),
+        quarantine_reason: r.quarantine_reason || null,
+        created_at: r.created_at
+      }));
+
+      const slotting = primary.status !== 'SHIPPED' && activeRows.length > 0
+        ? await recommendSlotForPallet(db, primary.pallet_code, locMatch?.zone || null)
+        : null;
+
+      return {
+        pallet_code: primary.pallet_code,
+        scanned_as_location: scannedAsLocation,
+        customer_name: primary.customer_name,
+        status: primary.status,
+        is_mixed: items.length > 1,
+        is_quarantined: items.some(i => i.is_quarantined),
+        location: cleanLoc || null,
+        location_status: {
+          is_mapped: Boolean(locMatch && !freeMatch),
+          is_free_location: Boolean(freeMatch),
+          is_pending: !cleanLoc || primary.status === 'PENDING',
+          zone: locMatch?.zone || null,
+          col: locMatch?.col || null,
+          pos: locMatch?.pos || null
+        },
+        items,
+        slotting
+      };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore ispezione barcode' });
+    }
+  });
+
+  // POST /api/pallets/verify-discrepancy
+  fastify.post('/verify-discrepancy', async (request, reply) => {
+    if (!hasPermission(request.user, 'zebra_verify') && !hasPermission(request.user, 'pallet_edit')) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso Verifica & Correzione Discrepanze richiesto.' });
+    }
+    const { pallet_code, pallet_id, action = 'VERIFY_OK', quantity, batch, expiration_date, notes } = request.body || {};
+    if (!pallet_code) {
+      return reply.code(400).send({ error: 'pallet_code richiesto' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      const outcome = await withNamedLock(connection, 'maglite_pallet_loc', async () => {
+        await connection.beginTransaction();
+        try {
+          const [rows] = pallet_id
+            ? await connection.query('SELECT * FROM PALLETS WHERE id = ? FOR UPDATE', [pallet_id])
+            : await connection.query('SELECT * FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED" FOR UPDATE', [pallet_code]);
+
+          if (rows.length === 0) {
+            await connection.rollback();
+            return { status: 404, body: { error: 'Paletta non trovata' } };
+          }
+          if (rows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+            await connection.rollback();
+            return { status: 403, body: { error: 'Accesso negato per questo cliente.' } };
+          }
+          if (action === 'CORRECT' && rows.some(r => r.is_quarantined)) {
+            await connection.rollback();
+            return { status: 403, body: { error: 'BLOCCO QUARANTENA: Sblocca prima la paletta per correggerne la quantità o i dati.' } };
+          }
+
+          if (action === 'VERIFY_OK') {
+            await connection.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              ['VERIFY_OK', `Controllo Zebra OK per ${pallet_code}${rows[0].location ? ' in ' + rows[0].location : ''} (${rows.length} righe)`, 'Zebra', request.user.username]
+            );
+            await connection.commit();
+            return { status: 200, body: { success: true, message: 'Verifica registrata con successo' } };
+          }
+
+          if (rows.length > 1 && !pallet_id) {
+            await connection.rollback();
+            return { status: 400, body: { error: 'Seleziona la specifica riga articolo della paletta mista da rettificare.' } };
+          }
+
+          const targetRow = rows[0];
+          const newQty = quantity !== undefined && quantity !== null ? parseFloat(quantity) : parseFloat(targetRow.quantity);
+          if (isNaN(newQty) || newQty < 0) {
+            await connection.rollback();
+            return { status: 400, body: { error: 'Quantità non valida' } };
+          }
+
+          const newBatch = batch !== undefined ? (String(batch).trim() || null) : targetRow.batch;
+          const newExp = expiration_date !== undefined ? sanitizeExpirationDate(expiration_date) : sanitizeExpirationDate(targetRow.expiration_date);
+          const newNotes = notes !== undefined ? (String(notes).trim() || null) : targetRow.notes;
+
+          await connection.query(
+            'UPDATE PALLETS SET quantity = ?, batch = ?, expiration_date = ?, notes = ? WHERE id = ?',
+            [newQty, newBatch, newExp, newNotes, targetRow.id]
+          );
+
+          await connection.query(
+            'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+            [
+              'DISCREPANCY_FIX',
+              `Rettifica discrepanza Zebra su ${pallet_code} (riga #${targetRow.id}): Q.tà ${targetRow.quantity} -> ${newQty}, Lotto "${targetRow.batch || '-'}" -> "${newBatch || '-'}"`,
+              'Zebra',
+              request.user.username
+            ]
+          );
+
+          await connection.commit();
+          return { status: 200, body: { success: true, message: 'Discrepanza corretta e registrata in Audit.' } };
+        } catch (txErr) {
+          await connection.rollback();
+          throw txErr;
+        }
+      });
+
+      if (outcome.status !== 200) {
+        return reply.code(outcome.status).send(outcome.body);
+      }
+
+      if (fastify.io && action === 'CORRECT') {
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
+      return outcome.body;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore verifica discrepanza' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  // GET /api/pallets/optimization/tasks
+  fastify.get('/optimization/tasks', async (request, reply) => {
+    if (!hasPermission(request.user, 'zebra_optimize')) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso Task Ottimizzazione Zebra richiesto.' });
+    }
+    try {
+      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user);
+      const [[pinSetting]] = await db.query("SELECT setting_value FROM settings WHERE setting_key = 'require_location_pins'");
+      const requirePins = pinSetting ? pinSetting.setting_value === 'true' : true;
+      return { ...result, requirePins };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore generazione task ottimizzazione magazzino' });
+    }
+  });
+
+  // POST /api/pallets/optimization/execute
+  fastify.post('/optimization/execute', async (request, reply) => {
+    if (!hasPermission(request.user, 'zebra_optimize')) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso Task Ottimizzazione Zebra richiesto.' });
+    }
+    const { action_type, pallet_code, to_location, source_codes, target_code, target_location, pin } = request.body || {};
+    if (!action_type) {
+      return reply.code(400).send({ error: 'action_type richiesto' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      const outcome = await withNamedLock(connection, 'maglite_pallet_loc', async () => {
+        await connection.beginTransaction();
+        try {
+          const [[pinSetting]] = await connection.query("SELECT setting_value FROM settings WHERE setting_key = 'require_location_pins'");
+          const requirePins = pinSetting ? pinSetting.setting_value === 'true' : true;
+
+          if (action_type === 'MOVE') {
+            if (!pallet_code || !to_location) {
+              await connection.rollback();
+              return { status: 400, body: { error: 'pallet_code e to_location obbligatori' } };
+            }
+            const cleanTargetLoc = String(to_location).trim().toUpperCase();
+            const [pRows] = await connection.query(
+              'SELECT id, customer_id, location, is_quarantined FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED" FOR UPDATE',
+              [pallet_code]
+            );
+            if (pRows.length === 0) {
+              await connection.rollback();
+              return { status: 404, body: { error: 'Paletta non trovata' } };
+            }
+            if (pRows.some(r => r.is_quarantined) || pRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+              await connection.rollback();
+              return { status: 403, body: { error: 'Operazione non consentita su questa paletta (quarantena o cliente non autorizzato).' } };
+            }
+
+            const [[locRow]] = await connection.query('SELECT * FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [cleanTargetLoc]);
+            if (locRow && requirePins && pin && locRow.pin !== String(pin).trim()) {
+              await connection.rollback();
+              return { status: 403, body: { error: 'PIN scaffale di destinazione errato' } };
+            }
+            if (locRow && requirePins && !pin) {
+              await connection.rollback();
+              return { status: 400, body: { error: 'Inserisci il PIN dello scaffale di destinazione per confermare lo spostamento.' } };
+            }
+
+            const [occ] = await connection.query(
+              'SELECT pallet_code FROM PALLETS WHERE UPPER(TRIM(location)) = ? AND status = "STOCKED" AND quantity > 0 AND pallet_code != ? FOR UPDATE',
+              [cleanTargetLoc, pallet_code]
+            );
+            if (occ.length > 0) {
+              await connection.rollback();
+              return { status: 409, body: { error: `La posizione ${cleanTargetLoc} è appena stata occupata da ${occ[0].pallet_code}` } };
+            }
+
+            await connection.query(
+              'UPDATE PALLETS SET location = ?, status = "STOCKED" WHERE pallet_code = ? AND status != "SHIPPED"',
+              [cleanTargetLoc, pallet_code]
+            );
+            await consolidateLocationPallets(connection, cleanTargetLoc);
+            await connection.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              ['OPT_MOVE', `Task Ottimizzazione: spostata ${pallet_code} da ${pRows[0].location || '-'} a ${cleanTargetLoc}`, 'Zebra', request.user.username]
+            );
+            await connection.commit();
+            return { status: 200, body: { success: true, message: `Paletta ${pallet_code} riordinata in ${cleanTargetLoc}` } };
+          }
+
+          if (action_type === 'MERGE_BATCH' || action_type === 'CONSOLIDATE_FRAGMENTS') {
+            const cleanSources = Array.isArray(source_codes) ? source_codes.map(c => String(c).trim()).filter(Boolean) : [];
+            const cleanTargetCode = String(target_code || '').trim();
+            const cleanTargetLoc = target_location ? String(target_location).trim().toUpperCase() : null;
+
+            if (!cleanTargetCode || cleanSources.length === 0) {
+              await connection.rollback();
+              return { status: 400, body: { error: 'target_code e source_codes richiesti' } };
+            }
+
+            const allCodes = [...new Set([cleanTargetCode, ...cleanSources])];
+            const placeholders = allCodes.map(() => '?').join(',');
+            const [lockedRows] = await connection.query(
+              `SELECT id, pallet_code, customer_id, location, is_quarantined FROM PALLETS WHERE pallet_code IN (${placeholders}) AND status != "SHIPPED" FOR UPDATE`,
+              allCodes
+            );
+            if (lockedRows.some(r => r.is_quarantined) || lockedRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+              await connection.rollback();
+              return { status: 403, body: { error: 'Una o più palette sono bloccate in quarantena o non autorizzate.' } };
+            }
+
+            const targetRows = lockedRows.filter(r => r.pallet_code === cleanTargetCode);
+            if (targetRows.length === 0) {
+              await connection.rollback();
+              return { status: 404, body: { error: `Paletta target ${cleanTargetCode} non trovata` } };
+            }
+
+            const originalTargetLoc = String(targetRows[0].location || '').trim().toUpperCase();
+            const finalLoc = cleanTargetLoc || originalTargetLoc;
+
+            if (finalLoc && finalLoc !== originalTargetLoc) {
+              const [[locRow]] = await connection.query('SELECT * FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [finalLoc]);
+              if (locRow && requirePins && pin && locRow.pin !== String(pin).trim()) {
+                await connection.rollback();
+                return { status: 403, body: { error: 'PIN scaffale di destinazione errato' } };
+              }
+              if (locRow && requirePins && !pin) {
+                await connection.rollback();
+                return { status: 400, body: { error: 'Inserisci il PIN dello scaffale di destinazione.' } };
+              }
+              const [occ] = await connection.query(
+                `SELECT pallet_code FROM PALLETS WHERE UPPER(TRIM(location)) = ? AND status = "STOCKED" AND quantity > 0 AND pallet_code NOT IN (${placeholders}) FOR UPDATE`,
+                [finalLoc, ...allCodes]
+              );
+              if (occ.length > 0) {
+                await connection.rollback();
+                return { status: 409, body: { error: `Posizione ${finalLoc} già occupata da ${occ[0].pallet_code}` } };
+              }
+            }
+
+            await connection.query(
+              `UPDATE PALLETS SET pallet_code = ?, location = ?, status = "STOCKED" WHERE pallet_code IN (${placeholders}) AND status != "SHIPPED"`,
+              [cleanTargetCode, finalLoc, ...allCodes]
+            );
+
+            if (finalLoc) {
+              await consolidateLocationPallets(connection, finalLoc);
+            }
+
+            await connection.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              [
+                action_type === 'MERGE_BATCH' ? 'OPT_MERGE_BATCH' : 'OPT_FRAGMENT',
+                `Task Ottimizzazione (${action_type}): unite [${cleanSources.join(', ')}] in ${cleanTargetCode} -> ${finalLoc}`,
+                'Zebra',
+                request.user.username
+              ]
+            );
+
+            await connection.commit();
+            return {
+              status: 200,
+              body: {
+                success: true,
+                message: `Accorpate ${cleanSources.length} palette in ${cleanTargetCode} (${finalLoc})`
+              }
+            };
+          }
+
+          await connection.rollback();
+          return { status: 400, body: { error: 'action_type non supportato' } };
+        } catch (txErr) {
+          await connection.rollback();
+          throw txErr;
+        }
+      });
+
+      if (outcome.status !== 200) {
+        return reply.code(outcome.status).send(outcome.body);
+      }
+
+      if (fastify.io) {
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
+      return outcome.body;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore esecuzione task ottimizzazione' });
+    } finally {
+      connection.release();
     }
   });
 
