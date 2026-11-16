@@ -536,6 +536,15 @@ function groupMappedPalletsByCode(snapshot) {
   return Array.from(byCode.values());
 }
 
+function isAllowedOptimizationUom(item) {
+  const raw = String(item.pallet_uom || item.uom || '').trim().toLowerCase();
+  if (!raw) return false;
+  if (raw.includes('bancal') || raw.includes('palett') || raw.includes('pedan') || raw.includes('metro')) {
+    return false;
+  }
+  return /^(pezzi|pezzo|pz|scatole|scatola|scat|kg|kilo|chili|chilogramm)/.test(raw);
+}
+
 async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
   const snapshot = await loadMappedWarehouseSnapshot(connection);
   const velocities = await getProductVelocities(connection);
@@ -544,7 +553,8 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
   const accessiblePallets = allGroups.filter(g =>
     !g.is_quarantined &&
     !g.is_reserved_outbound &&
-    canAccessCustomerFn(user, g.customer_id)
+    canAccessCustomerFn(user, g.customer_id) &&
+    g.items.every(isAllowedOptimizationUom)
   );
 
   const tasks = [];

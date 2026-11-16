@@ -1,8 +1,8 @@
-import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
+import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import { hasPerm } from "../../utils/permissions.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus } from 'lucide-react';
+import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus, ArrowRightLeft, X } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { jwtDecode } from 'jwt-decode';
 
@@ -25,6 +25,9 @@ const Locations = () => {
   
   const [searchTerm, setSearchTerm] = useState('');
   const [viewPallet, setViewPallet] = useState(null); // per il modal con i dettagli
+  const [viewShelfItems, setViewShelfItems] = useState([]);
+  const [freeInspect, setFreeInspect] = useState({ show: false, location: '', items: [], loading: false });
+  const [freeMoveDraft, setFreeMoveDraft] = useState({ item: null, mode: 'SINGLE_ITEM', moveQty: '', targetLocation: '', error: null });
   
   const getToken = () => localStorage.getItem('maglite_token');
   const getUserRole = () => {
@@ -232,6 +235,93 @@ const Locations = () => {
     const next = {};
     allZonesList.forEach(z => { next[z] = expand; });
     setExpandedZones(next);
+  };
+
+  const openShelfDetails = async (loc) => {
+    setViewPallet(loc);
+    setViewShelfItems([]);
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(loc.barcode)}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setViewShelfItems(res.data?.items || []);
+    } catch (_) {}
+  };
+
+  const openFreeLocationInspector = async (locName) => {
+    setFreeInspect({ show: true, location: locName, items: [], loading: true });
+    setFreeMoveDraft({ item: null, mode: 'SINGLE_ITEM', moveQty: '', targetLocation: '', error: null });
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(locName)}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setFreeInspect({ show: true, location: locName, items: res.data?.items || [], loading: false });
+    } catch (err) {
+      setFreeInspect({ show: true, location: locName, items: [], loading: false });
+      appAlert(err.response?.data?.error || 'Errore apertura posizione libera');
+    }
+  };
+
+  const executeFreeMove = async (e) => {
+    e.preventDefault();
+    if (isProcessing || !freeMoveDraft.item) return;
+    const targetLoc = String(freeMoveDraft.targetLocation || '').trim().toUpperCase();
+    if (!targetLoc) {
+      setFreeMoveDraft(prev => ({ ...prev, error: 'Seleziona o digita una posizione di destinazione.' }));
+      return;
+    }
+
+    const item = freeMoveDraft.item;
+    const maxQ = parseFloat(item.quantity) || 0;
+    const qty = freeMoveDraft.mode === 'SINGLE_ITEM' ? parseFloat(freeMoveDraft.moveQty) : maxQ;
+    if (freeMoveDraft.mode === 'SINGLE_ITEM' && (isNaN(qty) || qty <= 0 || qty > maxQ)) {
+      setFreeMoveDraft(prev => ({ ...prev, error: `Quantità non valida (max ${maxQ}).` }));
+      return;
+    }
+
+    const payload = {
+      mode: freeMoveDraft.mode,
+      pallet_code: item.pallet_code,
+      pallet_id: freeMoveDraft.mode === 'SINGLE_ITEM' ? item.id : undefined,
+      move_quantity: freeMoveDraft.mode === 'SINGLE_ITEM' ? qty : undefined,
+      target_location: targetLoc,
+      source: 'Gestionale'
+    };
+
+    setIsProcessing(true);
+    setFreeMoveDraft(prev => ({ ...prev, error: null }));
+    try {
+      const headers = { Authorization: `Bearer ${getToken()}` };
+      try {
+        await axios.post(`http://${window.location.hostname}:3000/api/pallets/move-items`, payload, { headers });
+      } catch (err) {
+        if (err.response?.status === 409 && err.response?.data?.occupying_pallet) {
+          const choice = await appConfirmThreeWay(
+            `La posizione ${targetLoc} è già occupata dalla paletta ${err.response.data.occupying_pallet}. Come vuoi procedere?`,
+            'Posizione Occupata',
+            'Unisci / Frammenta',
+            'Forza comunque',
+            'Annulla'
+          );
+          if (choice === 'CONFIRM') {
+            await axios.post(`http://${window.location.hostname}:3000/api/pallets/move-items`, { ...payload, merge_into_existing: true }, { headers });
+          } else if (choice === 'DENY') {
+            await axios.post(`http://${window.location.hostname}:3000/api/pallets/move-items`, { ...payload, force: true }, { headers });
+          } else {
+            setIsProcessing(false);
+            return;
+          }
+        } else {
+          throw err;
+        }
+      }
+      await fetchLocations();
+      await openFreeLocationInspector(freeInspect.location);
+    } catch (err) {
+      setFreeMoveDraft(prev => ({ ...prev, error: err.response?.data?.error || 'Errore durante lo spostamento' }));
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -478,7 +568,7 @@ const Locations = () => {
                                 return (
                                   <div
                                     key={loc.id}
-                                    onClick={() => isOccupied && setViewPallet(loc)}
+                                    onClick={() => isOccupied && openShelfDetails(loc)}
                                     className={`rounded-xl p-3 border transition-all flex flex-col justify-between gap-2 ${isOccupied
                                       ? 'bg-sky-500/10 border-sky-500/40 hover:border-sky-400 cursor-pointer hover:bg-sky-500/15'
                                       : 'bg-emerald-500/5 border-emerald-500/20 hover:border-emerald-500/40'
@@ -494,9 +584,12 @@ const Locations = () => {
                                       <div className="space-y-0.5">
                                         <div className="text-[11px] font-mono font-bold text-sky-300 truncate">{loc.pallet_code}</div>
                                         <div className="text-xs font-semibold text-slate-200 truncate" title={loc.product_name}>{loc.product_name}</div>
-                                        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-                                          <span className="truncate max-w-[90px]">{loc.customer_name}</span>
-                                          <span className="font-black text-brand-white">x{loc.quantity}</span>
+                                        <div className="text-[10px] font-mono text-amber-300/90 truncate">
+                                          Lotto: {loc.batch || '-'}
+                                        </div>
+                                        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                                          <span className="truncate max-w-[90px]">{loc.customer_name || '-'}</span>
+                                          <span className="font-black text-brand-white">x{loc.quantity} {loc.uom || ''}</span>
                                         </div>
                                       </div>
                                     ) : (
@@ -556,7 +649,7 @@ const Locations = () => {
                                       </td>
                                       <td className="px-3 py-2.5 text-right flex items-center justify-end gap-1.5">
                                         {isOccupied && (
-                                          <button onClick={() => setViewPallet(loc)} className="p-1.5 bg-sky-500/20 text-sky-400 hover:bg-sky-500 hover:text-brand-black rounded-lg transition-colors" title="Vedi merce stivata">
+                                          <button onClick={() => openShelfDetails(loc)} className="p-1.5 bg-sky-500/20 text-sky-400 hover:bg-sky-500 hover:text-brand-black rounded-lg transition-colors" title="Vedi merce stivata">
                                             <Eye size={15} />
                                           </button>
                                         )}
@@ -602,19 +695,48 @@ const Locations = () => {
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {freeLocations.map(fl => (
-                <div key={fl.id} className="bg-slate-950/70 border border-slate-800 hover:border-brand-blue/40 p-4 rounded-2xl flex justify-between items-center transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-brand-blue/10 border border-brand-blue/30 flex items-center justify-center text-brand-blue">
-                      <Package size={18} />
+              {freeLocations.map(fl => {
+                const count = Number(fl.items_count) || 0;
+                const totalQ = parseFloat(fl.total_qty) || 0;
+                return (
+                  <div
+                    key={fl.id}
+                    onClick={() => openFreeLocationInspector(fl.name)}
+                    className="bg-slate-950/70 border border-slate-800 hover:border-brand-blue/60 p-4 rounded-2xl flex justify-between items-center transition-colors cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${count > 0 ? 'bg-sky-500/15 border-sky-500/40 text-sky-400' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>
+                        <Package size={18} />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-brand-white font-bold block truncate">{fl.name}</span>
+                        <span className="text-[11px] font-semibold text-slate-400">
+                          {count > 0 ? `${count} articoli (${totalQ} u.) · Clicca per gestire` : 'Vuota · Clicca per ispezionare'}
+                        </span>
+                      </div>
                     </div>
-                    <span className="text-brand-white font-bold">{fl.name}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); openFreeLocationInspector(fl.name); }}
+                        className="p-2 bg-sky-500/10 text-sky-400 hover:bg-sky-500 hover:text-brand-black rounded-xl transition-colors"
+                        title="Vedi e sposta articoli"
+                      >
+                        <Eye size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteFreeLocation(fl.id); }}
+                        disabled={isProcessing}
+                        className="p-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-xl transition-colors disabled:opacity-40"
+                        title="Elimina Posizione Libera"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </div>
-                  <button onClick={() => handleDeleteFreeLocation(fl.id)} disabled={isProcessing} className="p-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-xl transition-colors disabled:opacity-40">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
               {freeLocations.length === 0 && (
                 <div className="col-span-full p-8 text-center text-slate-500 font-bold border-2 border-dashed border-slate-800 rounded-2xl">
                   Nessuna posizione libera definita.
@@ -625,42 +747,244 @@ const Locations = () => {
         )}
       </div>
 
+      {/* Modal Contenuto Posizione Libera (Scaffalino) con Spostamento Parziale / Singolo Articolo */}
+      {freeInspect.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md animate-fade-in-up">
+          <div className="bg-slate-900 border border-brand-blue/40 rounded-3xl p-7 max-w-2xl w-full shadow-2xl relative max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-brand-blue">Contenuto Posizione Libera</span>
+                <h3 className="text-2xl font-black text-brand-white">{freeInspect.location}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setFreeInspect({ show: false, location: '', items: [], loading: false }); setFreeMoveDraft({ item: null, mode: 'SINGLE_ITEM', moveQty: '', targetLocation: '', error: null }); }}
+                className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {freeInspect.loading ? (
+              <div className="p-10 text-center text-slate-400 font-bold">Caricamento articoli...</div>
+            ) : freeInspect.items.length === 0 ? (
+              <div className="p-10 text-center text-slate-500 font-bold border-2 border-dashed border-slate-800 rounded-2xl">
+                Nessun articolo presente in questa posizione libera.
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {canManageLocations && (() => {
+                  const uniqueCodes = [...new Set(freeInspect.items.map(i => i.pallet_code).filter(Boolean))];
+                  if (uniqueCodes.length === 1 && freeInspect.items.length > 1) {
+                    return (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setFreeMoveDraft({
+                            item: freeInspect.items[0],
+                            mode: 'ALL_PALLET',
+                            moveQty: String(freeInspect.items[0].quantity),
+                            targetLocation: '',
+                            error: null
+                          })}
+                          className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-brand-black border border-amber-500/40 font-black text-xs flex items-center gap-1.5 transition-colors"
+                        >
+                          <ArrowRightLeft size={14} /> Sposta TUTTI gli articoli ({freeInspect.items.length})
+                        </button>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {freeInspect.items.map(item => (
+                  <div key={item.id} className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs font-bold text-brand-blue">{item.sku}</span>
+                        <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">{item.pallet_code}</span>
+                      </div>
+                      <div className="font-black text-sm text-brand-white mt-0.5">{item.product_name}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {item.customer_name} {item.batch ? `· Lotto: ${item.batch}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="text-right">
+                        <div className="font-black text-base text-emerald-400">{item.quantity} {item.uom || ''}</div>
+                      </div>
+                      {canManageLocations && !item.is_quarantined && (
+                        <button
+                          type="button"
+                          onClick={() => setFreeMoveDraft({
+                            item,
+                            mode: 'SINGLE_ITEM',
+                            moveQty: String(item.quantity),
+                            targetLocation: '',
+                            error: null
+                          })}
+                          className="px-3 py-2 rounded-xl bg-brand-blue text-brand-black font-black text-xs hover:bg-sky-400 transition-colors flex items-center gap-1.5"
+                        >
+                          <ArrowRightLeft size={14} /> Sposta
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {freeMoveDraft.item && (
+              <form onSubmit={executeFreeMove} className="mt-4 pt-4 border-t border-slate-800 bg-slate-950/90 p-4 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black uppercase text-emerald-400">
+                    {freeMoveDraft.mode === 'ALL_PALLET'
+                      ? `Sposta TUTTI (${freeInspect.items.length} articoli)`
+                      : `Sposta: ${freeMoveDraft.item.product_name}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setFreeMoveDraft({ item: null, mode: 'SINGLE_ITEM', moveQty: '', targetLocation: '', error: null })}
+                    className="text-xs text-slate-400 hover:text-white font-bold"
+                  >
+                    Annulla
+                  </button>
+                </div>
+
+                {freeMoveDraft.error && (
+                  <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs font-bold text-rose-300">
+                    {freeMoveDraft.error}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {freeMoveDraft.mode === 'SINGLE_ITEM' && (
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                        Quantità (max {freeMoveDraft.item.quantity})
+                      </label>
+                      <input
+                        type="number"
+                        min="0.01"
+                        max={freeMoveDraft.item.quantity}
+                        step="0.01"
+                        required
+                        value={freeMoveDraft.moveQty}
+                        onChange={(e) => setFreeMoveDraft(prev => ({ ...prev, moveQty: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm font-black text-white"
+                      />
+                    </div>
+                  )}
+                  <div className={freeMoveDraft.mode === 'ALL_PALLET' ? 'sm:col-span-2' : ''}>
+                    <label className="block text-[11px] font-bold uppercase text-slate-400 mb-1">
+                      Destinazione (Scaffale o Posizione Libera)
+                    </label>
+                    <input
+                      list="free-move-targets"
+                      required
+                      placeholder="Es. CELLA2-A-01 o altra Posizione Libera..."
+                      value={freeMoveDraft.targetLocation}
+                      onChange={(e) => setFreeMoveDraft(prev => ({ ...prev, targetLocation: e.target.value.toUpperCase() }))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm font-mono font-bold text-white uppercase"
+                    />
+                    <datalist id="free-move-targets">
+                      {freeLocations.filter(f => f.name.toUpperCase() !== freeInspect.location).map(f => (
+                        <option key={`fl-${f.id}`} value={f.name.toUpperCase()} />
+                      ))}
+                      {locations.map(l => (
+                        <option key={`loc-${l.id}`} value={l.barcode} />
+                      ))}
+                    </datalist>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isProcessing}
+                  className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-brand-black font-black text-sm disabled:opacity-50"
+                >
+                  {isProcessing ? 'Spostamento...' : 'Conferma Spostamento'}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Modal Dettaglio Merce */}
       {viewPallet && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md animate-fade-in-up">
-          <div className="bg-slate-900 border border-sky-500/30 rounded-3xl p-8 max-w-md w-full shadow-[0_0_40px_rgba(14,165,233,0.15)] relative">
-            <h3 className="text-xl font-bold text-brand-white mb-6 flex items-center gap-2">
-              <Info className="text-sky-400" />
-              Contenuto Scaffale
+          <div className="bg-slate-900 border border-sky-500/30 rounded-3xl p-8 max-w-lg w-full shadow-[0_0_40px_rgba(14,165,233,0.15)] relative">
+            <h3 className="text-xl font-bold text-brand-white mb-5 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2">
+                <Info className="text-sky-400" />
+                Contenuto Scaffale · <span className="font-mono text-sky-300">{viewPallet.barcode}</span>
+              </span>
             </h3>
             <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Codice Paletta</p>
-                <p className="font-mono text-xl font-bold text-brand-white">{viewPallet.pallet_code}</p>
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Codice Paletta</p>
+                  <p className="font-mono text-xl font-bold text-brand-white">{viewPallet.pallet_code}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Totale Scaffale</p>
+                  <p className="font-black text-xl text-emerald-400">{viewPallet.quantity ?? 0} {viewPallet.uom || ''}</p>
+                </div>
               </div>
-              
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Prodotto</p>
-                <p className="font-bold text-brand-blue text-lg">{viewPallet.product_name}</p>
-                {viewPallet.product_notes && (
-                  <p className="text-sm text-slate-400 mt-2 italic bg-slate-900/50 p-2 rounded-lg">
-                    "{viewPallet.product_notes}"
+
+              {viewShelfItems.length > 1 ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-slate-400 uppercase tracking-wider font-bold">
+                    Articoli sullo scaffale ({viewShelfItems.length})
                   </p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Quantità</p>
-                  <p className="font-bold text-brand-white text-xl">{viewPallet.quantity}</p>
+                  {viewShelfItems.map(it => (
+                    <div key={it.id} className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-1">
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <span className="font-mono text-[11px] font-bold text-brand-blue">{it.sku}</span>
+                          <div className="font-bold text-sm text-brand-white">{it.product_name}</div>
+                        </div>
+                        <span className="font-black text-sm text-emerald-400 shrink-0">{it.quantity} {it.uom || ''}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                        <span>Lotto: <strong className="text-amber-300">{it.batch || '-'}</strong></span>
+                        <span>Cliente: <strong className="text-slate-200">{it.customer_name}</strong></span>
+                        {it.expiration_date && (
+                          <span>Scad.: <strong className="text-rose-400">{new Date(it.expiration_date).toLocaleDateString('it-IT')}</strong></span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Lotto</p>
-                  <p className="font-bold text-brand-white text-lg">{viewPallet.batch || '-'}</p>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                    <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Prodotto</p>
+                    <p className="font-bold text-brand-blue text-lg">{viewShelfItems[0]?.product_name || viewPallet.product_name}</p>
+                    {viewPallet.product_notes && (
+                      <p className="text-sm text-slate-400 mt-2 italic bg-slate-900/50 p-2 rounded-lg">
+                        &quot;{viewPallet.product_notes}&quot;
+                      </p>
+                    )}
+                  </div>
 
-              {(viewPallet.expiration_date || viewPallet.client_pallet_number || viewPallet.client_article_number) && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Quantità</p>
+                      <p className="font-bold text-emerald-400 text-xl">
+                        {viewShelfItems[0]?.quantity ?? viewPallet.quantity ?? 0} {viewShelfItems[0]?.uom || viewPallet.uom || ''}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Lotto</p>
+                      <p className="font-bold text-amber-300 text-lg">{viewShelfItems[0]?.batch || viewPallet.batch || '-'}</p>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {(viewPallet.expiration_date || viewPallet.client_pallet_number || viewPallet.client_article_number) && viewShelfItems.length <= 1 && (
                 <div className="grid grid-cols-2 gap-4">
                   {viewPallet.expiration_date && (
                     <div className="bg-rose-500/10 p-4 rounded-2xl border border-rose-500/20 col-span-2">
@@ -685,7 +1009,7 @@ const Locations = () => {
 
               <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
                 <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Cliente</p>
-                <p className="font-bold text-slate-300">{viewPallet.customer_name}</p>
+                <p className="font-bold text-slate-300">{viewShelfItems[0]?.customer_name || viewPallet.customer_name || '-'}</p>
               </div>
 
               {viewPallet.notes && (
@@ -695,10 +1019,25 @@ const Locations = () => {
                 </div>
               )}
             </div>
-            
-            <button onClick={() => setViewPallet(null)} className="w-full mt-6 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">
-              Chiudi
-            </button>
+
+            <div className="flex gap-3 mt-6">
+              {canManageLocations && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const b = viewPallet.barcode;
+                    setViewPallet(null);
+                    openFreeLocationInspector(b);
+                  }}
+                  className="flex-1 py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black transition-colors flex items-center justify-center gap-2"
+                >
+                  <ArrowRightLeft size={18} /> Sposta Merce
+                </button>
+              )}
+              <button onClick={() => setViewPallet(null)} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold transition-colors">
+                Chiudi
+              </button>
+            </div>
           </div>
         </div>
       )}

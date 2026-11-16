@@ -16,6 +16,7 @@ const VerifyBarcodeZebra = () => {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', text }
+  const [successScreen, setSuccessScreen] = useState(null); // { title, message, palletCode }
 
   // Modal Correzione Discrepanza
   const [editItem, setEditItem] = useState(null);
@@ -30,6 +31,7 @@ const VerifyBarcodeZebra = () => {
 
   const inputRef = useRef(null);
   const scanDebounceRef = useRef(null);
+  const successTimerRef = useRef(null);
   const getToken = () => localStorage.getItem('maglite_token');
   const canMove = hasPerm('pallet_move');
 
@@ -73,8 +75,36 @@ const VerifyBarcodeZebra = () => {
 
   useBarcodeScanner((barcode) => {
     if (editItem) return;
+    if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    setSuccessScreen(null);
     inspectCode(barcode);
   });
+
+  const returnToScanScreen = () => {
+    if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    setSuccessScreen(null);
+    setData(null);
+    setEditItem(null);
+    setFeedback(null);
+    setScanInput('');
+    setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 60);
+  };
+
+  const triggerSuccessAndReturn = (title, message, palletCode) => {
+    if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    setEditItem(null);
+    setFeedback(null);
+    setSuccessScreen({ title, message, palletCode });
+    successTimerRef.current = setTimeout(() => {
+      returnToScanScreen();
+    }, 2000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
 
   const handleVerifyOk = async () => {
     if (!data || saving) return;
@@ -85,7 +115,11 @@ const VerifyBarcodeZebra = () => {
         pallet_code: data.pallet_code,
         action: 'VERIFY_OK'
       }, { headers: { Authorization: `Bearer ${getToken()}` } });
-      setFeedback({ type: 'success', text: res.data?.message || 'Verifica registrata!' });
+      triggerSuccessAndReturn(
+        'Giacenza Verificata OK!',
+        res.data?.message || `Controllo registrato per ${data.pallet_code}`,
+        data.pallet_code
+      );
     } catch (err) {
       setFeedback({ type: 'error', text: err.response?.data?.error || 'Errore conferma verifica' });
     } finally {
@@ -136,15 +170,37 @@ const VerifyBarcodeZebra = () => {
         notes: notesVal
       }, { headers: { Authorization: `Bearer ${getToken()}` } });
 
-      setEditItem(null);
-      setFeedback({ type: 'success', text: res.data?.message || 'Discrepanza corretta!' });
-      await inspectCode(data.pallet_code);
+      triggerSuccessAndReturn(
+        'Discrepanza Corretta!',
+        `${res.data?.message || 'Rettifica salvata'} (${editItem.product_name}: ${finalUnits} ${editItem.uom || 'pz'})`,
+        data.pallet_code
+      );
     } catch (err) {
       setFeedback({ type: 'error', text: err.response?.data?.error || 'Errore salvataggio correzione' });
     } finally {
       setSaving(false);
     }
   };
+
+  if (successScreen) {
+    return (
+      <div className="flex-1 p-6 flex flex-col items-center justify-center text-center bg-emerald-500/20 animate-fade-in-up w-full max-w-md mx-auto">
+        <CheckCircle2 size={100} className="text-emerald-400 mb-5 drop-shadow-[0_0_20px_rgba(74,222,128,0.5)]" />
+        <h2 className="text-3xl font-black text-brand-white mb-2">{successScreen.title}</h2>
+        <p className="text-emerald-200 text-base font-bold px-3 mb-2">{successScreen.message}</p>
+        <p className="text-xs font-mono text-emerald-300/80 mb-6">
+          Ritorno automatico alla schermata di scansione...
+        </p>
+        <button
+          type="button"
+          onClick={returnToScanScreen}
+          className="px-6 py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-brand-black font-black text-sm shadow-lg"
+        >
+          Scansiona Subito Altro Codice
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 p-4 flex flex-col w-full max-w-md mx-auto overflow-y-auto">

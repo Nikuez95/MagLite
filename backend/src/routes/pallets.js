@@ -886,11 +886,351 @@ async function palletRoutes(fastify, options) {
     }
   });
 
+  // GET /api/pallets/by-location/:locName - Restituisce tutti gli articoli attivi in una posizione (anche FREE_LOCATIONS)
+  fastify.get('/by-location/:locName', async (request, reply) => {
+    const cleanLoc = decodeURIComponent(request.params.locName || '').trim().toUpperCase();
+    if (!cleanLoc) {
+      return reply.code(400).send({ error: 'Nome posizione mancante' });
+    }
+    try {
+      const [[freeRow]] = await db.query('SELECT id, name FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [cleanLoc]);
+      const [[locRow]] = await db.query('SELECT id, zone, col, pos, barcode FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [cleanLoc]);
+
+      const [rows] = await db.query(`
+        SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
+               COALESCE(p.units_per_box, pr.units_per_box, 1) as units_per_box,
+               c.business_name as customer_name
+        FROM PALLETS p
+        JOIN PRODUCTS pr ON p.product_id = pr.id
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        WHERE UPPER(TRIM(p.location)) = ? AND p.status = 'STOCKED' AND p.quantity > 0
+        ORDER BY p.id ASC
+      `, [cleanLoc]);
+
+      const visibleRows = rows.filter(r => canAccessCustomer(request.user, r.customer_id));
+
+      return {
+        location: cleanLoc,
+        is_free_location: Boolean(freeRow),
+        is_mapped_location: Boolean(locRow && !freeRow),
+        items: visibleRows
+      };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore lettura articoli nella posizione' });
+    }
+  });
+
+  // POST /api/pallets/move-items - Sposta singolo articolo (anche quantità parziale) o tutta la paletta, anche verso/da FREE_LOCATIONS
+  fastify.post('/move-items', async (request, reply) => {
+    if (!hasPermission(request.user, 'pallet_move')) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di spostare o stivare palette.' });
+    }
+    const {
+      mode,
+      pallet_code,
+      pallet_id,
+      move_quantity,
+      target_location,
+      pin,
+      source = 'Gestionale',
+      force = false,
+      merge_into_existing = false
+    } = request.body || {};
+
+    const cleanTargetLoc = String(target_location || '').trim().toUpperCase();
+    if (!cleanTargetLoc) {
+      return reply.code(400).send({ error: 'Posizione di destinazione obbligatoria.' });
+    }
+
+    const effectiveMode = mode || (pallet_id ? 'SINGLE_ITEM' : 'ALL_PALLET');
+    if (effectiveMode === 'SINGLE_ITEM' && !pallet_id) {
+      return reply.code(400).send({ error: 'pallet_id obbligatorio per spostare un singolo articolo.' });
+    }
+    if (effectiveMode === 'ALL_PALLET' && !pallet_code) {
+      return reply.code(400).send({ error: 'pallet_code obbligatorio per spostare tutta la paletta.' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      const outcome = await withNamedLock(connection, 'maglite_pallet_loc', async () => {
+        await connection.beginTransaction();
+        try {
+          const [[freeDest]] = await connection.query('SELECT id, name FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [cleanTargetLoc]);
+          const [[mappedDest]] = freeDest
+            ? [[null]]
+            : await connection.query('SELECT * FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [cleanTargetLoc]);
+
+          if (!freeDest && !mappedDest) {
+            if (!force) {
+              await connection.rollback();
+              return { status: 404, body: { error: `La posizione "${cleanTargetLoc}" non esiste tra gli scaffali mappati o le Posizioni Libere.` } };
+            }
+          }
+
+          if (mappedDest) {
+            const [[pinSetting]] = await connection.query("SELECT setting_value FROM settings WHERE setting_key = 'require_location_pins'");
+            const requirePins = pinSetting ? pinSetting.setting_value === 'true' : true;
+            if (source === 'Zebra' && requirePins) {
+              if (!pin) {
+                await connection.rollback();
+                return { status: 400, body: { error: 'Inserisci il PIN dello scaffale di destinazione.' } };
+              }
+              if (mappedDest.pin !== String(pin).trim()) {
+                await connection.rollback();
+                return { status: 403, body: { error: 'PIN di sicurezza ERRATO' } };
+              }
+            } else if (pin && mappedDest.pin !== String(pin).trim()) {
+              await connection.rollback();
+              return { status: 403, body: { error: 'PIN di sicurezza ERRATO' } };
+            }
+          }
+
+          const [sourceRows] = effectiveMode === 'SINGLE_ITEM'
+            ? await connection.query(
+                `SELECT p.*, pr.name as product_name, pr.sku
+                 FROM PALLETS p
+                 JOIN PRODUCTS pr ON p.product_id = pr.id
+                 WHERE p.id = ? AND p.status != 'SHIPPED' AND p.quantity > 0
+                 FOR UPDATE`,
+                [pallet_id]
+              )
+            : await connection.query(
+                `SELECT p.*, pr.name as product_name, pr.sku
+                 FROM PALLETS p
+                 JOIN PRODUCTS pr ON p.product_id = pr.id
+                 WHERE p.pallet_code = ? AND p.status != 'SHIPPED' AND p.quantity > 0
+                 FOR UPDATE`,
+                [pallet_code]
+              );
+
+          if (sourceRows.length === 0) {
+            await connection.rollback();
+            return { status: 404, body: { error: 'Merce non trovata o già spedita.' } };
+          }
+          if (sourceRows.some(r => r.is_quarantined)) {
+            await connection.rollback();
+            return { status: 403, body: { error: 'BLOCCO QUARANTENA: Impossibile spostare merce in quarantena.' } };
+          }
+          if (sourceRows.some(r => !canAccessCustomer(request.user, r.customer_id))) {
+            await connection.rollback();
+            return { status: 403, body: { error: 'Accesso negato: cliente non autorizzato.' } };
+          }
+
+          const sourceLoc = String(sourceRows[0].location || '').trim().toUpperCase();
+          if (sourceLoc && sourceLoc === cleanTargetLoc) {
+            await connection.rollback();
+            return { status: 400, body: { error: `La merce è già posizionata in ${cleanTargetLoc}.` } };
+          }
+
+          // Crea posizione mappata automatica solo se forced su una nuova coordinata non FREE_LOCATIONS
+          if (!freeDest && !mappedDest && force) {
+            await ensureLocationExists(connection, cleanTargetLoc, request.user.username);
+          }
+
+          const movedIds = sourceRows.map(r => r.id);
+
+          // Controllo allocazioni outbound attive in caso di split parziale
+          let requestedMoveQty = null;
+          let isPartialSplit = false;
+          if (effectiveMode === 'SINGLE_ITEM') {
+            const totalRowQty = parseFloat(sourceRows[0].quantity) || 0;
+            requestedMoveQty = (move_quantity !== undefined && move_quantity !== null && move_quantity !== '')
+              ? parseFloat(move_quantity)
+              : totalRowQty;
+
+            if (isNaN(requestedMoveQty) || requestedMoveQty <= 0 || requestedMoveQty > totalRowQty + 1e-6) {
+              await connection.rollback();
+              return { status: 400, body: { error: `Quantità da spostare non valida (max ${totalRowQty}).` } };
+            }
+            if (requestedMoveQty < totalRowQty - 1e-6) {
+              isPartialSplit = true;
+              const [[allocRow]] = await connection.query(
+                `SELECT COALESCE(SUM(GREATEST(0, oi.quantity_required - COALESCE(oi.quantity_picked, 0))), 0) AS reserved_qty
+                 FROM OUTBOUND_ITEMS oi
+                 JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+                 WHERE oi.pallet_id = ? AND oo.status IN ('PENDING', 'PICKING', 'READY')`,
+                [sourceRows[0].id]
+              );
+              const reservedQty = parseFloat(allocRow?.reserved_qty) || 0;
+              if (totalRowQty - requestedMoveQty < reservedQty - 1e-6) {
+                await connection.rollback();
+                return { status: 409, body: { error: `Quantità impegnata in picking attivo (${reservedQty}): non è possibile spostarne una parte inferiore.` } };
+              }
+            } else {
+              requestedMoveQty = totalRowQty;
+            }
+          }
+
+          // Determina barcode di destinazione e controlla eventuale occupazione (solo su scaffali mappati)
+          let targetPalletCode = null;
+          if (freeDest) {
+            targetPalletCode = await findExistingLocationBarcode(connection, cleanTargetLoc, true);
+            if (!targetPalletCode) {
+              // Se spostiamo tutto un bancale senza lasciare residui sul vecchio codice, manteniamo il barcode; altrimenti nuovo NOBAR-*
+              const [[siblingCheck]] = effectiveMode === 'SINGLE_ITEM'
+                ? await connection.query(
+                    'SELECT COUNT(*) AS cnt FROM PALLETS WHERE pallet_code = ? AND id != ? AND status != "SHIPPED" AND quantity > 0',
+                    [sourceRows[0].pallet_code, sourceRows[0].id]
+                  )
+                : [[{ cnt: 0 }]];
+              const leavesSiblings = isPartialSplit || (siblingCheck && siblingCheck.cnt > 0);
+              if (!leavesSiblings && sourceRows[0].pallet_code) {
+                targetPalletCode = sourceRows[0].pallet_code;
+              } else {
+                const nextNoBar = await createPalletCodeGenerator(connection, 'NOBAR');
+                targetPalletCode = nextNoBar();
+              }
+            }
+          } else {
+            const idPlaceholders = movedIds.map(() => '?').join(',');
+            const [occupied] = await connection.query(
+              `SELECT id, pallet_code FROM PALLETS
+               WHERE UPPER(TRIM(location)) = ? AND status = 'STOCKED' AND quantity > 0 AND id NOT IN (${idPlaceholders})
+               FOR UPDATE`,
+              [cleanTargetLoc, ...movedIds]
+            );
+
+            if (occupied.length > 0 && !merge_into_existing && !force) {
+              await connection.rollback();
+              return {
+                status: 409,
+                body: {
+                  error: `La posizione ${cleanTargetLoc} è già occupata dalla paletta ${occupied[0].pallet_code}!`,
+                  occupying_pallet: occupied[0].pallet_code
+                }
+              };
+            }
+
+            if (occupied.length > 0 && merge_into_existing) {
+              targetPalletCode = await findExistingLocationBarcode(connection, cleanTargetLoc, true) || occupied[0].pallet_code;
+            } else {
+              const [[siblingCheck]] = effectiveMode === 'SINGLE_ITEM'
+                ? await connection.query(
+                    'SELECT COUNT(*) AS cnt FROM PALLETS WHERE pallet_code = ? AND id != ? AND status != "SHIPPED" AND quantity > 0',
+                    [sourceRows[0].pallet_code, sourceRows[0].id]
+                  )
+                : [[{ cnt: 0 }]];
+              const leavesSiblings = isPartialSplit || (siblingCheck && siblingCheck.cnt > 0);
+              const srcCode = String(sourceRows[0].pallet_code || '');
+              if (!leavesSiblings && srcCode && !srcCode.startsWith('NOBAR-')) {
+                targetPalletCode = srcCode;
+              } else {
+                const nextPal = await createPalletCodeGenerator(connection, 'PAL');
+                targetPalletCode = nextPal();
+              }
+            }
+          }
+
+          if (effectiveMode === 'ALL_PALLET') {
+            const idPlaceholders = movedIds.map(() => '?').join(',');
+            await connection.query(
+              `UPDATE PALLETS SET pallet_code = ?, location = ?, status = 'STOCKED' WHERE id IN (${idPlaceholders})`,
+              [targetPalletCode, cleanTargetLoc, ...movedIds]
+            );
+            await connection.query(
+              `UPDATE OUTBOUND_ITEMS oi
+               JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+               SET oi.pallet_code = ?
+               WHERE oi.pallet_id IN (${idPlaceholders}) AND oo.status != 'SHIPPED'`,
+              [targetPalletCode, ...movedIds]
+            );
+            await consolidateLocationPallets(connection, cleanTargetLoc);
+            await connection.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              ['STOW', `Spostati tutti gli articoli (${sourceRows.length} righe, ${sourceRows[0].pallet_code} -> ${targetPalletCode}) in ${cleanTargetLoc}`, source, request.user.username]
+            );
+          } else {
+            const row = sourceRows[0];
+            if (isPartialSplit) {
+              const remainingQty = Math.round((parseFloat(row.quantity) - requestedMoveQty) * 100) / 100;
+              await connection.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [remainingQty, row.id]);
+              await connection.query(
+                `INSERT INTO PALLETS
+                 (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, flags, client_ddt, checkin_id, checkin_session_code, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STOCKED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  targetPalletCode,
+                  row.customer_id,
+                  row.product_id,
+                  requestedMoveQty,
+                  row.units_per_box || null,
+                  row.pallet_uom || null,
+                  row.batch || null,
+                  row.warehouse || 'Settala',
+                  cleanTargetLoc,
+                  row.notes || null,
+                  row.client_pallet_number || null,
+                  row.client_article_number || null,
+                  sanitizeExpirationDate(row.expiration_date),
+                  row.flags ? (typeof row.flags === 'string' ? row.flags : JSON.stringify(row.flags)) : null,
+                  row.client_ddt || null,
+                  row.checkin_id || null,
+                  row.checkin_session_code || null,
+                  row.created_at || new Date()
+                ]
+              );
+            } else {
+              await connection.query(
+                "UPDATE PALLETS SET pallet_code = ?, location = ?, status = 'STOCKED' WHERE id = ?",
+                [targetPalletCode, cleanTargetLoc, row.id]
+              );
+              await connection.query(
+                `UPDATE OUTBOUND_ITEMS oi
+                 JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+                 SET oi.pallet_code = ?
+                 WHERE oi.pallet_id = ? AND oo.status != 'SHIPPED'`,
+                [targetPalletCode, row.id]
+              );
+            }
+            await consolidateLocationPallets(connection, cleanTargetLoc);
+            await connection.query(
+              'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+              ['MOVE_ITEM', `Spostato ${row.product_name} (Q.tà ${requestedMoveQty}${isPartialSplit ? `/${row.quantity}` : ''}, lotto ${row.batch || '-'}) da ${sourceLoc || '-'} a ${cleanTargetLoc} (${targetPalletCode})`, source, request.user.username]
+            );
+          }
+
+          await connection.commit();
+          return {
+            status: 200,
+            body: {
+              success: true,
+              target_location: cleanTargetLoc,
+              target_pallet_code: targetPalletCode,
+              message: `Spostamento completato in ${cleanTargetLoc}`
+            }
+          };
+        } catch (txErr) {
+          await connection.rollback();
+          throw txErr;
+        }
+      });
+
+      if (outcome.status !== 200) {
+        return reply.code(outcome.status).send(outcome.body);
+      }
+
+      if (fastify.io) {
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('stow_updated');
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
+      return outcome.body;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore durante lo spostamento' });
+    } finally {
+      connection.release();
+    }
+  });
+
   fastify.get('/:code', async (request, reply) => {
     const { code } = request.params;
     try {
       const [allRows] = await db.query(`
-        SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
+        SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
                COALESCE(p.units_per_box, pr.units_per_box, 1) as units_per_box,
                c.business_name as customer_name
         FROM PALLETS p
@@ -917,7 +1257,7 @@ async function palletRoutes(fastify, options) {
         return mixedPallet;
       }
       
-      return rows[0];
+      return { ...rows[0], isMixed: false, items: rows };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore lettura paletta' });
@@ -1360,9 +1700,12 @@ async function palletRoutes(fastify, options) {
             fastify.log.info(`[STOW] Force is true! Bypassing occupied check.`);
           }
 
-          const [[loc]] = await connection.query('SELECT * FROM LOCATIONS WHERE barcode = ?', [location]);
+          const [[freeDest]] = await connection.query('SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))', [location]);
+          const [[loc]] = freeDest ? [[null]] : await connection.query('SELECT * FROM LOCATIONS WHERE barcode = ?', [location]);
           
-          if (loc) {
+          if (freeDest) {
+            // Posizione Libera: non creare mai una riga fantasma in LOCATIONS
+          } else if (loc) {
             if (pin && loc.pin !== pin) {
               await connection.rollback();
               return { status: 403, body: { error: 'PIN di sicurezza ERRATO' } };

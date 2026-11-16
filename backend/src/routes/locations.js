@@ -15,10 +15,21 @@ async function locationRoutes(fastify, options) {
       const [rows] = await db.query(`
         SELECT l.*, 
                GROUP_CONCAT(DISTINCT p.pallet_code SEPARATOR ', ') as pallet_code,
-               GROUP_CONCAT(DISTINCT pr.name SEPARATOR ', ') as product_name
+               GROUP_CONCAT(DISTINCT pr.name SEPARATOR ', ') as product_name,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(p.batch), '') SEPARATOR ', ') as batch,
+               GROUP_CONCAT(DISTINCT c.business_name SEPARATOR ', ') as customer_name,
+               COALESCE(SUM(CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.quantity ELSE 0 END), 0) as quantity,
+               MAX(COALESCE(p.pallet_uom, pr.uom)) as uom,
+               MAX(COALESCE(p.units_per_box, pr.units_per_box, 1)) as units_per_box,
+               MIN(p.expiration_date) as expiration_date,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(p.notes), '') SEPARATOR ' | ') as notes,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(p.client_pallet_number), '') SEPARATOR ', ') as client_pallet_number,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(p.client_article_number), '') SEPARATOR ', ') as client_article_number,
+               MAX(pr.notes) as product_notes
         FROM LOCATIONS l
-        LEFT JOIN PALLETS p ON l.barcode = p.location AND p.status = 'STOCKED'
+        LEFT JOIN PALLETS p ON UPPER(TRIM(l.barcode)) = UPPER(TRIM(p.location)) AND p.status = 'STOCKED' AND p.quantity > 0
         LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
+        LEFT JOIN CUSTOMERS c ON p.customer_id = c.id
         GROUP BY l.id
         ORDER BY l.zone ASC, l.col ASC, l.pos ASC
       `);
@@ -290,7 +301,16 @@ async function locationRoutes(fastify, options) {
 
   fastify.get('/free', async (request, reply) => {
     try {
-      const [rows] = await db.query('SELECT * FROM FREE_LOCATIONS ORDER BY name ASC');
+      const [rows] = await db.query(`
+        SELECT fl.*,
+               COUNT(DISTINCT CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.id END) AS items_count,
+               COALESCE(SUM(CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.quantity ELSE 0 END), 0) AS total_qty,
+               GROUP_CONCAT(DISTINCT CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.pallet_code END SEPARATOR ', ') AS pallet_codes
+        FROM FREE_LOCATIONS fl
+        LEFT JOIN PALLETS p ON UPPER(TRIM(fl.name)) = UPPER(TRIM(p.location))
+        GROUP BY fl.id
+        ORDER BY fl.name ASC
+      `);
       return rows;
     } catch (err) {
       fastify.log.error(err);
@@ -323,6 +343,16 @@ async function locationRoutes(fastify, options) {
     }
     const { id } = request.params;
     try {
+      const [[freeLoc]] = await db.query('SELECT name FROM FREE_LOCATIONS WHERE id = ?', [id]);
+      if (freeLoc) {
+        const [[occ]] = await db.query(
+          "SELECT COUNT(*) AS cnt FROM PALLETS WHERE UPPER(TRIM(location)) = UPPER(TRIM(?)) AND status = 'STOCKED' AND quantity > 0",
+          [freeLoc.name]
+        );
+        if (occ && occ.cnt > 0) {
+          return reply.code(400).send({ error: 'Impossibile eliminare: sono presenti articoli stivati in questa posizione libera.' });
+        }
+      }
       await db.query('DELETE FROM FREE_LOCATIONS WHERE id = ?', [id]);
       if (fastify.io) {
         fastify.io.emit('locations_updated');

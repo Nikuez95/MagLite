@@ -5,7 +5,7 @@ import axios from 'axios';
 import {
   Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity,
   User, Monitor, Loader2, Trash2, Edit3, Printer, Clock, AlertTriangle,
-  Calendar, ArrowUpDown, ShieldCheck, RotateCcw, Flame, X, Layers, ExternalLink,
+  Calendar, ArrowUpDown, ArrowRightLeft, ShieldCheck, RotateCcw, Flame, X, Layers, ExternalLink,
   Lock, Unlock, ShieldAlert
 } from 'lucide-react';
 import { io } from 'socket.io-client';
@@ -252,6 +252,16 @@ const ProductsManagement = () => {
     setWarningUnit(newUnit);
   };
   
+  // Modale Spostamento Parziale / Singolo Articolo / Posizioni Libere
+  const [moveModal, setMoveModal] = useState({
+    show: false,
+    pallet: null,
+    mode: 'SINGLE_ITEM', // 'SINGLE_ITEM' | 'ALL_PALLET'
+    moveQuantity: '',
+    targetLocation: '',
+    error: null
+  });
+
   // Modifica Paletta (Posizione e Metadati)
   const [editModal, setEditModal] = useState({ 
     show: false, 
@@ -295,6 +305,7 @@ const ProductsManagement = () => {
   const canManageProducts = hasPerm('product_manage');
   const canDeleteProducts = hasPerm('pallet_delete');
   const canEditPallet = hasPerm('pallet_edit');
+  const canMovePallet = hasPerm('pallet_move');
   const canDeletePallet = hasPerm('pallet_delete');
   const canManageQuarantine = hasPerm('quarantine_manage');
   const canViewQuarantine = hasPerm('view_quarantine');
@@ -410,16 +421,18 @@ const ProductsManagement = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [palletsRes, productsRes, custRes, locRes] = await Promise.all([
+      const [palletsRes, productsRes, custRes, locRes, freeRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/pallets`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers })
+        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] }))
       ]);
       setPallets(palletsRes.data);
       setProducts(productsRes.data);
       setCustomers(custRes.data);
       setLocations(locRes.data);
+      setFreeLocations(freeRes.data || []);
     } catch (err) {
       console.error(err);
     }
@@ -428,10 +441,20 @@ const ProductsManagement = () => {
   useEffect(() => {
     fetchData();
     const socket = io(`http://${window.location.hostname}:3000`);
-    socket.on('stow_updated', () => fetchData());
-    socket.on('dashboard_update', () => fetchData());
-    socket.on('quarantine_updated', () => fetchData());
-    return () => socket.disconnect();
+    const refresh = () => fetchData();
+    socket.on('stow_updated', refresh);
+    socket.on('locations_updated', refresh);
+    socket.on('inventory_updated', refresh);
+    socket.on('dashboard_update', refresh);
+    socket.on('quarantine_updated', refresh);
+    return () => {
+      socket.off('stow_updated', refresh);
+      socket.off('locations_updated', refresh);
+      socket.off('inventory_updated', refresh);
+      socket.off('dashboard_update', refresh);
+      socket.off('quarantine_updated', refresh);
+      socket.disconnect();
+    };
   }, []);
 
   const openHistory = async (code) => {
@@ -590,6 +613,100 @@ const ProductsManagement = () => {
     }
   };
 
+  const destinationOptions = React.useMemo(() => {
+    const freeOpts = freeLocations.map(fl => ({
+      value: fl.name.toUpperCase(),
+      label: `${fl.name.toUpperCase()} [Posizione Libera${fl.items_count > 0 ? ` · ${fl.items_count} art.` : ''}]`
+    }));
+    const mappedFree = locations
+      .filter(l => !l.pallet_code)
+      .map(l => ({ value: l.barcode, label: `${l.barcode} [Libera]` }));
+    const mappedOcc = locations
+      .filter(l => l.pallet_code)
+      .map(l => ({ value: l.barcode, label: `${l.barcode} [Occ.: ${l.pallet_code}]` }));
+    return [
+      { label: 'Posizioni Libere (Scaffalini / Terra)', options: freeOpts },
+      { label: 'Scaffali Mappati Liberi', options: mappedFree },
+      { label: 'Scaffali Mappati Occupati (Frammenta / Unisci)', options: mappedOcc }
+    ];
+  }, [freeLocations, locations]);
+
+  const executeMoveApi = async (payload) => {
+    const headers = { Authorization: `Bearer ${getToken()}` };
+    try {
+      await axios.post(`http://${window.location.hostname}:3000/api/pallets/move-items`, payload, { headers });
+    } catch (err) {
+      if (err.response?.status === 409 && err.response?.data?.occupying_pallet) {
+        const choice = await appConfirmThreeWay(
+          `La posizione ${payload.target_location} è già occupata dalla paletta ${err.response.data.occupying_pallet}. Come vuoi procedere?`,
+          'Posizione Occupata',
+          'Unisci / Frammenta',
+          'Forza comunque',
+          'Annulla'
+        );
+        if (choice === 'CONFIRM') {
+          await axios.post(
+            `http://${window.location.hostname}:3000/api/pallets/move-items`,
+            { ...payload, merge_into_existing: true },
+            { headers }
+          );
+        } else if (choice === 'DENY') {
+          await axios.post(
+            `http://${window.location.hostname}:3000/api/pallets/move-items`,
+            { ...payload, force: true },
+            { headers }
+          );
+        } else {
+          return false;
+        }
+      } else {
+        throw err;
+      }
+    }
+    return true;
+  };
+
+  const handleMoveSubmit = async (e) => {
+    e.preventDefault();
+    if (isProcessing || !moveModal.pallet) return;
+    const locStr = String(moveModal.targetLocation || '').trim().toUpperCase();
+    if (!locStr) {
+      setMoveModal(prev => ({ ...prev, error: 'Seleziona o inserisci una posizione di destinazione.' }));
+      return;
+    }
+
+    const p = moveModal.pallet;
+    const maxQ = parseFloat(p.quantity) || 0;
+    const qty = moveModal.mode === 'SINGLE_ITEM' ? parseFloat(moveModal.moveQuantity) : maxQ;
+    if (moveModal.mode === 'SINGLE_ITEM' && (isNaN(qty) || qty <= 0 || qty > maxQ)) {
+      setMoveModal(prev => ({ ...prev, error: `Inserisci una quantità valida tra 0.01 e ${maxQ}.` }));
+      return;
+    }
+
+    setIsProcessing(true);
+    setMoveModal(prev => ({ ...prev, error: null }));
+    try {
+      const done = await executeMoveApi({
+        mode: moveModal.mode,
+        pallet_code: p.pallet_code,
+        pallet_id: moveModal.mode === 'SINGLE_ITEM' ? p.id : undefined,
+        move_quantity: moveModal.mode === 'SINGLE_ITEM' ? qty : undefined,
+        target_location: locStr,
+        source: 'Gestionale'
+      });
+      if (!done) {
+        setIsProcessing(false);
+        return;
+      }
+      setMoveModal({ show: false, pallet: null, mode: 'SINGLE_ITEM', moveQuantity: '', targetLocation: '', error: null });
+      fetchData();
+    } catch (err) {
+      setMoveModal(prev => ({ ...prev, error: err.response?.data?.error || 'Errore durante lo spostamento' }));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleUpdatePallet = async (e) => {
     e.preventDefault();
     if (isProcessing) return;
@@ -609,54 +726,22 @@ const ProductsManagement = () => {
         const locStr = editModal.newLocation.toUpperCase().trim();
         const isMapped = locations.some(l => l.barcode === locStr);
         const isFree = freeLocations.some(fl => fl.name.toUpperCase() === locStr);
-        
+
         if (!isMapped && !isFree) {
           throw { response: { data: { error: 'La posizione inserita non esiste nel sistema. Scegli una posizione valida o crea una zona libera dal Magazzino.' } } };
         }
 
-        let occupiedBy = null;
-        if (isMapped) {
-          const locObj = locations.find(l => l.barcode === locStr);
-          if (locObj && locObj.pallet_code && locObj.pallet_code !== editModal.pallet.pallet_code) {
-            occupiedBy = locObj.pallet_code;
-          }
-        } else {
-          const occupyingPallet = pallets.find(p => p.location && p.location.toUpperCase() === locStr && p.pallet_code !== editModal.pallet.pallet_code);
-          if (occupyingPallet) {
-            occupiedBy = occupyingPallet.pallet_code;
-          }
-        }
-
-        if (occupiedBy) {
-          const choice = await appConfirmThreeWay(
-            `La posizione ${locStr} è già occupata dalla paletta ${occupiedBy}. Come vuoi procedere?`,
-            'Posizione Occupata',
-            'Frammenta',
-            'Forza comunque',
-            'Annulla'
-          );
-          if (choice === 'CONFIRM') {
-            await axios.post(`http://${window.location.hostname}:3000/api/pallets/merge`, {
-              source_code: editModal.pallet.pallet_code,
-              target_code: occupiedBy
-            }, { headers: { Authorization: `Bearer ${getToken()}` } });
-          } else if (choice === 'DENY') {
-            await axios.post(`http://${window.location.hostname}:3000/api/pallets/stow`, {
-              pallet_code: editModal.pallet.pallet_code,
-              location: locStr,
-              source: 'Gestionale',
-              force: true
-            }, { headers: { Authorization: `Bearer ${getToken()}` } });
-          } else {
-            setIsProcessing(false);
-            return;
-          }
-        } else {
-          await axios.post(`http://${window.location.hostname}:3000/api/pallets/stow`, {
-            pallet_code: editModal.pallet.pallet_code,
-            location: locStr,
-            source: 'Gestionale'
-          }, { headers: { Authorization: `Bearer ${getToken()}` } });
+        const done = await executeMoveApi({
+          mode: 'SINGLE_ITEM',
+          pallet_code: editModal.pallet.pallet_code,
+          pallet_id: editModal.pallet.id,
+          move_quantity: parseFloat(editModal.pallet.quantity),
+          target_location: locStr,
+          source: 'Gestionale'
+        });
+        if (!done) {
+          setIsProcessing(false);
+          return;
         }
       }
         
@@ -1598,6 +1683,24 @@ const ProductsManagement = () => {
                                 </button>
                               )
                             )}
+                            {canMovePallet && (
+                              <button
+                                type="button"
+                                disabled={isQuarantined || !customerAllowed}
+                                onClick={() => setMoveModal({
+                                  show: true,
+                                  pallet: p,
+                                  mode: 'SINGLE_ITEM',
+                                  moveQuantity: String(p.quantity),
+                                  targetLocation: '',
+                                  error: null
+                                })}
+                                className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={isQuarantined ? "Paletta in QUARANTENA: sbloccala prima di spostarla" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Sposta articolo, quantità parziale o paletta (anche su Posizioni Libere)"}
+                              >
+                                <ArrowRightLeft size={17} />
+                              </button>
+                            )}
                             {canEditPallet && (
                               <>
                                 <button
@@ -2004,6 +2107,152 @@ const ProductsManagement = () => {
         </div>
       )}
 
+      {moveModal.show && moveModal.pallet && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-8 max-w-lg w-full shadow-2xl relative animate-fade-in-up">
+            <button
+              type="button"
+              onClick={() => setMoveModal({ show: false, pallet: null, mode: 'SINGLE_ITEM', moveQuantity: '', targetLocation: '', error: null })}
+              className="absolute top-6 right-6 text-slate-500 hover:text-white"
+            >
+              <XCircle size={22} />
+            </button>
+            <h2 className="text-2xl font-bold text-brand-white mb-5 flex items-center gap-3">
+              <span className="w-10 h-10 bg-emerald-500/20 flex items-center justify-center rounded-xl text-emerald-400">
+                <ArrowRightLeft size={22} />
+              </span>
+              Sposta Merce
+            </h2>
+
+            <div className="mb-5 bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs space-y-1">
+              <div className="flex justify-between items-center">
+                <span className="font-mono font-bold text-brand-blue">{moveModal.pallet.pallet_code}</span>
+                <span className="font-mono font-bold text-amber-300">Da: {moveModal.pallet.location || 'IN ATTESA'}</span>
+              </div>
+              <div className="text-sm font-black text-brand-white">{moveModal.pallet.product_name}</div>
+              <div className="text-slate-400">
+                Disponibile nella riga: <strong className="text-emerald-400">{moveModal.pallet.quantity} {moveModal.pallet.uom}</strong>
+                {moveModal.pallet.batch ? ` • Lotto: ${moveModal.pallet.batch}` : ''}
+              </div>
+            </div>
+
+            {moveModal.error && (
+              <div className="mb-4 p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-center gap-2 text-rose-400 text-xs font-bold">
+                <XCircle size={16} />
+                <span>{moveModal.error}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleMoveSubmit} className="space-y-4">
+              {Boolean(moveModal.pallet.is_mixed) && (
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Cosa vuoi spostare?</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setMoveModal(prev => ({ ...prev, mode: 'SINGLE_ITEM' }))}
+                      className={`p-3 rounded-xl border text-xs font-black transition-all ${
+                        moveModal.mode === 'SINGLE_ITEM'
+                          ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      Solo questo articolo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMoveModal(prev => ({ ...prev, mode: 'ALL_PALLET' }))}
+                      className={`p-3 rounded-xl border text-xs font-black transition-all ${
+                        moveModal.mode === 'ALL_PALLET'
+                          ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      Tutta la paletta / tutti gli art.
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {moveModal.mode === 'SINGLE_ITEM' && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-slate-400 font-bold text-xs uppercase tracking-wider">
+                      Quantità da spostare ({moveModal.pallet.uom})
+                    </label>
+                    <div className="flex items-center gap-1">
+                      {moveModal.pallet.units_per_box > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const upb = parseFloat(moveModal.pallet.units_per_box) || 1;
+                            const maxQ = parseFloat(moveModal.pallet.quantity) || 0;
+                            const cur = parseFloat(moveModal.moveQuantity) || 0;
+                            setMoveModal(prev => ({ ...prev, moveQuantity: String(Math.min(maxQ, cur + upb)) }));
+                          }}
+                          className="px-2 py-0.5 bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded text-[11px] font-bold"
+                        >
+                          +1 Scat.
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setMoveModal(prev => ({ ...prev, moveQuantity: String(moveModal.pallet.quantity) }))}
+                        className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[11px] font-bold"
+                      >
+                        Tutto ({moveModal.pallet.quantity})
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="number"
+                    min="0.01"
+                    max={moveModal.pallet.quantity}
+                    step="0.01"
+                    required
+                    value={moveModal.moveQuantity}
+                    onChange={e => setMoveModal(prev => ({ ...prev, moveQuantity: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-lg font-black text-brand-white focus:border-emerald-400"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">
+                  Destinazione (Scaffale o Posizione Libera)
+                </label>
+                <CreatableSelect
+                  styles={selectStyles}
+                  isClearable
+                  placeholder="Cerca posizione libera (es. SCAFFALINI) o scaffale..."
+                  options={destinationOptions}
+                  value={moveModal.targetLocation ? { value: moveModal.targetLocation, label: moveModal.targetLocation } : null}
+                  onChange={val => setMoveModal(prev => ({ ...prev, targetLocation: val ? val.value.toUpperCase() : '' }))}
+                  formatCreateLabel={(val) => `Forza posizione: "${val.toUpperCase()}"`}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-slate-800/80">
+                <button
+                  type="button"
+                  onClick={() => setMoveModal({ show: false, pallet: null, mode: 'SINGLE_ITEM', moveQuantity: '', targetLocation: '', error: null })}
+                  className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl font-bold"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  disabled={isProcessing}
+                  className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-brand-black rounded-xl font-black disabled:opacity-50"
+                >
+                  {isProcessing ? 'Spostamento...' : 'Conferma Spostamento'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {editModal.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-lg w-full shadow-2xl relative animate-fade-in-up">
@@ -2031,12 +2280,12 @@ const ProductsManagement = () => {
 
             <form onSubmit={handleUpdatePallet} className="space-y-4">
               <div>
-                <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Posizione / Scaffale</label>
+                <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Posizione / Scaffale o Posizione Libera</label>
                 <CreatableSelect 
                   styles={selectStyles}
                   isClearable
-                  placeholder="Lascia vuoto o cerca scaffale..."
-                  options={locations.filter(l => !l.pallet_code).map(l => ({ value: l.barcode, label: l.barcode }))}
+                  placeholder="Cerca scaffale, posizione libera..."
+                  options={destinationOptions}
                   value={editModal.newLocation ? { value: editModal.newLocation, label: editModal.newLocation } : null}
                   onChange={val => setEditModal({...editModal, newLocation: val ? val.value.toUpperCase() : ''})}
                   formatCreateLabel={(val) => `Forza posizione: "${val.toUpperCase()}"`}
