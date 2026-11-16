@@ -562,14 +562,14 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
   const reservedTargets = new Set();
 
   // ---------------------------------------------------------------------------
-  // TASK 1: UNIONE ARTICOLI CON LOTTI UGUALI (su paletta più completa)
+  // TASK 1: UNIONE ARTICOLI CON LOTTI UGUALI (divisi per ZONA, su paletta più completa)
   // ---------------------------------------------------------------------------
   const singleItemPallets = accessiblePallets.filter(g => g.items.length === 1);
   const bySameBatchKey = new Map();
   for (const p of singleItemPallets) {
     const it = p.items[0];
     if (!it.norm_batch) continue;
-    const key = `${p.customer_id}__${it.product_id}__${it.norm_batch}`;
+    const key = `${p.zone}__${p.customer_id}__${it.product_id}__${it.norm_batch}`;
     if (!bySameBatchKey.has(key)) bySameBatchKey.set(key, []);
     bySameBatchKey.get(key).push(p);
   }
@@ -591,7 +591,8 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
     });
 
     const target = sorted[0];
-    let targetQty = parseFloat(target.items[0].quantity) || 0;
+    const targetInitialQty = parseFloat(target.items[0].quantity) || 0;
+    let targetQty = targetInitialQty;
     const sources = [];
 
     for (let i = 1; i < sorted.length; i++) {
@@ -614,13 +615,18 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
     if (sources.length > 0) {
       usedPalletCodes.add(target.pallet_code);
       const addedQty = sources.reduce((s, p) => s + (parseFloat(p.items[0].quantity) || 0), 0);
+      const targetBeforeBd = formatBoxesBreakdown(targetInitialQty, upb, itSample.uom);
+      const targetAfterBd = formatBoxesBreakdown(targetQty, upb, itSample.uom);
+      const addedBd = formatBoxesBreakdown(addedQty, upb, itSample.uom);
+
       tasks.push({
         id: `MERGE_BATCH_${target.pallet_code}`,
         type: 'MERGE_SAME_BATCH',
+        zone: target.zone,
         priority: 95 + sources.length * 5,
         title: `Unisci Lotto ${itSample.batch}`,
         subtitle: `${itSample.product_name} (${target.customer_name})`,
-        reason: `${sources.length + 1} palette con stesso articolo e lotto sparsi su più posizioni: unisci ${formatBoxesBreakdown(addedQty, upb, itSample.uom).label} su ${target.pallet_code} (${target.location}) per liberare ${sources.length} postazioni.`,
+        reason: `Paletta ${target.pallet_code} (${target.location}) ha ${targetBeforeBd.label}. Unisci ${sources.length} ${sources.length === 1 ? 'paletta' : 'palette'} (${addedBd.label}) sullo stesso barcode per arrivare a ${targetAfterBd.label} e liberare ${sources.length} postazioni.`,
         action_type: 'MERGE_BATCH',
         customer_name: target.customer_name,
         product_name: itSample.product_name,
@@ -628,29 +634,39 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
         batch: itSample.batch,
         target_pallet_code: target.pallet_code,
         target_location: target.location,
-        target_qty_before: parseFloat(target.items[0].quantity) || 0,
+        target_qty_before: targetInitialQty,
         target_qty_after: targetQty,
+        target_before_label: targetBeforeBd.label,
+        target_after_label: targetAfterBd.label,
+        target_before_boxes: targetBeforeBd.exactBoxes,
+        target_after_boxes: targetAfterBd.exactBoxes,
         uom: itSample.uom,
         units_per_box: upb,
-        sources: sources.map(s => ({
-          pallet_code: s.pallet_code,
-          location: s.location,
-          quantity: parseFloat(s.items[0].quantity) || 0,
-          qty_label: formatBoxesBreakdown(s.items[0].quantity, upb, itSample.uom).label
-        }))
+        sources: sources.map(s => {
+          const sq = parseFloat(s.items[0].quantity) || 0;
+          const sBd = formatBoxesBreakdown(sq, upb, itSample.uom);
+          return {
+            pallet_code: s.pallet_code,
+            location: s.location,
+            quantity: sq,
+            boxes: sBd.exactBoxes,
+            qty_label: sBd.label
+          };
+        })
       });
     }
   }
 
   // ---------------------------------------------------------------------------
-  // TASK 2: FRAMMENTAZIONE / ACCORPAMENTO PICCOLI ARTICOLI IN UNICA PALETTA
+  // TASK 2: FRAMMENTAZIONE / ACCORPAMENTO PICCOLI ARTICOLI IN UNICA PALETTA (per ZONA)
   // ---------------------------------------------------------------------------
-  const sparseByCustomer = new Map();
+  const sparseByZoneAndCustomer = new Map();
   for (const p of accessiblePallets) {
     if (usedPalletCodes.has(p.pallet_code)) continue;
     // Calcola quanto è "scarico" il bancale
     let totalFillRatio = 0;
     let totalBoxes = 0;
+    let totalUnits = 0;
     let hasCapacityMeta = false;
 
     for (const it of p.items) {
@@ -659,6 +675,7 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
       const bpp = Math.max(1, parseInt(it.eff_boxes_per_pallet, 10) || 1);
       const boxes = upb > 1 ? q / upb : q;
       totalBoxes += boxes;
+      totalUnits += q;
       if (bpp > 1) {
         hasCapacityMeta = true;
         totalFillRatio += q / (bpp * upb);
@@ -670,12 +687,13 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
       : (p.items.length === 1 && totalBoxes <= 8);
 
     if (isSparse) {
-      if (!sparseByCustomer.has(p.customer_id)) sparseByCustomer.set(p.customer_id, []);
-      sparseByCustomer.get(p.customer_id).push({ pallet: p, fillRatio: totalFillRatio, totalBoxes });
+      const zk = `${p.zone}__${p.customer_id}`;
+      if (!sparseByZoneAndCustomer.has(zk)) sparseByZoneAndCustomer.set(zk, []);
+      sparseByZoneAndCustomer.get(zk).push({ pallet: p, fillRatio: totalFillRatio, totalBoxes, totalUnits });
     }
   }
 
-  for (const [, sparseList] of sparseByCustomer.entries()) {
+  for (const [, sparseList] of sparseByZoneAndCustomer.entries()) {
     if (sparseList.length < 2) continue;
 
     // Raggruppa al massimo fino a 5 bancali parziali per volta così stanno comodamente su un solo bancale
@@ -724,25 +742,51 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
 
     [target, ...sources].forEach(p => usedPalletCodes.add(p.pallet_code));
 
+    const summarizePalletBoxes = (pal) => pal.items.reduce((s, it) => {
+      const q = parseFloat(it.quantity) || 0;
+      const upb = Math.max(1, parseInt(it.eff_units_per_box, 10) || 1);
+      return s + (upb > 1 ? q / upb : q);
+    }, 0);
+
     tasks.push({
       id: `FRAGMENT_${target.pallet_code}`,
       type: 'CONSOLIDATE_FRAGMENTS',
+      zone: target.zone,
       priority: 85 + sources.length * 4,
       title: `Frammenta ${sources.length + 1} bancali in ${target.pallet_code}`,
-      subtitle: `${target.customer_name} · Sposta in ${optimalPos}`,
-      reason: `Trovati ${sources.length + 1} bancali parziali con poche scatole (~${Math.round(runningBoxes * 10) / 10} colli totali). Frammenta tutto sul barcode ${target.pallet_code} e posizionalo in ${optimalPos} (${getLevelRangeLabel(combinedVelocity.idealLevel)}). Liberi ${sources.length} scaffali!`,
+      subtitle: `${target.customer_name} · Posizione X: ${optimalPos}`,
+      reason: `In ${target.zone} ci sono ${sources.length + 1} bancali parziali (~${Math.round(runningBoxes * 10) / 10} colli totali). Frammenta tutto sul barcode ${target.pallet_code} e posizionalo in ${optimalPos} (${getLevelRangeLabel(combinedVelocity.idealLevel)}). Liberi ${sources.length} scaffali!`,
       action_type: 'CONSOLIDATE_FRAGMENTS',
       customer_name: target.customer_name,
+      product_name: [...new Set(combinedRows.map(r => r.product_name))].join(', '),
+      sku: [...new Set(combinedRows.map(r => r.sku).filter(Boolean))].join(', '),
+      batch: [...new Set(combinedRows.map(r => r.batch).filter(Boolean))].join(', ') || '-',
       target_pallet_code: target.pallet_code,
       target_location: optimalPos,
+      target_initial_location: target.location,
+      target_boxes: Math.round(summarizePalletBoxes(target) * 100) / 100,
+      total_boxes_after: Math.round(runningBoxes * 100) / 100,
       needs_relocation: optimalPos !== target.location,
       velocity: combinedVelocity,
       sources: sources.map(s => ({
         pallet_code: s.pallet_code,
         location: s.location,
-        items_summary: s.items.map(it => `${it.product_name} (${formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label})`).join(' · ')
+        boxes: Math.round(summarizePalletBoxes(s) * 100) / 100,
+        items_summary: s.items.map(it => `${it.product_name} (${formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label})`).join(' · '),
+        items: s.items.map(it => ({
+          product_name: it.product_name,
+          sku: it.sku,
+          batch: it.batch,
+          qty_label: formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label
+        }))
       })),
-      target_summary: target.items.map(it => `${it.product_name} (${formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label})`).join(' · ')
+      target_summary: target.items.map(it => `${it.product_name} (${formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label})`).join(' · '),
+      target_items: target.items.map(it => ({
+        product_name: it.product_name,
+        sku: it.sku,
+        batch: it.batch,
+        qty_label: formatBoxesBreakdown(it.quantity, it.eff_units_per_box, it.uom).label
+      }))
     });
   }
 
@@ -800,6 +844,7 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
     tasks.push({
       id: `REORDER_${p.pallet_code}`,
       type: 'REORDER_SLOTTING',
+      zone: p.zone,
       priority: Math.round(cand.urgency),
       title: isMovingDown
         ? `Abbassa ${p.pallet_code} → Piano ${rec.best.level}`
@@ -812,6 +857,9 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
         : `Rotazione ${cand.velocity.tier} (${cand.velocity.shipCount} spedizioni) occupa il Piano 0 (${p.location}): libera spazio basso spostandola in ${rec.best.barcode} (Piano ${rec.best.level}).`,
       action_type: 'MOVE',
       pallet_code: p.pallet_code,
+      customer_name: p.customer_name,
+      product_name: p.items.map(i => i.product_name).join(', '),
+      sku: p.items.map(i => i.sku).filter(Boolean).join(', '),
       from_location: p.location,
       to_location: rec.best.barcode,
       current_level: p.level,
@@ -827,15 +875,69 @@ async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
 
   tasks.sort((a, b) => b.priority - a.priority);
 
+  // Calcolo Punteggio Ottimizzazione per ogni Zona e Globale Magazzino (escluse FREE_LOCATIONS)
+  const allZones = [...new Set(snapshot.locations.map(l => l.zone))].sort();
+  const visibleMappedPallets = allGroups.filter(g => canAccessCustomerFn(user, g.customer_id));
+
+  let weightedScoreSum = 0;
+  let totalScoredPallets = 0;
+
+  const zoneScores = allZones.map(zoneName => {
+    const zLocs = snapshot.locations.filter(l => l.zone === zoneName);
+    const maxLvl = zLocs.length > 0 ? Math.max(...zLocs.map(l => l.level)) : 3;
+    const zPallets = visibleMappedPallets.filter(g => g.zone === zoneName);
+    const zTasks = tasks.filter(t => t.zone === zoneName);
+
+    let fitSum = 0;
+    for (const gp of zPallets) {
+      const vel = getDominantVelocityForRows(velocities, gp.items);
+      const ideal = Math.min(vel.idealLevel, maxLvl);
+      const diff = Math.abs(gp.level - ideal);
+      const fit = diff === 0 ? 100 : diff === 1 ? 75 : diff === 2 ? 45 : 20;
+      fitSum += fit;
+    }
+
+    const palletCount = zPallets.length;
+    const avgFit = palletCount > 0 ? fitSum / palletCount : 100;
+    const taskPenaltyRatio = palletCount > 0 ? Math.min(1, zTasks.length / palletCount) : 0;
+    const score = palletCount > 0
+      ? Math.max(0, Math.min(100, Math.round(avgFit * 0.65 + (1 - taskPenaltyRatio) * 100 * 0.35)))
+      : 100;
+
+    if (palletCount > 0) {
+      weightedScoreSum += score * palletCount;
+      totalScoredPallets += palletCount;
+    }
+
+    const totalSlots = zLocs.length;
+    const occupiedSlots = zLocs.filter(l => (snapshot.occupiedByBarcode.get(l.barcode) || []).length > 0).length;
+
+    return {
+      zone: zoneName,
+      score,
+      palletCount,
+      totalSlots,
+      occupiedSlots,
+      freeSlots: totalSlots - occupiedSlots,
+      tasksCount: zTasks.length,
+      reorderCount: zTasks.filter(t => t.type === 'REORDER_SLOTTING').length,
+      mergeSameBatchCount: zTasks.filter(t => t.type === 'MERGE_SAME_BATCH').length,
+      fragmentConsolidateCount: zTasks.filter(t => t.type === 'CONSOLIDATE_FRAGMENTS').length
+    };
+  });
+
+  const warehouseScore = totalScoredPallets > 0 ? Math.round(weightedScoreSum / totalScoredPallets) : 100;
+
   const summary = {
     totalTasks: tasks.length,
     reorderCount: tasks.filter(t => t.type === 'REORDER_SLOTTING').length,
     mergeSameBatchCount: tasks.filter(t => t.type === 'MERGE_SAME_BATCH').length,
     fragmentConsolidateCount: tasks.filter(t => t.type === 'CONSOLIDATE_FRAGMENTS').length,
-    excludedFreeLocationPallets: snapshot.excludedFreeLocationPallets
+    excludedFreeLocationPallets: snapshot.excludedFreeLocationPallets,
+    warehouseScore
   };
 
-  return { summary, tasks };
+  return { warehouseScore, zoneScores, summary, tasks };
 }
 
 module.exports = {

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { hasPerm } from '../utils/permissions';
+import ZebraErrorModal from './ZebraErrorModal';
 
 const VerifyBarcodeZebra = () => {
   const navigate = useNavigate();
@@ -204,6 +205,11 @@ const VerifyBarcodeZebra = () => {
 
   return (
     <div className="flex-1 p-4 flex flex-col w-full max-w-md mx-auto overflow-y-auto">
+      <ZebraErrorModal
+        message={feedback?.type === 'error' ? feedback.text : null}
+        title="Errore Verifica"
+        onClose={() => setFeedback(null)}
+      />
       <div className="flex items-center justify-between mb-3">
         <div>
           <h2 className="text-xl font-black text-brand-white flex items-center gap-2">

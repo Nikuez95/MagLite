@@ -20,6 +20,7 @@ import {
   Plus
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
+import ZebraErrorModal from './ZebraErrorModal';
 
 // Calcola la visualizzazione prioritaria per il Picking: prima SCATOLE (cosa prendere fisicamente), poi l'equivalente in PEZZI
 export const getPickQuantityInfo = (item) => {
@@ -591,6 +592,7 @@ const OutboundZebra = () => {
   if (step === 'SCAN_ORDER') {
     return (
       <div className="flex-1 p-4 flex flex-col max-w-md mx-auto w-full">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
         <div className="flex items-center gap-3 mb-4">
           <button
             onClick={() => navigate('/zebra')}
@@ -917,6 +919,7 @@ const OutboundZebra = () => {
 
       {/* Area Centrale Scrollabile */}
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
         {order?.notes && (
           <div className="bg-amber-500/15 border border-amber-500/40 px-3 py-2 rounded-2xl text-amber-200 text-xs font-bold shrink-0">
             <span className="text-amber-400 uppercase font-black mr-1.5">NOTA DDT:</span>

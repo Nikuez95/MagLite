@@ -3,6 +3,7 @@ import axios from 'axios';
 import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle, Play, MapPin, Hash, Search, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
+import ZebraErrorModal from './ZebraErrorModal';
 
 const InboundZebra = () => {
   const navigate = useNavigate();
@@ -139,6 +140,7 @@ const InboundZebra = () => {
   if (step === 'SCAN_DDT') {
     return (
       <div className="flex-1 p-5 flex flex-col">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
         <div className="flex items-center gap-3 mb-4">
           <button onClick={() => navigate('/zebra')} className="p-3 bg-slate-800 rounded-full text-brand-white">
             <ChevronLeft size={22} />
@@ -253,6 +255,7 @@ const InboundZebra = () => {
 
     return (
       <div className="flex-1 p-4 flex flex-col">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
         <div className="flex items-center gap-4 mb-3">
           <button onClick={() => { fetchLocs(); setStep('SCAN_DDT'); }} className="p-3 bg-slate-800 rounded-full text-brand-white shrink-0">
             <ChevronLeft size={20} />
@@ -405,6 +408,7 @@ const InboundZebra = () => {
 
     return (
       <div className="flex-1 p-4 flex flex-col">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
         <div className="flex items-center gap-4 mb-6">
           <button onClick={() => setStep('LIST_ITEMS')} className="p-3 bg-slate-800 rounded-full text-brand-white shrink-0">
             <ChevronLeft size={20} />

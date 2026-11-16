@@ -694,6 +694,24 @@ async function palletRoutes(fastify, options) {
     }
   });
 
+  // GET /api/pallets/optimization/scores - Punteggio ottimizzazione magazzino e per singola zona (Desktop Mappa Magazzino & Zebra)
+  fastify.get('/optimization/scores', async (request, reply) => {
+    if (!hasPermission(request.user, 'view_locations') && !hasPermission(request.user, 'pallet_move') && !hasPermission(request.user, 'zebra_optimize')) {
+      return reply.code(403).send({ error: 'Accesso negato ai punteggi di ottimizzazione.' });
+    }
+    try {
+      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user);
+      return {
+        warehouseScore: result.warehouseScore,
+        zoneScores: result.zoneScores,
+        summary: result.summary
+      };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore calcolo punteggio ottimizzazione' });
+    }
+  });
+
   // GET /api/pallets/optimization/tasks
   fastify.get('/optimization/tasks', async (request, reply) => {
     if (!hasPermission(request.user, 'zebra_optimize')) {
@@ -701,9 +719,13 @@ async function palletRoutes(fastify, options) {
     }
     try {
       const result = await computeOptimizationTasks(db, canAccessCustomer, request.user);
+      const zoneFilter = request.query?.zone ? String(request.query.zone).trim().toUpperCase() : null;
+      const tasks = zoneFilter
+        ? result.tasks.filter(t => String(t.zone || '').toUpperCase() === zoneFilter)
+        : result.tasks;
       const [[pinSetting]] = await db.query("SELECT setting_value FROM settings WHERE setting_key = 'require_location_pins'");
       const requirePins = pinSetting ? pinSetting.setting_value === 'true' : true;
-      return { ...result, requirePins };
+      return { ...result, tasks, requirePins };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore generazione task ottimizzazione magazzino' });

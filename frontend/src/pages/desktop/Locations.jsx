@@ -2,7 +2,7 @@ import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils
 import { hasPerm } from "../../utils/permissions.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus, ArrowRightLeft, X } from 'lucide-react';
+import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus, ArrowRightLeft, X, Award } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { jwtDecode } from 'jwt-decode';
 
@@ -26,6 +26,7 @@ const Locations = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [viewPallet, setViewPallet] = useState(null); // per il modal con i dettagli
   const [viewShelfItems, setViewShelfItems] = useState([]);
+  const [optScores, setOptScores] = useState({ warehouseScore: null, zoneScores: [], summary: { totalTasks: 0 } });
   const [freeInspect, setFreeInspect] = useState({ show: false, location: '', items: [], loading: false });
   const [freeMoveDraft, setFreeMoveDraft] = useState({ item: null, mode: 'SINGLE_ITEM', moveQty: '', targetLocation: '', error: null });
   
@@ -43,15 +44,20 @@ const Locations = () => {
 
   const fetchLocations = async () => {
     try {
-      const [resLoc, resFree, resSettings] = await Promise.all([
-        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${getToken()}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${getToken()}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      const headers = { Authorization: `Bearer ${getToken()}` };
+      const [resLoc, resFree, resSettings, resScores] = await Promise.all([
+        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/scores`, { headers }).catch(() => ({ data: null }))
       ]);
       setLocations(resLoc.data);
       setFreeLocations(resFree.data);
       if (resSettings.data && resSettings.data.require_location_pins !== undefined) {
         setRequirePins(resSettings.data.require_location_pins === 'true');
+      }
+      if (resScores?.data) {
+        setOptScores(resScores.data);
       }
     } catch (err) {
       console.error(err);
@@ -363,7 +369,7 @@ const Locations = () => {
         </div>
 
         {/* KPI Magazzino */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Postazioni Mappate</div>
             <div className="text-2xl font-black text-brand-white">{totalLocs}</div>
@@ -386,7 +392,20 @@ const Locations = () => {
               <div className={`h-full rounded-full ${occupancyPct > 85 ? 'bg-rose-500' : occupancyPct > 60 ? 'bg-amber-400' : 'bg-sky-500'}`} style={{ width: `${occupancyPct}%` }} />
             </div>
           </div>
-          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 col-span-2 md:col-span-1">
+          <div className="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-4">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-purple-300 mb-1 flex items-center gap-1">
+              <Award size={13} className="text-purple-400" /> Ottimizzazione
+            </div>
+            <div className={`text-2xl font-black ${
+              (optScores.warehouseScore ?? 100) >= 90 ? 'text-emerald-400' : (optScores.warehouseScore ?? 100) >= 70 ? 'text-amber-400' : 'text-rose-400'
+            }`}>
+              {optScores.warehouseScore !== null ? `${optScores.warehouseScore}%` : '-'}
+            </div>
+            <div className="text-xs text-slate-400 mt-0.5">
+              {optScores.summary?.totalTasks > 0 ? `${optScores.summary.totalTasks} task suggerite` : 'Slotting ottimale'}
+            </div>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Aree Libere (Terra)</div>
             <div className="text-2xl font-black text-brand-blue">{freeLocations.length}</div>
             <div className="text-xs text-slate-500 mt-0.5">Zone senza griglia</div>
@@ -520,6 +539,7 @@ const Locations = () => {
                     const isExpanded = expandedZones[zoneName] || searchTerm.trim().length > 0 || statusFilter !== 'ALL';
                     const totalOccupied = zoneLocations.filter(l => l.pallet_code).length;
                     const zonePct = zoneLocations.length > 0 ? Math.round((totalOccupied / zoneLocations.length) * 100) : 0;
+                    const zScoreObj = (optScores.zoneScores || []).find(zs => zs.zone === zoneName.toUpperCase());
                     return (
                       <div key={zoneName} className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden">
                         {/* Header Zona */}
@@ -533,6 +553,20 @@ const Locations = () => {
                             <span className="bg-slate-950 text-slate-300 px-2 py-0.5 rounded-lg text-xs border border-slate-800 font-bold">
                               {zoneLocations.length} pos.
                             </span>
+                            {zScoreObj && (
+                              <span
+                                className={`px-2.5 py-0.5 rounded-full text-xs font-black border ${
+                                  zScoreObj.score >= 90
+                                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                                    : zScoreObj.score >= 70
+                                      ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                                      : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                                }`}
+                                title={`${zScoreObj.tasksCount} task di ottimizzazione in questa zona`}
+                              >
+                                Ottim.: {zScoreObj.score}%{zScoreObj.tasksCount > 0 ? ` · ${zScoreObj.tasksCount} task` : ''}
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 text-xs font-bold">
                             <span className="text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2.5 py-0.5 rounded-full">{totalOccupied} occ. ({zonePct}%)</span>
