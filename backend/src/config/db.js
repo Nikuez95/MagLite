@@ -10,8 +10,10 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'maglite_db',
   timezone: '+00:00', // FIXED: Ensures Node parses DB time correctly as UTC instead of Local
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: 20,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000
 });
 
 // Test della connessione all'avvio

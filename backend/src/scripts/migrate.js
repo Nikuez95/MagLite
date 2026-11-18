@@ -218,7 +218,7 @@ async function runMigrations() {
 
     // 3. Pulizia e sostituzione SKU generati (PROD-XXXX) con il reale Codice Articolo se presente
     try {
-      const [products] = await connection.query('SELECT * FROM PRODUCTS');
+      const [products] = await connection.query('SELECT id, sku, name, customer_id, default_article_number FROM PRODUCTS');
       for (const prod of products) {
         let realArticle = (prod.default_article_number || '').trim();
         if (!realArticle) {
@@ -270,7 +270,7 @@ async function runMigrations() {
       }
 
       // Unisci ed elimina eventuali duplicati con stesso nome/cliente di cui uno ha SKU generato PROD-% e l'altro ha un Codice Articolo reale
-      const [remainingProds] = await connection.query('SELECT * FROM PRODUCTS');
+      const [remainingProds] = await connection.query('SELECT id, sku, name, customer_id FROM PRODUCTS');
       for (const prod of remainingProds) {
         if (prod.sku && prod.sku.startsWith('PROD-')) {
           const [betterMatch] = await connection.query(
@@ -535,6 +535,65 @@ async function runMigrations() {
       console.log('✅ Consolidamento posizioni e barcode completato.');
     } catch (consErr) {
       console.warn('[MIGRATE CONSOLIDATION WARNING]', consErr.message);
+    }
+
+    // 7. Indici di performance per scalabilità a lungo termine (mesi/anni di storico)
+    try {
+      const ensureIndex = async (tableName, indexName, columnsSql) => {
+        const [[{ cnt }]] = await connection.query(
+          `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+          [tableName, indexName]
+        );
+        if (cnt === 0) {
+          await connection.query(`ALTER TABLE ${tableName} ADD INDEX ${indexName} (${columnsSql})`);
+        }
+      };
+
+      const indexesToEnsure = [
+        ['PALLETS', 'idx_pallets_status_qty', 'status, quantity'],
+        ['PALLETS', 'idx_pallets_code', 'pallet_code'],
+        ['PALLETS', 'idx_pallets_product_status', 'product_id, status'],
+        ['PALLETS', 'idx_pallets_customer_status', 'customer_id, status'],
+        ['PALLETS', 'idx_pallets_location', 'location'],
+        ['PALLETS', 'idx_pallets_inbound_ddt', 'inbound_ddt_id'],
+        ['PALLETS', 'idx_pallets_expiration', 'expiration_date'],
+        ['PALLETS', 'idx_pallets_quarantine', 'is_quarantined, status'],
+        ['PALLETS', 'idx_pallets_created', 'created_at'],
+        ['OUTBOUND_ORDERS', 'idx_outbound_status_created', 'status, created_at'],
+        ['OUTBOUND_ORDERS', 'idx_outbound_customer_status', 'customer_id, status'],
+        ['OUTBOUND_ORDERS', 'idx_outbound_shipped', 'shipped_at'],
+        ['OUTBOUND_ORDERS', 'idx_outbound_exit_date', 'exit_date'],
+        ['OUTBOUND_ITEMS', 'idx_out_items_order_status', 'order_id, status'],
+        ['OUTBOUND_ITEMS', 'idx_out_items_pallet_id', 'pallet_id'],
+        ['OUTBOUND_ITEMS', 'idx_out_items_pallet_code', 'pallet_code'],
+        ['OUTBOUND_ITEMS', 'idx_out_items_product', 'product_id'],
+        ['INBOUND_DDTS', 'idx_inbound_ddts_status_created', 'status, created_at'],
+        ['INBOUND_DDTS', 'idx_inbound_ddts_customer', 'customer_id'],
+        ['INBOUND_DDT_ITEMS', 'idx_inbound_ddt_items_ddt', 'inbound_ddt_id'],
+        ['INBOUND_DDT_ITEMS', 'idx_inbound_ddt_items_product', 'product_id'],
+        ['INBOUND_DISCREPANCY_LOGS', 'idx_inb_disc_ddt_created', 'inbound_ddt_id, created_at'],
+        ['AUDIT_LOGS', 'idx_audit_created', 'created_at'],
+        ['AUDIT_LOGS', 'idx_audit_action_created', 'action, created_at'],
+        ['AUDIT_LOGS', 'idx_audit_user_created', 'username, created_at'],
+        ['QUARANTINE_LOGS', 'idx_quarantine_status_blocked', 'status, blocked_at'],
+        ['QUARANTINE_LOGS', 'idx_quarantine_customer', 'customer_id'],
+        ['QUARANTINE_LOGS', 'idx_quarantine_pallet', 'pallet_id'],
+        ['CUSTOM_FORM_SUBMISSIONS', 'idx_cfs_status_created', 'status, created_at'],
+        ['OUTBOUND_RETURNS', 'idx_returns_order', 'order_id'],
+        ['OUTBOUND_RETURNS', 'idx_returns_date', 'returned_at']
+      ];
+
+      for (const [tbl, idxName, cols] of indexesToEnsure) {
+        try {
+          await ensureIndex(tbl, idxName, cols);
+        } catch (idxErr) {
+          console.warn(`[MIGRATE INDEX WARNING] ${tbl}.${idxName}:`, idxErr.message);
+        }
+      }
+      console.log('✅ Indici di performance DB verificati.');
+    } catch (indexBlockErr) {
+      console.warn('[MIGRATE INDEXES WARNING]', indexBlockErr.message);
     }
 
     console.log('🚀 Migrazioni completate. Database allineato al 100%.');

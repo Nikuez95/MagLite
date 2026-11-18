@@ -1,16 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
-import InboundZebra from './InboundZebra';
-import OutboundZebra from './OutboundZebra';
-import Handling from './Handling';
-import ZebraCheckinWizard from './ZebraCheckinWizard';
-import OptimizationZebra from './OptimizationZebra';
-import VerifyBarcodeZebra from './VerifyBarcodeZebra';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
+
+const InboundZebra = lazy(() => import('./InboundZebra'));
+const OutboundZebra = lazy(() => import('./OutboundZebra'));
+const Handling = lazy(() => import('./Handling'));
+const ZebraCheckinWizard = lazy(() => import('./ZebraCheckinWizard'));
+const OptimizationZebra = lazy(() => import('./OptimizationZebra'));
+const VerifyBarcodeZebra = lazy(() => import('./VerifyBarcodeZebra'));
+
+const ZebraModuleFallback = () => (
+  <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-400 gap-3">
+    <div className="w-9 h-9 border-4 border-brand-blue border-t-transparent rounded-full animate-spin" />
+    <span className="text-xs font-black uppercase tracking-wider">Caricamento modulo Zebra...</span>
+  </div>
+);
 
 const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabled = false, onClick }) => {
   const accentStyles = {
@@ -193,10 +201,10 @@ const Dashboard = ({ user }) => {
       try {
         const reqs = [
           canInbound
-            ? axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
+            ? axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt?active_only=true`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
             : Promise.resolve({ data: [] }),
           canPicking
-            ? axios.get(`http://${window.location.hostname}:3000/api/outbound`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
+            ? axios.get(`http://${window.location.hostname}:3000/api/outbound?active_only=true`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
             : Promise.resolve({ data: [] }),
           canOptimize
             ? axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: { summary: { totalTasks: 0 } } }))
@@ -477,35 +485,37 @@ const ZebraApp = () => {
     <div className="min-h-screen bg-brand-black flex flex-col font-sans text-brand-white antialiased selection:bg-brand-blue selection:text-brand-black">
       <TopBar user={user} />
       
-      <Routes>
-        <Route path="/" element={<Dashboard user={user} />} />
-        <Route path="/checkin" element={<ZebraCheckinWizard />} />
-        <Route path="/checkin/:formCode" element={<ZebraCheckinWizard />} />
-        <Route path="/form/:formCode" element={<ZebraCheckinWizard />} />
-        <Route path="/arrival" element={<ZebraCheckinWizard />} />
-        <Route
-          path="/inbound"
-          element={hasPerm('inbound_create', user) ? <InboundZebra /> : <Navigate to="/zebra" replace />}
-        />
-        <Route path="/stow" element={<Navigate to="/zebra/handling" replace />} />
-        <Route
-          path="/handling"
-          element={hasPerm('pallet_move', user) ? <Handling /> : <Navigate to="/zebra" replace />}
-        />
-        <Route
-          path="/outbound"
-          element={hasPerm('outbound_pick', user) ? <OutboundZebra /> : <Navigate to="/zebra" replace />}
-        />
-        <Route
-          path="/optimize"
-          element={hasPerm('zebra_optimize', user) ? <OptimizationZebra /> : <Navigate to="/zebra" replace />}
-        />
-        <Route
-          path="/verify"
-          element={hasPerm('zebra_verify', user) ? <VerifyBarcodeZebra /> : <Navigate to="/zebra" replace />}
-        />
-        <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
-      </Routes>
+      <Suspense fallback={<ZebraModuleFallback />}>
+        <Routes>
+          <Route path="/" element={<Dashboard user={user} />} />
+          <Route path="/checkin" element={<ZebraCheckinWizard />} />
+          <Route path="/checkin/:formCode" element={<ZebraCheckinWizard />} />
+          <Route path="/form/:formCode" element={<ZebraCheckinWizard />} />
+          <Route path="/arrival" element={<ZebraCheckinWizard />} />
+          <Route
+            path="/inbound"
+            element={hasPerm('inbound_create', user) ? <InboundZebra /> : <Navigate to="/zebra" replace />}
+          />
+          <Route path="/stow" element={<Navigate to="/zebra/handling" replace />} />
+          <Route
+            path="/handling"
+            element={hasPerm('pallet_move', user) ? <Handling /> : <Navigate to="/zebra" replace />}
+          />
+          <Route
+            path="/outbound"
+            element={hasPerm('outbound_pick', user) ? <OutboundZebra /> : <Navigate to="/zebra" replace />}
+          />
+          <Route
+            path="/optimize"
+            element={hasPerm('zebra_optimize', user) ? <OptimizationZebra /> : <Navigate to="/zebra" replace />}
+          />
+          <Route
+            path="/verify"
+            element={hasPerm('zebra_verify', user) ? <VerifyBarcodeZebra /> : <Navigate to="/zebra" replace />}
+          />
+          <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
+        </Routes>
+      </Suspense>
     </div>
   );
 };

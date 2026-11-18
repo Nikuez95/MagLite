@@ -3,6 +3,7 @@ const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
+const { createNotification } = require('../utils/notifications');
 
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -112,40 +113,63 @@ async function inboundRoutes(fastify, options) {
     }
 
     try {
-      const [allRows] = await db.query(`
-        SELECT d.*, 
+      const { active_only, limit } = request.query || {};
+      const onlyActive = active_only === 'true' || active_only === '1';
+      const parsedLimit = limit ? Math.min(Math.max(parseInt(limit, 10) || 0, 1), 2000) : null;
+
+      let ddtSql = `
+        SELECT d.id, d.ddt_number, d.customer_id, d.status, d.created_at, d.closed_at, d.notes,
+               d.discrepancy_accepted, d.discrepancy_reason, d.discrepancy_resolved_by, d.discrepancy_resolved_at,
+               d.rejected_count, d.last_rejected_reason, d.last_rejected_by, d.last_rejected_at,
+               d.client_ddt, d.checkin_id, d.checkin_session_code,
                c.business_name, 
                c.business_name AS customer_name,
                c.parent_id AS customer_parent_id,
                pc.business_name AS parent_customer_name,
-               (SELECT COUNT(*) FROM PALLETS p WHERE p.inbound_ddt_id = d.id) AS pallets_count
+               COALESCE(p_agg.cnt, 0) AS pallets_count
         FROM INBOUND_DDTS d
         JOIN CUSTOMERS c ON d.customer_id = c.id
         LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
-        ORDER BY d.created_at DESC
-      `);
+        LEFT JOIN (
+          SELECT inbound_ddt_id, COUNT(*) AS cnt FROM PALLETS WHERE inbound_ddt_id IS NOT NULL GROUP BY inbound_ddt_id
+        ) p_agg ON p_agg.inbound_ddt_id = d.id
+      `;
+      const ddtParams = [];
+      if (onlyActive) {
+        ddtSql += " WHERE d.status IN ('PENDING', 'IN_PROGRESS')";
+      }
+      ddtSql += ' ORDER BY d.created_at DESC';
+      if (parsedLimit) {
+        ddtSql += ' LIMIT ?';
+        ddtParams.push(parsedLimit);
+      }
+
+      const [allRows] = await db.query(ddtSql, ddtParams);
 
       const rows = allRows.filter(r => canAccessCustomer(request.user, r.customer_id));
 
-      if (rows.length > 0) {
+      if (rows.length > 0 && !onlyActive) {
         const ddtIds = rows.map(r => r.id);
-        const [allItems] = await db.query(`
-          SELECT i.*,
-                 COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
-                 COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
-                 COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
-                 COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
-          FROM INBOUND_DDT_ITEMS i
-          LEFT JOIN PRODUCTS p ON i.product_id = p.id
-          WHERE i.inbound_ddt_id IN (?)
-          ORDER BY i.id ASC
-        `, [ddtIds]);
-
-        const [discLogs] = await db.query(`
-          SELECT * FROM INBOUND_DISCREPANCY_LOGS
-          WHERE inbound_ddt_id IN (?)
-          ORDER BY created_at DESC
-        `, [ddtIds]);
+        const [[allItems], [discLogs]] = await Promise.all([
+          db.query(`
+            SELECT i.id, i.inbound_ddt_id, i.product_id, i.expected_quantity, i.actual_quantity,
+                   i.batch, i.client_pallet_number, i.client_article_number, i.expiration_date, i.pallet_uom, i.location, i.notes,
+                   COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
+                   COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
+                   COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
+                   COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
+            FROM INBOUND_DDT_ITEMS i
+            LEFT JOIN PRODUCTS p ON i.product_id = p.id
+            WHERE i.inbound_ddt_id IN (?)
+            ORDER BY i.id ASC
+          `, [ddtIds]),
+          db.query(`
+            SELECT id, inbound_ddt_id, ddt_number, customer_id, decision, reason, items_snapshot, username, source, created_at
+            FROM INBOUND_DISCREPANCY_LOGS
+            WHERE inbound_ddt_id IN (?)
+            ORDER BY created_at DESC
+          `, [ddtIds])
+        ]);
 
         const itemsByDdt = new Map();
         for (const it of allItems) {
@@ -480,6 +504,18 @@ async function inboundRoutes(fastify, options) {
       );
 
       await connection.commit();
+      await createNotification(db, fastify.io, {
+        type: discrepancy ? 'INBOUND_DISCREPANCY' : 'INBOUND_COMPLETED',
+        title: discrepancy ? `Discrepanza DDT ${ddt.ddt_number}` : `DDT Entrata Completato: ${ddt.ddt_number}`,
+        message: discrepancy
+          ? `Rilevata discrepanza in spunta DDT ${ddt.ddt_number} (${totalDiff > 0 ? '+' : ''}${totalDiff}). Richiesta verifica Backoffice.`
+          : `La spunta del DDT ${ddt.ddt_number} è stata completata regolarmente.`,
+        customer_id: ddt.customer_id,
+        entity_type: 'INBOUND',
+        entity_code: ddt.ddt_number,
+        link_path: '/desktop/documents',
+        actor_username: request.user?.username || 'Operatore Zebra'
+      });
       if (fastify.io) {
         fastify.io.emit('inbound_updated');
         fastify.io.emit('inventory_updated');
@@ -589,6 +625,16 @@ async function inboundRoutes(fastify, options) {
 
       await consolidateLocationPallets(connection);
       await connection.commit();
+      await createNotification(db, fastify.io, {
+        type: 'INBOUND_COMPLETED',
+        title: `DDT Accettato: ${ddt.ddt_number}`,
+        message: `${username} ha accettato la discrepanza sul DDT ${ddt.ddt_number}. Motivo: ${cleanReason}`,
+        customer_id: ddt.customer_id,
+        entity_type: 'INBOUND',
+        entity_code: ddt.ddt_number,
+        link_path: '/desktop/documents',
+        actor_username: username
+      });
       if (fastify.io) {
         fastify.io.emit('inbound_updated');
         fastify.io.emit('inventory_updated');

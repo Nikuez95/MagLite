@@ -20,19 +20,33 @@ async function customerRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT c.*,
+        SELECT c.id, c.unique_id, c.business_name, c.vat_number, c.address, c.phone, c.email, c.parent_id,
                pc.business_name AS parent_name,
                pc.business_name AS parent_business_name,
                pc.unique_id AS parent_unique_id,
-               (SELECT COUNT(*) FROM CUSTOMERS ch WHERE ch.parent_id = c.id) AS children_count,
-               (SELECT COUNT(*) FROM PRODUCTS pr WHERE pr.customer_id = c.id) AS products_count,
-               (SELECT COUNT(DISTINCT p.pallet_code) FROM PALLETS p 
-                WHERE p.customer_id = c.id AND p.status != 'SHIPPED' AND p.quantity > 0
-                  AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
-               ) AS active_pallets_count,
-               (SELECT COUNT(*) FROM client_tariffs ct WHERE ct.customer_id = c.id) AS custom_tariffs_count
+               COALESCE(ch_agg.cnt, 0) AS children_count,
+               COALESCE(pr_agg.cnt, 0) AS products_count,
+               COALESCE(pal_agg.cnt, 0) AS active_pallets_count,
+               COALESCE(tar_agg.cnt, 0) AS custom_tariffs_count
         FROM CUSTOMERS c
         LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
+        LEFT JOIN (
+          SELECT parent_id, COUNT(*) AS cnt FROM CUSTOMERS WHERE parent_id IS NOT NULL GROUP BY parent_id
+        ) ch_agg ON ch_agg.parent_id = c.id
+        LEFT JOIN (
+          SELECT customer_id, COUNT(*) AS cnt FROM PRODUCTS GROUP BY customer_id
+        ) pr_agg ON pr_agg.customer_id = c.id
+        LEFT JOIN (
+          SELECT p.customer_id, COUNT(DISTINCT p.pallet_code) AS cnt
+          FROM PALLETS p
+          LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
+          WHERE p.status != 'SHIPPED' AND p.quantity > 0
+            AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED')
+          GROUP BY p.customer_id
+        ) pal_agg ON pal_agg.customer_id = c.id
+        LEFT JOIN (
+          SELECT customer_id, COUNT(*) AS cnt FROM client_tariffs GROUP BY customer_id
+        ) tar_agg ON tar_agg.customer_id = c.id
         ORDER BY COALESCE(pc.business_name, c.business_name) ASC, (c.parent_id IS NOT NULL) ASC, c.business_name ASC
       `);
       return rows.filter(r => canAccessCustomer(request.user, r.id));
@@ -81,7 +95,10 @@ async function customerRoutes(fastify, options) {
 
       let parentRow = null;
       if (cleanParentId) {
-        const [[pRow]] = await connection.query('SELECT * FROM CUSTOMERS WHERE id = ?', [cleanParentId]);
+        const [[pRow]] = await connection.query(
+          'SELECT id, unique_id, business_name, vat_number, address, phone, email FROM CUSTOMERS WHERE id = ?',
+          [cleanParentId]
+        );
         parentRow = pRow || null;
       }
 
@@ -160,7 +177,10 @@ async function customerRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
 
-      const [[parentRow]] = await connection.query('SELECT * FROM CUSTOMERS WHERE id = ?', [parentId]);
+      const [[parentRow]] = await connection.query(
+        'SELECT id, unique_id, business_name, vat_number, address, phone, email FROM CUSTOMERS WHERE id = ?',
+        [parentId]
+      );
       if (!parentRow) {
         await connection.rollback();
         return reply.code(404).send({ error: 'Cliente Madre non trovato' });

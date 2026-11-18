@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS PALLETS (
     quarantined_by VARCHAR(100) DEFAULT NULL,
     quarantine_notes TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pallets_status_qty (status, quantity),
+    INDEX idx_pallets_code (pallet_code),
+    INDEX idx_pallets_product_status (product_id, status),
+    INDEX idx_pallets_customer_status (customer_id, status),
+    INDEX idx_pallets_location (location),
+    INDEX idx_pallets_inbound_ddt (inbound_ddt_id),
+    INDEX idx_pallets_expiration (expiration_date),
+    INDEX idx_pallets_quarantine (is_quarantined, status),
+    INDEX idx_pallets_created (created_at),
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT,
     FOREIGN KEY (product_id) REFERENCES PRODUCTS(id) ON DELETE RESTRICT
 );
@@ -93,6 +102,7 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   client_ddt VARCHAR(100) DEFAULT NULL,
   notes TEXT DEFAULT NULL,
   picking_operator VARCHAR(100) DEFAULT NULL,
+  shipped_by VARCHAR(50) DEFAULT NULL,
   start_picking_at DATETIME DEFAULT NULL,
   end_picking_at DATETIME DEFAULT NULL,
   shipped_at DATETIME DEFAULT NULL,
@@ -102,6 +112,10 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   last_return_reason VARCHAR(255) DEFAULT NULL,
   created_by VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_outbound_status_created (status, created_at),
+  INDEX idx_outbound_customer_status (customer_id, status),
+  INDEX idx_outbound_shipped (shipped_at),
+  INDEX idx_outbound_exit_date (exit_date),
   FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id)
 );
 
@@ -119,6 +133,10 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ITEMS (
   is_specific BOOLEAN DEFAULT FALSE,
   status ENUM('PENDING', 'PICKED') DEFAULT 'PENDING',
   picked_at DATETIME DEFAULT NULL,
+  INDEX idx_out_items_order_status (order_id, status),
+  INDEX idx_out_items_pallet_id (pallet_id),
+  INDEX idx_out_items_pallet_code (pallet_code),
+  INDEX idx_out_items_product (product_id),
   FOREIGN KEY (order_id) REFERENCES OUTBOUND_ORDERS(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)
 );
@@ -129,7 +147,10 @@ CREATE TABLE IF NOT EXISTS AUDIT_LOGS (
     details TEXT NOT NULL,
     source VARCHAR(50) NOT NULL,
     username VARCHAR(50) DEFAULT 'Sistema',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_audit_created (created_at),
+    INDEX idx_audit_action_created (action, created_at),
+    INDEX idx_audit_user_created (username, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS billing_rules (
@@ -380,4 +401,96 @@ CREATE TABLE IF NOT EXISTS CUSTOM_FORM_SUBMISSIONS (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     completed_at DATETIME DEFAULT NULL,
     FOREIGN KEY (form_id) REFERENCES CUSTOM_FORMS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS NOTIFICATIONS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    customer_id INT DEFAULT NULL,
+    customer_name VARCHAR(255) DEFAULT NULL,
+    entity_type VARCHAR(50) DEFAULT NULL,
+    entity_code VARCHAR(100) DEFAULT NULL,
+    link_path VARCHAR(255) DEFAULT NULL,
+    actor_username VARCHAR(100) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_notifications_created (created_at),
+    INDEX idx_notifications_customer (customer_id, created_at),
+    INDEX idx_notifications_type (type, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS NOTIFICATION_READS (
+    user_id INT NOT NULL,
+    notification_id INT NOT NULL,
+    read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, notification_id),
+    INDEX idx_notif_reads_notif (notification_id),
+    FOREIGN KEY (notification_id) REFERENCES NOTIFICATIONS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS USER_NOTIFICATION_CUSTOMER_SETTINGS (
+    user_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    is_muted BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, customer_id),
+    INDEX idx_user_notif_cust_muted (user_id, is_muted)
+);
+
+CREATE TABLE IF NOT EXISTS TICKETS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_code VARCHAR(30) NOT NULL UNIQUE,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    category VARCHAR(50) NOT NULL DEFAULT 'BUG',
+    priority ENUM('LOW', 'MEDIUM', 'HIGH', 'CRITICAL') NOT NULL DEFAULT 'MEDIUM',
+    status ENUM('OPEN', 'IN_PROGRESS', 'WAITING_INFO', 'RESOLVED', 'CLOSED', 'REJECTED') NOT NULL DEFAULT 'OPEN',
+    area VARCHAR(100) DEFAULT NULL,
+    created_by_id INT NOT NULL,
+    created_by_username VARCHAR(100) NOT NULL,
+    assigned_to_username VARCHAR(100) DEFAULT NULL,
+    resolution_notes TEXT DEFAULT NULL,
+    resolved_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_tickets_status_updated (status, updated_at),
+    INDEX idx_tickets_creator (created_by_id, created_at),
+    INDEX idx_tickets_priority (priority, status)
+);
+
+CREATE TABLE IF NOT EXISTS TICKET_MESSAGES (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id INT NOT NULL,
+    author_id INT NOT NULL,
+    author_username VARCHAR(100) NOT NULL,
+    author_role VARCHAR(50) NOT NULL DEFAULT 'operator',
+    message TEXT NOT NULL,
+    status_change_to VARCHAR(30) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ticket_msgs_ticket (ticket_id, created_at),
+    FOREIGN KEY (ticket_id) REFERENCES TICKETS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS CHANGELOGS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    version VARCHAR(50) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    summary TEXT NOT NULL,
+    items JSON DEFAULT NULL,
+    is_published BOOLEAN DEFAULT TRUE,
+    show_popup BOOLEAN DEFAULT TRUE,
+    created_by_id INT DEFAULT NULL,
+    created_by_username VARCHAR(100) NOT NULL,
+    published_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_changelogs_pub (is_published, published_at)
+);
+
+CREATE TABLE IF NOT EXISTS CHANGELOG_VIEWS (
+    user_id INT NOT NULL,
+    changelog_id INT NOT NULL,
+    seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, changelog_id),
+    FOREIGN KEY (changelog_id) REFERENCES CHANGELOGS(id) ON DELETE CASCADE
 );

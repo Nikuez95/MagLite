@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { resolveUserAccess, hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { createNotification } = require('../utils/notifications');
 
 async function quarantineRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -17,21 +18,29 @@ async function quarantineRoutes(fastify, options) {
     }
 
     try {
-      const [activePallets] = await db.query(`
-        SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
-               c.business_name as customer_name, l.zone, l.col, l.pos
-        FROM PALLETS p
-        JOIN PRODUCTS pr ON p.product_id = pr.id
-        JOIN CUSTOMERS c ON p.customer_id = c.id
-        LEFT JOIN LOCATIONS l ON p.location = l.barcode
-        WHERE p.is_quarantined = TRUE AND p.status != 'SHIPPED'
-        ORDER BY p.quarantined_at DESC, p.id DESC
-      `);
-
-      const [logs] = await db.query(`
-        SELECT * FROM QUARANTINE_LOGS
-        ORDER BY blocked_at DESC, id DESC
-      `);
+      const [[activePallets], [logs]] = await Promise.all([
+        db.query(`
+          SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
+                 p.batch, p.warehouse, p.status, p.location, p.notes, p.client_pallet_number, p.client_article_number,
+                 p.expiration_date, p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes,
+                 pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
+                 c.business_name as customer_name, l.zone, l.col, l.pos
+          FROM PALLETS p
+          JOIN PRODUCTS pr ON p.product_id = pr.id
+          JOIN CUSTOMERS c ON p.customer_id = c.id
+          LEFT JOIN LOCATIONS l ON p.location = l.barcode
+          WHERE p.is_quarantined = TRUE AND p.status != 'SHIPPED'
+          ORDER BY p.quarantined_at DESC, p.id DESC
+        `),
+        db.query(`
+          SELECT id, pallet_id, pallet_code, product_id, product_name, sku, customer_id, customer_name,
+                 batch, quantity, uom, location, status, block_reason, block_notes, blocked_by, blocked_at,
+                 unblock_reason, unblock_notes, unblocked_by, unblocked_at, created_at
+          FROM QUARANTINE_LOGS
+          ORDER BY blocked_at DESC, id DESC
+          LIMIT 500
+        `)
+      ]);
 
       const filteredPallets = activePallets.filter(p => canAccessCustomer(caller, p.customer_id));
       const filteredLogs = logs.filter(l => canAccessCustomer(caller, l.customer_id));
@@ -199,6 +208,22 @@ async function quarantineRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
+
+      const distinctCustomerIds = [...new Set(toBlock.map(p => p.customer_id).filter(Boolean))];
+      for (const cid of distinctCustomerIds) {
+        const custPallets = toBlock.filter(p => p.customer_id === cid);
+        await createNotification(db, fastify.io, {
+          type: 'QUARANTINE_BLOCKED',
+          title: `Blocco Quarantena (${custPallets.length} pal.)`,
+          message: `${caller.username} ha bloccato ${custPallets.length} paletta/e (${[...new Set(custPallets.map(p => p.pallet_code))].join(', ')}). Motivo: ${cleanReason}`,
+          customer_id: cid,
+          customer_name: custPallets[0]?.customer_name || null,
+          entity_type: 'QUARANTINE',
+          entity_code: custPallets[0]?.pallet_code || null,
+          link_path: '/desktop/quarantine',
+          actor_username: caller.username
+        });
+      }
 
       if (fastify.io) {
         fastify.io.emit('quarantine_updated');

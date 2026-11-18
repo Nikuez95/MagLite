@@ -4,6 +4,7 @@ const PDFDocument = require('pdfkit');
 const bwipjs = require('bwip-js');
 const { consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
+const { createNotification } = require('../utils/notifications');
 
 async function getRoutingSettings(connection) {
   const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
@@ -358,32 +359,52 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
 async function outboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // GET /api/outbound - List all orders
+  // GET /api/outbound - List orders (supports ?active_only=true for Zebra and ?limit=... for long-term scale)
   fastify.get('/', async (request, reply) => {
     try {
-      const [orders] = await db.query(`
-        SELECT o.*, c.business_name as customer_name,
-               (SELECT COUNT(*) FROM OUTBOUND_ITEMS oi WHERE oi.order_id = o.id) as total_items,
-               (SELECT COUNT(*) FROM OUTBOUND_ITEMS oi WHERE oi.order_id = o.id AND oi.status = 'PICKED') as picked_items,
-               (SELECT GROUP_CONCAT(DISTINCT COALESCE(oi.batch, pal.batch) SEPARATOR ', ')
-                FROM OUTBOUND_ITEMS oi
-                LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
-                WHERE oi.order_id = o.id) as batches,
-               (SELECT GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ')
-                FROM OUTBOUND_ITEMS oi
-                JOIN PRODUCTS p ON p.id = oi.product_id
-                WHERE oi.order_id = o.id) as products,
-               (SELECT GROUP_CONCAT(DISTINCT oi.pallet_code SEPARATOR ', ')
-                FROM OUTBOUND_ITEMS oi
-                WHERE oi.order_id = o.id) as pallets,
-               (SELECT GROUP_CONCAT(DISTINCT pal.client_pallet_number SEPARATOR ', ')
-                FROM OUTBOUND_ITEMS oi
-                LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
-                WHERE oi.order_id = o.id AND pal.client_pallet_number IS NOT NULL AND pal.client_pallet_number != '') as client_pallets
+      const { active_only, limit } = request.query || {};
+      const onlyActive = active_only === 'true' || active_only === '1';
+      const parsedLimit = limit ? Math.min(Math.max(parseInt(limit, 10) || 0, 1), 2000) : null;
+
+      let sql = `
+        SELECT o.id, o.order_code, o.customer_id, o.exit_date, o.status, o.client_ddt, o.notes,
+               o.picking_operator, o.shipped_by, o.start_picking_at, o.end_picking_at, o.shipped_at,
+               o.return_count, o.last_returned_at, o.last_returned_by, o.last_return_reason,
+               o.created_by, o.created_at,
+               c.business_name as customer_name,
+               COALESCE(agg.total_items, 0) as total_items,
+               COALESCE(agg.picked_items, 0) as picked_items,
+               agg.batches,
+               agg.products,
+               agg.pallets,
+               agg.client_pallets
         FROM OUTBOUND_ORDERS o
         JOIN CUSTOMERS c ON o.customer_id = c.id
-        ORDER BY o.created_at DESC
-      `);
+        LEFT JOIN (
+          SELECT oi.order_id,
+                 COUNT(*) as total_items,
+                 SUM(CASE WHEN oi.status = 'PICKED' THEN 1 ELSE 0 END) as picked_items,
+                 GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(oi.batch, pal.batch)), '') SEPARATOR ', ') as batches,
+                 GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ') as products,
+                 GROUP_CONCAT(DISTINCT oi.pallet_code SEPARATOR ', ') as pallets,
+                 GROUP_CONCAT(DISTINCT NULLIF(TRIM(pal.client_pallet_number), '') SEPARATOR ', ') as client_pallets
+          FROM OUTBOUND_ITEMS oi
+          LEFT JOIN PRODUCTS p ON p.id = oi.product_id
+          LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
+          GROUP BY oi.order_id
+        ) agg ON agg.order_id = o.id
+      `;
+      const params = [];
+      if (onlyActive) {
+        sql += " WHERE o.status IN ('PENDING', 'PICKING', 'RETURNED')";
+      }
+      sql += ' ORDER BY o.created_at DESC';
+      if (parsedLimit) {
+        sql += ' LIMIT ?';
+        params.push(parsedLimit);
+      }
+
+      const [orders] = await db.query(sql, params);
       return orders.filter(o => canAccessCustomer(request.user, o.customer_id));
     } catch (err) {
       fastify.log.error(err);
@@ -442,11 +463,22 @@ async function outboundRoutes(fastify, options) {
           );
 
           await connection.commit();
-          return { orderId, orderCode, username };
+          return { orderId, orderCode, customerId: customer_id ?? null, username };
         } catch (txErr) {
           await connection.rollback();
           throw txErr;
         }
+      });
+
+      await createNotification(db, fastify.io, {
+        type: 'ORDER_CREATED',
+        title: `Nuovo Ordine ${result.orderCode}`,
+        message: `${result.username} ha creato la spedizione ${result.orderCode}.`,
+        customer_id: result.customerId,
+        entity_type: 'OUTBOUND',
+        entity_code: result.orderCode,
+        link_path: '/desktop/outbound',
+        actor_username: result.username
       });
 
       if (fastify.io) {
@@ -850,8 +882,6 @@ async function outboundRoutes(fastify, options) {
         return reply.code(400).send({ error: 'Ordine già spedito' });
       }
       await consolidateLocationPallets(db);
-      if (false) {
-      }
 
       const [items] = await db.query(`
         SELECT i.*, p.name as product_name, p.sku, p.uom as base_uom,
@@ -890,22 +920,36 @@ async function outboundRoutes(fastify, options) {
         connection.release();
       }
 
+      const currentOperator = String(request.user?.username || 'ZEBRA').trim();
+      const existingOperator = String(order.picking_operator || '').trim();
+      const isDifferentOperator = !existingOperator || existingOperator.toLowerCase() !== currentOperator.toLowerCase();
+      let alreadyInProgress = order.status === 'PICKING' && isDifferentOperator;
+
       // Imposta in PICKING se era PENDING
       if (order.status === 'PENDING') {
-        const operator = request.user?.username || 'ZEBRA';
-        await db.query(
-          'UPDATE OUTBOUND_ORDERS SET status = "PICKING", picking_operator = COALESCE(picking_operator, ?) WHERE id = ?',
-          [operator, order.id]
+        const [updRes] = await db.query(
+          'UPDATE OUTBOUND_ORDERS SET status = "PICKING", picking_operator = COALESCE(picking_operator, ?) WHERE id = ? AND status = "PENDING"',
+          [currentOperator, order.id]
         );
-        order.status = 'PICKING';
-        order.picking_operator = order.picking_operator || operator;
-        if (fastify.io) {
-          fastify.io.emit('outbound_updated');
-          fastify.io.emit('dashboard_update');
+        if (updRes.affectedRows > 0) {
+          order.status = 'PICKING';
+          order.picking_operator = order.picking_operator || currentOperator;
+          if (fastify.io) {
+            fastify.io.emit('outbound_updated');
+            fastify.io.emit('dashboard_update');
+          }
+        } else {
+          const [freshOrders] = await db.query('SELECT status, picking_operator FROM OUTBOUND_ORDERS WHERE id = ?', [order.id]);
+          if (freshOrders.length > 0) {
+            order.status = freshOrders[0].status;
+            order.picking_operator = freshOrders[0].picking_operator;
+            const freshOp = String(freshOrders[0].picking_operator || '').trim();
+            alreadyInProgress = order.status === 'PICKING' && (!freshOp || freshOp.toLowerCase() !== currentOperator.toLowerCase());
+          }
         }
       }
 
-      return { order, items };
+      return { order, items, already_in_progress: alreadyInProgress };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore lettura ordine' });
@@ -924,7 +968,7 @@ async function outboundRoutes(fastify, options) {
         await connection.beginTransaction();
         try {
           // Verifica item e blocca la riga ordine + item FOR UPDATE per evitare doppio prelievo concorrente
-          const [ordersLock] = await connection.query('SELECT id, order_code, status, start_picking_at FROM OUTBOUND_ORDERS WHERE id = ? FOR UPDATE', [order_id]);
+          const [ordersLock] = await connection.query('SELECT id, order_code, customer_id, status, start_picking_at FROM OUTBOUND_ORDERS WHERE id = ? FOR UPDATE', [order_id]);
           if (ordersLock.length === 0) {
             await connection.rollback();
             return { status: 404, body: { error: 'Ordine non trovato' } };
@@ -1087,7 +1131,7 @@ async function outboundRoutes(fastify, options) {
 
           const orderCode = ordersLock[0]?.order_code || `ID-${order_id}`;
           if (!ordersLock[0].start_picking_at) {
-            await connection.query('UPDATE OUTBOUND_ORDERS SET start_picking_at = CURRENT_TIMESTAMP, picking_operator = ? WHERE id = ?', [operator, order_id]);
+            await connection.query('UPDATE OUTBOUND_ORDERS SET start_picking_at = CURRENT_TIMESTAMP, picking_operator = COALESCE(picking_operator, ?) WHERE id = ?', [operator, order_id]);
           } else {
             await connection.query('UPDATE OUTBOUND_ORDERS SET picking_operator = COALESCE(picking_operator, ?) WHERE id = ?', [operator, order_id]);
           }
@@ -1151,7 +1195,15 @@ async function outboundRoutes(fastify, options) {
           }
 
           await connection.commit();
-          return { status: 200, shelfFreed, body: { success: true, all_picked: allPicked } };
+          return {
+            status: 200,
+            shelfFreed,
+            allPicked,
+            orderCode,
+            customerId: ordersLock[0]?.customer_id || null,
+            operator,
+            body: { success: true, all_picked: allPicked }
+          };
         } catch (txErr) {
           await connection.rollback();
           throw txErr;
@@ -1160,6 +1212,19 @@ async function outboundRoutes(fastify, options) {
 
       if (outcome.status !== 200) {
         return reply.code(outcome.status).send(outcome.body);
+      }
+
+      if (outcome.allPicked) {
+        await createNotification(db, fastify.io, {
+          type: 'ORDER_COMPLETED',
+          title: `Picking Completato: ${outcome.orderCode}`,
+          message: `L'operatore ${outcome.operator} ha completato il prelievo di ${outcome.orderCode} su Zebra (Pronto per spedizione).`,
+          customer_id: outcome.customerId,
+          entity_type: 'OUTBOUND',
+          entity_code: outcome.orderCode,
+          link_path: '/desktop/outbound',
+          actor_username: outcome.operator
+        });
       }
 
       if (fastify.io) {
@@ -1287,6 +1352,17 @@ async function outboundRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
+
+      await createNotification(db, fastify.io, {
+        type: 'ORDER_COMPLETED',
+        title: `Ordine Spedito: ${order.order_code}`,
+        message: `${request.user?.username || 'SYSTEM'} ha confermato l'uscita della spedizione ${order.order_code}.`,
+        customer_id: order.customer_id,
+        entity_type: 'OUTBOUND',
+        entity_code: order.order_code,
+        link_path: '/desktop/outbound',
+        actor_username: request.user?.username || 'SYSTEM'
+      });
       
       if (fastify.io) {
         fastify.io.emit('outbound_updated');
@@ -1366,9 +1442,21 @@ async function outboundRoutes(fastify, options) {
   // GET /api/outbound/history/items
   fastify.get('/history/items', async (request, reply) => {
     try {
+      const { limit = 500, search = '' } = request.query || {};
+      const safeLimit = limit === 'all' ? 5000 : Math.min(Math.max(parseInt(limit, 10) || 500, 1), 5000);
+      const params = [];
+      let whereClause = "WHERE o.status = 'SHIPPED'";
+      if (search && String(search).trim()) {
+        const like = `%${String(search).trim()}%`;
+        whereClause += ' AND (o.order_code LIKE ? OR c.business_name LIKE ? OR p.name LIKE ? OR i.pallet_code LIKE ? OR COALESCE(i.batch, pal.batch) LIKE ?)';
+        params.push(like, like, like, like, like);
+      }
+      params.push(safeLimit);
+
       const [rows] = await db.query(`
         SELECT 
           i.id,
+          o.customer_id,
           o.order_code,
           o.shipped_at,
           o.created_by AS operator_prep,
@@ -1391,10 +1479,11 @@ async function outboundRoutes(fastify, options) {
              AND (i.batch IS NULL OR p2.batch = i.batch)
            ORDER BY p2.id ASC LIMIT 1)
         )
-        WHERE o.status = 'SHIPPED'
+        ${whereClause}
         ORDER BY o.shipped_at DESC
-      `);
-      return rows;
+        LIMIT ?
+      `, params);
+      return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore nel recupero dello storico uscite' });
@@ -1611,6 +1700,18 @@ async function outboundRoutes(fastify, options) {
 
       await connection.commit();
       connection.release();
+
+      await createNotification(db, fastify.io, {
+        type: 'ORDER_RETURNED',
+        title: `Reso Registrato: ${order.order_code}`,
+        message: `${operator} ha registrato il reso di ${order.order_code}. Motivo: ${cleanReason}`,
+        customer_id: order.customer_id,
+        customer_name: order.customer_name,
+        entity_type: 'OUTBOUND',
+        entity_code: order.order_code,
+        link_path: '/desktop/outbound/returns',
+        actor_username: operator
+      });
 
       if (fastify.io) {
         fastify.io.emit('outbound_updated');

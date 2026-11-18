@@ -11,10 +11,11 @@ async function auditRoutes(fastify, options) {
 
   // 1. GET /api/audit - Registro Globale Operazioni Arricchito
   fastify.get('/', async (request, reply) => {
-    const { search = '', start_date, end_date, source = '', category = '', username = '' } = request.query;
+    const { search = '', start_date, end_date, source = '', category = '', username = '', limit = 600 } = request.query;
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 600, 1), 1000);
 
     try {
-      let query = 'SELECT * FROM AUDIT_LOGS WHERE 1=1';
+      let query = 'SELECT id, action, details, source, username, created_at FROM AUDIT_LOGS WHERE 1=1';
       const params = [];
 
       if (search && search.trim()) {
@@ -48,16 +49,17 @@ async function auditRoutes(fastify, options) {
       }
 
       if (start_date) {
-        query += ' AND DATE(created_at) >= ?';
-        params.push(start_date);
+        query += ' AND created_at >= ?';
+        params.push(`${start_date} 00:00:00`);
       }
 
       if (end_date) {
-        query += ' AND DATE(created_at) <= ?';
+        query += ' AND created_at < DATE_ADD(?, INTERVAL 1 DAY)';
         params.push(end_date);
       }
 
-      query += ' ORDER BY created_at DESC LIMIT 600';
+      query += ' ORDER BY created_at DESC LIMIT ?';
+      params.push(safeLimit);
 
       const [logs] = await db.query(query, params);
 
@@ -154,26 +156,34 @@ async function auditRoutes(fastify, options) {
   fastify.get('/products', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT pr.*,
+        SELECT pr.id, pr.sku, pr.name, pr.uom, pr.units_per_box, pr.boxes_per_pallet, pr.customer_id, pr.notes, pr.default_article_number, pr.flags,
                c.business_name AS customer_name,
                pc.business_name AS parent_customer_name,
-               COALESCE((
-                 SELECT SUM(p.quantity) FROM PALLETS p 
-                 WHERE p.product_id = pr.id AND p.status != 'SHIPPED'
-                   AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
-               ), 0) AS active_stock_qty,
-               (
-                 SELECT COUNT(*) FROM PALLETS p 
-                 WHERE p.product_id = pr.id AND p.status != 'SHIPPED' AND p.quantity > 0
-                   AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
-               ) AS active_pallets_count,
-               (SELECT COUNT(*) FROM PALLETS p WHERE p.product_id = pr.id) AS total_pallets_ever,
-               (SELECT COUNT(*) FROM INBOUND_DDT_ITEMS idi WHERE idi.product_id = pr.id) AS total_inbound_ddts,
-               (SELECT COUNT(*) FROM OUTBOUND_ITEMS oi WHERE oi.product_id = pr.id) AS total_outbound_picks,
-               (SELECT MAX(p.created_at) FROM PALLETS p WHERE p.product_id = pr.id) AS last_inbound_at
+               COALESCE(pal_agg.active_stock_qty, 0) AS active_stock_qty,
+               COALESCE(pal_agg.active_pallets_count, 0) AS active_pallets_count,
+               COALESCE(pal_agg.total_pallets_ever, 0) AS total_pallets_ever,
+               COALESCE(inb_agg.total_inbound_ddts, 0) AS total_inbound_ddts,
+               COALESCE(out_agg.total_outbound_picks, 0) AS total_outbound_picks,
+               pal_agg.last_inbound_at
         FROM PRODUCTS pr
         JOIN CUSTOMERS c ON pr.customer_id = c.id
         LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
+        LEFT JOIN (
+          SELECT p.product_id,
+                 SUM(CASE WHEN p.status != 'SHIPPED' AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED') THEN p.quantity ELSE 0 END) AS active_stock_qty,
+                 SUM(CASE WHEN p.status != 'SHIPPED' AND p.quantity > 0 AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED') THEN 1 ELSE 0 END) AS active_pallets_count,
+                 COUNT(*) AS total_pallets_ever,
+                 MAX(p.created_at) AS last_inbound_at
+          FROM PALLETS p
+          LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
+          GROUP BY p.product_id
+        ) pal_agg ON pal_agg.product_id = pr.id
+        LEFT JOIN (
+          SELECT product_id, COUNT(*) AS total_inbound_ddts FROM INBOUND_DDT_ITEMS GROUP BY product_id
+        ) inb_agg ON inb_agg.product_id = pr.id
+        LEFT JOIN (
+          SELECT product_id, COUNT(*) AS total_outbound_picks FROM OUTBOUND_ITEMS GROUP BY product_id
+        ) out_agg ON out_agg.product_id = pr.id
         ORDER BY pr.name ASC
       `);
       return rows;
@@ -245,7 +255,7 @@ async function auditRoutes(fastify, options) {
       }
 
       const [logsRows] = await db.query(
-        `SELECT * FROM AUDIT_LOGS WHERE (${auditConds.join(' OR ')}) ORDER BY created_at DESC LIMIT 300`,
+        `SELECT id, action, details, source, username, created_at FROM AUDIT_LOGS WHERE (${auditConds.join(' OR ')}) ORDER BY created_at DESC LIMIT 300`,
         auditParams
       );
       relatedAuditLogs = logsRows;

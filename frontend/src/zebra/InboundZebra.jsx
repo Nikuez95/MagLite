@@ -30,7 +30,7 @@ const InboundZebra = () => {
       const [locRes, freeRes, ddtsRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${token}` } }),
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${token}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt`, { headers: { Authorization: `Bearer ${token}` } })
+        axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt?active_only=true`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
       const allLocs = [
         ...locRes.data.map(l => ({ name: l.barcode, occupied: !!l.pallet_code })),

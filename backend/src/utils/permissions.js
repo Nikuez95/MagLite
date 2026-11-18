@@ -235,15 +235,16 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     }
   }
 
+  const userCols = 'id, username, role, requires_password_change, preferences, custom_permissions';
   let userRow = null;
   if (typeof userIdOrUsername === 'number' || /^\d+$/.test(String(userIdOrUsername))) {
-    const [rows] = await connection.query('SELECT * FROM USERS WHERE id = ?', [userIdOrUsername]);
+    const [rows] = await connection.query(`SELECT ${userCols} FROM USERS WHERE id = ?`, [userIdOrUsername]);
     userRow = rows[0];
   } else if (typeof userIdOrUsername === 'string') {
-    const [rows] = await connection.query('SELECT * FROM USERS WHERE username = ?', [userIdOrUsername]);
+    const [rows] = await connection.query(`SELECT ${userCols} FROM USERS WHERE username = ?`, [userIdOrUsername]);
     userRow = rows[0];
   } else if (userIdOrUsername && typeof userIdOrUsername === 'object') {
-    const [rows] = await connection.query('SELECT * FROM USERS WHERE id = ?', [userIdOrUsername.id]);
+    const [rows] = await connection.query(`SELECT ${userCols} FROM USERS WHERE id = ?`, [userIdOrUsername.id]);
     userRow = rows[0] || userIdOrUsername;
   }
 
@@ -252,7 +253,10 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
   const roleCode = userRow.role || 'operator';
   const isDeveloper = roleCode === 'developer';
 
-  const [roleRows] = await connection.query('SELECT * FROM ROLES WHERE code = ?', [roleCode]);
+  const [roleRows] = await connection.query(
+    'SELECT id, code, name, color, hierarchy_level, permissions FROM ROLES WHERE code = ?',
+    [roleCode]
+  );
   const roleRow = roleRows[0] || DEFAULT_ROLES.find(r => r.code === roleCode) || DEFAULT_ROLES[DEFAULT_ROLES.length - 1];
 
   const rawRolePerms = parseJsonSafe(roleRow.permissions, {});

@@ -60,13 +60,27 @@ async function palletRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id, COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
-        (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code AND p2.status != 'SHIPPED' AND p2.quantity > 0) as is_mixed
+        SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
+               p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
+               p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
+               p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
+               pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
+               c.business_name as customer_name, c.parent_id as customer_parent_id,
+               COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
+               IF(mx.pallet_code IS NOT NULL, 1, 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
+        LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
+        LEFT JOIN (
+          SELECT pallet_code
+          FROM PALLETS
+          WHERE status != 'SHIPPED' AND quantity > 0
+          GROUP BY pallet_code
+          HAVING COUNT(*) > 1
+        ) mx ON mx.pallet_code = p.pallet_code
         WHERE p.status != 'SHIPPED'
-          AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
+          AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED')
         ORDER BY p.created_at DESC
       `);
       return rows;
@@ -79,16 +93,29 @@ async function palletRoutes(fastify, options) {
   fastify.get('/inventory', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes, c.business_name as customer_name, c.parent_id as customer_parent_id,
+        SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
+               p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
+               p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
+               p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
+               pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
+               c.business_name as customer_name, c.parent_id as customer_parent_id,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                l.zone, l.col, l.pos,
-               (SELECT COUNT(*) > 1 FROM PALLETS p2 WHERE p2.pallet_code = p.pallet_code AND p2.status != 'SHIPPED' AND p2.quantity > 0) as is_mixed
+               IF(mx.pallet_code IS NOT NULL, 1, 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         LEFT JOIN LOCATIONS l ON p.location = l.barcode
+        LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
+        LEFT JOIN (
+          SELECT pallet_code
+          FROM PALLETS
+          WHERE status != 'SHIPPED' AND quantity > 0
+          GROUP BY pallet_code
+          HAVING COUNT(*) > 1
+        ) mx ON mx.pallet_code = p.pallet_code
         WHERE p.status != 'SHIPPED'
-          AND (p.inbound_ddt_id IS NULL OR NOT EXISTS (SELECT 1 FROM INBOUND_DDTS d WHERE d.id = p.inbound_ddt_id AND d.status != 'COMPLETED'))
+          AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED')
       `);
       return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
     } catch (err) {

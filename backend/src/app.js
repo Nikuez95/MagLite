@@ -61,6 +61,9 @@ fastify.register(require('./routes/settings'), { prefix: '/api/settings' });
 fastify.register(require('./routes/finances'), { prefix: '/api/finances' });
 fastify.register(require('./routes/tms'), { prefix: '/api/tms' });
 fastify.register(require('./routes/customForms'), { prefix: '/api/custom-forms' });
+fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
+fastify.register(require('./routes/tickets'), { prefix: '/api/tickets' });
+fastify.register(require('./routes/changelogs'), { prefix: '/api/changelogs' });
 
 // Health check endpoint (non protetto)
 fastify.get('/api/health', async () => {

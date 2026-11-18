@@ -36,15 +36,20 @@ import {
   Smartphone,
   MapPin,
   ArrowUpRight,
-  ClipboardList
+  ClipboardList,
+  Ticket as TicketIcon,
+  Megaphone
 } from 'lucide-react';
 import { hasPerm, refreshUserProfile } from '../../utils/permissions';
+import NotificationCenter from '../../components/NotificationCenter';
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(true);
+  const [socketInstance, setSocketInstance] = useState(null);
+  const [openTicketsCount, setOpenTicketsCount] = useState(0);
 
   const [user, setUser] = useState(() => {
     try {
@@ -92,18 +97,36 @@ const DesktopLayout = () => {
     return () => window.removeEventListener('maglite_permissions_updated', handlePermSync);
   }, []);
 
-  // WebSocket status indicator in top bar & live permissions sync
+  // WebSocket status indicator in top bar & live permissions sync + ticket counter
   useEffect(() => {
+    const fetchOpenTicketsCount = () => {
+      const tk = localStorage.getItem('maglite_token');
+      if (!tk) return;
+      axios.get('/api/tickets', {
+        params: { status: 'OPEN' },
+        headers: { Authorization: `Bearer ${tk}` }
+      }).then(res => {
+        const st = res.data?.stats || {};
+        setOpenTicketsCount((st.open || 0) + (st.in_progress || 0));
+      }).catch(() => {});
+    };
+
+    fetchOpenTicketsCount();
     const socket = io(`http://${window.location.hostname}:3000`);
+    setSocketInstance(socket);
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
     socket.on('connect_error', () => setSocketConnected(false));
+    socket.on('ticket_updated', fetchOpenTicketsCount);
     socket.on('permissions_updated', () => {
       refreshUserProfile().then(u => {
         if (u) setUser(u);
       });
     });
-    return () => socket.disconnect();
+    return () => {
+      setSocketInstance(null);
+      socket.disconnect();
+    };
   }, []);
 
   // Keyboard shortcut Ctrl+K / Cmd+K to focus global search
@@ -203,6 +226,8 @@ const DesktopLayout = () => {
     },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: ['view_users', 'users_manage'] },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History, perm: 'view_audit' },
+    { name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, badge: openTicketsCount },
+    { name: 'Changelog & Novità', path: '/desktop/changelogs', icon: Megaphone },
   ];
 
   const menu = rawMenu
@@ -240,6 +265,8 @@ const DesktopLayout = () => {
     { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema', perm: ['view_users', 'users_manage'] },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History, group: 'Sistema', perm: 'view_audit' },
+    { name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, group: 'Sistema' },
+    { name: 'Changelog & Novità', path: '/desktop/changelogs', icon: Megaphone, group: 'Sistema' },
     { name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, group: 'Configurazione', perm: 'view_settings' },
     { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: Map, group: 'Configurazione', perm: 'view_settings' }
   ].filter(p => !p.perm || hasPerm(p.perm, user));
@@ -267,9 +294,12 @@ const DesktopLayout = () => {
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
           <img src="/logo.png" alt="Logistic Porcelli Logo" className="h-9 w-auto object-contain" />
         </div>
-        <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 bg-slate-800 rounded-lg text-brand-white">
-          {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
-        </button>
+        <div className="flex items-center gap-2">
+          <NotificationCenter socket={socketInstance} />
+          <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 bg-slate-800 rounded-lg text-brand-white">
+            {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+          </button>
+        </div>
       </div>
 
       {/* Sidebar Navigation */}
@@ -530,14 +560,23 @@ const DesktopLayout = () => {
                   navigate(item.path);
                   setMobileMenuOpen(false);
                 }}
-                className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all ${
+                className={`flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition-all ${
                   isActive 
                     ? 'bg-brand-blue text-brand-black font-bold shadow-[0_0_15px_rgba(14,165,233,0.25)]' 
                     : 'text-slate-400 hover:bg-slate-800/70 hover:text-brand-white font-medium'
                 }`}
               >
-                <Icon size={19} className={isActive ? 'text-brand-black' : 'text-slate-400'} />
-                <span className="text-sm">{item.name}</span>
+                <div className="flex items-center gap-3 min-w-0">
+                  <Icon size={19} className={isActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
+                  <span className="text-sm truncate">{item.name}</span>
+                </div>
+                {item.badge > 0 && (
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                    isActive ? 'bg-brand-black text-brand-blue' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}>
+                    {item.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -688,6 +727,8 @@ const DesktopLayout = () => {
                 Zebra
               </button>
             )}
+
+            <NotificationCenter socket={socketInstance} />
 
             <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
               socketConnected

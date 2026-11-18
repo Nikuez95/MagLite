@@ -13,7 +13,10 @@ async function authRoutes(fastify, options) {
     }
 
     try {
-      const [rows] = await db.query('SELECT * FROM USERS WHERE username = ?', [username]);
+      const [rows] = await db.query(
+        'SELECT id, username, password_hash, role, requires_password_change FROM USERS WHERE username = ?',
+        [username]
+      );
       const user = rows[0];
 
       if (!user) {

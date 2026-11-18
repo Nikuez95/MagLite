@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { io } from 'socket.io-client';
 import { useNavigate } from 'react-router-dom';
 import {
   PackageMinus,
@@ -17,7 +18,8 @@ import {
   Check,
   Sparkles,
   Minus,
-  Plus
+  Plus,
+  Users
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
@@ -203,6 +205,7 @@ const OutboundZebra = () => {
 
   const [error, setError] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [joinConfirmData, setJoinConfirmData] = useState(null);
 
   const inputRef = useRef(null);
   const autoAdvanceTimerRef = useRef(null);
@@ -210,22 +213,31 @@ const OutboundZebra = () => {
 
   const currentItem = items[currentItemIndex];
 
-  // Carica lista ordini attivi (PENDING / PICKING) per avvio rapido con 1 tap
+  const fetchPendingOrders = useCallback(() => {
+    axios
+      .get(`http://${window.location.hostname}:3000/api/outbound?active_only=true`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then((res) => {
+        const active = (res.data || []).filter(
+          (o) => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'RETURNED'
+        );
+        setPendingOrders(active);
+      })
+      .catch(() => {});
+  }, [token]);
+
+  // Carica lista ordini attivi (PENDING / PICKING) per avvio rapido con 1 tap + aggiornamento real-time
   useEffect(() => {
-    if (step === 'SCAN_ORDER') {
-      axios
-        .get(`http://${window.location.hostname}:3000/api/outbound`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        .then((res) => {
-          const active = (res.data || []).filter(
-            (o) => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'RETURNED'
-          );
-          setPendingOrders(active);
-        })
-        .catch(() => {});
-    }
-  }, [step, token]);
+    if (step !== 'SCAN_ORDER') return;
+    fetchPendingOrders();
+    const socket = io(`http://${window.location.hostname}:3000`);
+    socket.on('outbound_updated', fetchPendingOrders);
+    return () => {
+      socket.off('outbound_updated', fetchPendingOrders);
+      socket.disconnect();
+    };
+  }, [step, fetchPendingOrders]);
 
   // Ogni volta che cambia lo step, chiudi la tastiera virtuale e mantieni il focus silenzioso (inputMode="none")
   useEffect(() => {
@@ -323,6 +335,18 @@ const OutboundZebra = () => {
   const handlePalletBarcodeScan = async (barcode, targetItem = currentItem, currentItemsList = items, idx = currentItemIndex) => {
     if (!targetItem) return;
     const cleanCode = barcode.trim();
+    const expectedCode = String(targetItem.pallet_code || '').trim();
+    const isExactPallet = cleanCode.toLowerCase() === expectedCode.toLowerCase();
+
+    // Blocca subito alla scansione se il barcode non corrisponde esattamente alla paletta attesa (anche a parità di prodotto e lotto)
+    if (!isExactPallet) {
+      try {
+        navigator.vibrate?.([100, 60, 100]);
+      } catch (e) {}
+      setError(`Paletta errata (${cleanCode}). Attesa: ${expectedCode}`);
+      return;
+    }
+
     setIsProcessing(true);
     setError(null);
 
@@ -332,24 +356,20 @@ const OutboundZebra = () => {
       });
       const palData = res.data;
 
-      const isExactPallet = cleanCode.toLowerCase() === String(targetItem.pallet_code || '').toLowerCase();
-      const targetBatch = (targetItem.batch || '').trim().toUpperCase();
-      const palBatch = (palData.batch || '').trim().toUpperCase();
-      const matchesBatch = !targetBatch || targetBatch === 'NESSUN LOTTO' || palBatch === targetBatch;
-      const matchesProduct = palData.product_id === targetItem.product_id || (palData.isMixed && Array.isArray(palData.items) && palData.items.some(m => m.product_id === targetItem.product_id));
-
-      if (!isExactPallet && (!matchesProduct || !matchesBatch || palData.status === 'SHIPPED')) {
+      if (palData.is_quarantined) {
         try {
           navigator.vibrate?.([100, 60, 100]);
         } catch (e) {}
-        setError(`Paletta errata (${cleanCode}). Attesa: ${targetItem.pallet_code}`);
+        setError(`BLOCCO QUARANTENA: La paletta ${palData.pallet_code} è in quarantena (${palData.quarantine_reason || 'Bloccata'}) e non può essere prelevata!`);
         return;
       }
 
-      if (!isExactPallet) {
-        targetItem.pallet_code = palData.pallet_code;
-        targetItem.pallet_id = palData.id;
-        targetItem.location = palData.location;
+      if (palData.status === 'SHIPPED') {
+        try {
+          navigator.vibrate?.([100, 60, 100]);
+        } catch (e) {}
+        setError(`Paletta errata (${cleanCode}): risulta già spedita.`);
+        return;
       }
 
       setScannedPallet(cleanCode);
@@ -397,7 +417,7 @@ const OutboundZebra = () => {
 
   const handleScan = async (rawBarcode) => {
     const barcode = String(rawBarcode || '').trim();
-    if (!barcode || isProcessing || step === 'FINISHED') return;
+    if (!barcode || isProcessing || step === 'FINISHED' || joinConfirmData) return;
 
     // Se siamo sulla schermata di conferma post-prelievo e l'operatore spara già la paletta del prelievo successivo
     if (step === 'PICK_CONFIRMED') {
@@ -432,18 +452,11 @@ const OutboundZebra = () => {
     handleScan(barcode);
   });
 
-  const fetchOrder = async (code) => {
-    const cleanCode = String(code || '').trim().toUpperCase();
-    if (!cleanCode) return;
-    setIsProcessing(true);
-    setError(null);
-    try {
-      const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/zebra/${cleanCode}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setOrder(res.data.order);
-      setAllOrderItems(res.data.items || []);
-      const remaining = (res.data.items || []).filter((i) => i.status !== 'PICKED');
+  const applyOrderData = useCallback(
+    (data) => {
+      setOrder(data.order);
+      setAllOrderItems(data.items || []);
+      const remaining = (data.items || []).filter((i) => i.status !== 'PICKED');
       setItems(remaining);
       setPreviousLocationKey(null);
       setLastPickedSummary(null);
@@ -454,12 +467,54 @@ const OutboundZebra = () => {
         setCurrentItemIndex(0);
         checkAndSkipPin(remaining[0]);
       }
+    },
+    [checkAndSkipPin]
+  );
+
+  const fetchOrder = async (code, forceJoin = false) => {
+    const cleanCode = String(code || '').trim().toUpperCase();
+    if (!cleanCode) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/zebra/${cleanCode}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!forceJoin && res.data?.already_in_progress) {
+        setJoinConfirmData({
+          order: res.data.order,
+          items: res.data.items || []
+        });
+        return;
+      }
+
+      setJoinConfirmData(null);
+      applyOrderData(res.data);
     } catch (err) {
+      setJoinConfirmData(null);
       setError(err.response?.data?.error || 'Ordine non trovato');
       setScannedOrder('');
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleConfirmJoin = async () => {
+    if (!joinConfirmData?.order?.order_code || isProcessing) return;
+    const targetCode = joinConfirmData.order.order_code;
+    setJoinConfirmData(null);
+    await fetchOrder(targetCode, true);
+  };
+
+  const handleCancelJoin = () => {
+    setJoinConfirmData(null);
+    setScannedOrder('');
+    setError(null);
+    fetchPendingOrders();
+    setTimeout(() => {
+      inputRef.current?.focus({ preventScroll: true });
+    }, 50);
   };
 
   const processPick = async (q, overridePallet = null, targetItem = currentItem, currentItemsList = items, idx = currentItemIndex) => {
@@ -538,7 +593,13 @@ const OutboundZebra = () => {
         }
       }
     } catch (err) {
-      setError(err.response?.data?.error || 'Errore di salvataggio');
+      const errMsg = err.response?.data?.error || 'Errore di salvataggio';
+      if (err.response?.status === 409 && order?.order_code) {
+        await fetchOrder(order.order_code, true);
+        setError(errMsg);
+        return;
+      }
+      setError(errMsg);
       if (step !== 'SCAN_PALLET') setStep('INPUT_QTY');
     } finally {
       setIsProcessing(false);
@@ -593,6 +654,68 @@ const OutboundZebra = () => {
     return (
       <div className="flex-1 p-4 flex flex-col max-w-md mx-auto w-full">
         <ZebraErrorModal message={error} onClose={() => setError(null)} />
+
+        {joinConfirmData && (
+          <div
+            className="fixed inset-0 z-[95] flex items-center justify-center p-5 bg-brand-black/85 backdrop-blur-sm animate-fade-in-up"
+            role="alertdialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-sm bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 shadow-[0_0_40px_rgba(245,158,11,0.35)] text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 mx-auto">
+                <Users size={36} />
+              </div>
+
+              <div>
+                <h3 className="text-xl font-black text-brand-white uppercase tracking-tight">
+                  Ordine Già in Corso
+                </h3>
+                <p className="font-mono font-black text-brand-blue text-sm mt-1">
+                  {joinConfirmData.order?.order_code}
+                  {joinConfirmData.order?.customer_name ? ` · ${joinConfirmData.order.customer_name}` : ''}
+                </p>
+                <p className="text-sm font-bold text-amber-200 mt-3 leading-relaxed break-words">
+                  {joinConfirmData.order?.picking_operator ? (
+                    <>
+                      L&apos;operatore{' '}
+                      <span className="text-amber-400 font-black">
+                        {joinConfirmData.order.picking_operator}
+                      </span>{' '}
+                      sta già facendo questo picking.
+                    </>
+                  ) : (
+                    'Un altro operatore sta già facendo questo picking.'
+                  )}
+                </p>
+                <p className="text-sm font-semibold text-slate-300 mt-1.5">
+                  Vuoi unirti comunque?
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={handleConfirmJoin}
+                  disabled={isProcessing}
+                  className="w-full py-4 rounded-2xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-base flex items-center justify-center gap-2 transition-all shadow-lg disabled:opacity-50"
+                >
+                  <Check size={20} strokeWidth={3} />
+                  <span>{isProcessing ? 'ACCESSO...' : 'SÌ, UNISCITI COMUNQUE'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelJoin}
+                  disabled={isProcessing}
+                  className="w-full py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700 font-bold text-base flex items-center justify-center gap-2 transition-all"
+                >
+                  <ChevronLeft size={20} />
+                  <span>NO, TORNA INDIETRO</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center gap-3 mb-4">
           <button
             onClick={() => navigate('/zebra')}
@@ -638,20 +761,22 @@ const OutboundZebra = () => {
               ref={inputRef}
               type="text"
               inputMode={keyboardOpen ? 'text' : 'none'}
+              disabled={isProcessing || Boolean(joinConfirmData)}
               placeholder={keyboardOpen ? 'Digita OUT-...' : 'In attesa di scansione laser...'}
               className="bg-slate-950 border-2 border-slate-700 p-3.5 rounded-2xl text-lg font-mono font-bold w-full uppercase focus:border-brand-blue focus:outline-none text-brand-white"
               value={scannedOrder}
               onBlur={() => setKeyboardOpen(false)}
               onChange={(e) => {
+                if (joinConfirmData) return;
                 const val = e.target.value.toUpperCase();
                 setScannedOrder(val);
                 if (val.length >= 17 && val.startsWith('OUT-')) fetchOrder(val);
               }}
-              onKeyDown={(e) => e.key === 'Enter' && scannedOrder && fetchOrder(scannedOrder)}
+              onKeyDown={(e) => e.key === 'Enter' && scannedOrder && !joinConfirmData && fetchOrder(scannedOrder)}
             />
             <button
               onClick={() => fetchOrder(scannedOrder)}
-              disabled={!scannedOrder || isProcessing}
+              disabled={!scannedOrder || isProcessing || Boolean(joinConfirmData)}
               className="bg-brand-blue text-brand-black px-5 rounded-2xl font-black text-lg disabled:opacity-40 shrink-0 active:scale-95 transition-transform"
             >
               {isProcessing ? '...' : <ArrowRight size={24} />}
@@ -680,11 +805,11 @@ const OutboundZebra = () => {
                     setScannedOrder(ord.order_code);
                     fetchOrder(ord.order_code);
                   }}
-                  disabled={isProcessing}
+                  disabled={isProcessing || Boolean(joinConfirmData)}
                   className="w-full text-left bg-slate-900 hover:bg-slate-800/90 active:scale-[0.99] border-2 border-slate-800 hover:border-brand-blue/60 p-4 rounded-2xl transition-all flex items-center justify-between gap-3"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="font-mono font-black text-brand-blue text-base">{ord.order_code}</span>
                       <span
                         className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
@@ -693,7 +818,9 @@ const OutboundZebra = () => {
                             : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
                         }`}
                       >
-                        {ord.status === 'PICKING' ? 'In Corso' : 'Da Iniziare'}
+                        {ord.status === 'PICKING'
+                          ? `In Corso${ord.picking_operator ? ` · ${ord.picking_operator}` : ''}`
+                          : 'Da Iniziare'}
                       </span>
                     </div>
                     <p className="text-brand-white font-bold text-base truncate">{ord.customer_name}</p>

@@ -51,7 +51,9 @@ async function financesRoutes(fastify, options) {
 
     try {
       const [rows] = await db.query(`
-        SELECT i.*, c.business_name, c.address, c.vat_number, c.unique_id
+        SELECT i.id, i.customer_id, i.period_month, i.period_year, i.base_total, i.vat_amount, i.grand_total,
+               i.invoice_data, i.is_paid, i.created_at,
+               c.business_name, c.address, c.vat_number, c.unique_id
         FROM invoices i
         JOIN CUSTOMERS c ON i.customer_id = c.id
         ORDER BY i.period_year DESC, i.period_month DESC, i.created_at DESC
@@ -121,7 +123,9 @@ async function financesRoutes(fastify, options) {
     }
 
     try {
-      const [rows] = await db.query('SELECT * FROM expenses ORDER BY expense_date DESC');
+      const [rows] = await db.query(
+        'SELECT id, description, amount, expense_date, category, created_at FROM expenses ORDER BY expense_date DESC LIMIT 1000'
+      );
       return rows;
     } catch (err) {
       fastify.log.error(err);

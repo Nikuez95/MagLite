@@ -7,11 +7,11 @@ import axios from 'axios';
 export const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:3000`;
 axios.defaults.baseURL = API_BASE_URL;
 
-// Mobile / Core Pages (static imports for instant performance on Zebra guns)
-import ModeSelection from './pages/ModeSelection';
-import ZebraApp from './zebra/ZebraApp';
-import Login from './pages/Login';
-import ForcePasswordChange from './pages/ForcePasswordChange';
+// Core & Mobile Pages (lazy-loaded per mantenere il bundle iniziale snello)
+const ModeSelection = lazy(() => import('./pages/ModeSelection'));
+const ZebraApp = lazy(() => import('./zebra/ZebraApp'));
+const Login = lazy(() => import('./pages/Login'));
+const ForcePasswordChange = lazy(() => import('./pages/ForcePasswordChange'));
 
 // Desktop Pages (Code-splitting tramite React.lazy per alleggerire il bundle iniziale di Zebra)
 const DesktopLayout = lazy(() => import('./pages/desktop/DesktopLayout'));
@@ -38,6 +38,22 @@ const InvoicesHistory = lazy(() => import('./pages/desktop/InvoicesHistory'));
 const ExpensesManager = lazy(() => import('./pages/desktop/ExpensesManager'));
 const Dashboard = lazy(() => import('./pages/desktop/Dashboard'));
 const AuditLogs = lazy(() => import('./pages/desktop/AuditLogs'));
+const Tickets = lazy(() => import('./pages/desktop/Tickets'));
+const Changelogs = lazy(() => import('./pages/desktop/Changelogs'));
+const ChangelogPopupModal = lazy(() => import('./components/ChangelogPopupModal'));
+
+const ChangelogPopupHost = ({ token, isDesktopAllowed }) => {
+  const navigate = useNavigate();
+  if (!token) return null;
+  return (
+    <Suspense fallback={null}>
+      <ChangelogPopupModal
+        token={token}
+        onOpenChannel={isDesktopAllowed ? () => navigate('/desktop/changelogs') : null}
+      />
+    </Suspense>
+  );
+};
 
 const DesktopShellFallback = () => (
   <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center text-slate-400 gap-3">
@@ -142,13 +158,17 @@ function App() {
   return (
     <>
       {needsPasswordChange && (
-        <ForcePasswordChange 
-          setToken={setToken} 
-          onComplete={() => setNeedsPasswordChange(false)} 
-        />
+        <Suspense fallback={<DesktopShellFallback />}>
+          <ForcePasswordChange 
+            setToken={setToken} 
+            onComplete={() => setNeedsPasswordChange(false)} 
+          />
+        </Suspense>
       )}
       <Router>
-        <Routes>
+        <ChangelogPopupHost token={token} isDesktopAllowed={isDesktopAllowed} />
+        <Suspense fallback={<DesktopShellFallback />}>
+          <Routes>
           <Route path="/login" element={<Login setToken={setToken} />} />
           
           {/* Schermata Iniziale Protetta */}
@@ -365,8 +385,11 @@ function App() {
                 </ProtectedSection>
               }
             />
+            <Route path="tickets" element={<Tickets />} />
+            <Route path="changelogs" element={<Changelogs />} />
           </Route>
         </Routes>
+        </Suspense>
       </Router>
     </>
   );

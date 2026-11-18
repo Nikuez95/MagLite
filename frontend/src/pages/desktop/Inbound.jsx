@@ -4,8 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
-import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
 import {
   Download,
   Upload,
@@ -315,7 +313,8 @@ const Inbound = () => {
 
   const fileInputRef = useRef(null);
 
-  const handleDownloadTemplate = () => {
+  const handleDownloadTemplate = async () => {
+    const XLSX = await import('xlsx');
     const templateRows = [
       {
         "Codice Articolo": "ART-ACQ-15",
@@ -460,7 +459,7 @@ const Inbound = () => {
       return 'Base';
     };
 
-    const normalizeDate = (val) => {
+    const normalizeDate = (val, xlsxMod = null) => {
       if (val === undefined || val === null || val === '') return null;
       if (val instanceof Date && !isNaN(val)) {
         const y = val.getFullYear();
@@ -469,8 +468,8 @@ const Inbound = () => {
         const d = String(val.getDate()).padStart(2, '0');
         return `${y}-${m}-${d}`;
       }
-      if (typeof val === 'number' && val > 20000 && val < 100000 && XLSX.SSF?.parse_date_code) {
-        const parsed = XLSX.SSF.parse_date_code(val);
+      if (typeof val === 'number' && val > 20000 && val < 100000 && xlsxMod?.SSF?.parse_date_code) {
+        const parsed = xlsxMod.SSF.parse_date_code(val);
         if (parsed && parsed.y && parsed.m && parsed.d) {
           if (parsed.y < 1900 || parsed.y > 2100) return null;
           return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
@@ -557,6 +556,7 @@ const Inbound = () => {
     reader.onload = async (evt) => {
       setIsProcessing(true);
       try {
+        const XLSX = await import('xlsx');
         const isCsv = file.name.toLowerCase().endsWith('.csv');
         const data = new Uint8Array(evt.target.result);
         const workbook = XLSX.read(data, { type: 'array', cellDates: true, raw: isCsv });
@@ -700,7 +700,7 @@ const Inbound = () => {
             ['scadenza', 'data_scadenza', 'data_di_scadenza', 'scad', 'tmc', 'expiration', 'expiration_date', 'exp'],
             k => k.includes('scad') || k === 'tmc' || k.includes('expir')
           );
-          const scadenza = normalizeDate(rawScadenza);
+          const scadenza = normalizeDate(rawScadenza, XLSX);
 
           const rawPalletsCount = getCol(
             normRow,
