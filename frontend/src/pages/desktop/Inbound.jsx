@@ -96,7 +96,7 @@ const Inbound = () => {
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/products/flags`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] }))
       ]);
       setCustomers(custRes.data.filter(c => canTouchCustomer(c.id)).map(c => ({ value: c.id, label: c.business_name, raw: c })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
@@ -115,10 +115,12 @@ const Inbound = () => {
     socket.on('inbound_updated', refresh);
     socket.on('inventory_updated', refresh);
     socket.on('locations_updated', refresh);
+    socket.on('billing_updated', refresh);
     return () => {
       socket.off('inbound_updated', refresh);
       socket.off('inventory_updated', refresh);
       socket.off('locations_updated', refresh);
+      socket.off('billing_updated', refresh);
       socket.disconnect();
     };
   }, []);
@@ -1186,13 +1188,13 @@ const Inbound = () => {
   };
 
   const availableFlagsOptions = React.useMemo(() => {
-    const flagsSet = new Set(serverFlags);
-    products.forEach(p => {
-      const pf = typeof p.raw.flags === 'string' ? JSON.parse(p.raw.flags) : (p.raw.flags || []);
-      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
-    });
-    return Array.from(flagsSet).map(f => ({ label: f, value: f }));
-  }, [products, serverFlags]);
+    const flagsSet = new Set(
+      (serverFlags || [])
+        .map(f => String(f || '').trim().toUpperCase().replace(/^FLAG_/, ''))
+        .filter(Boolean)
+    );
+    return Array.from(flagsSet).sort().map(f => ({ label: f, value: f }));
+  }, [serverFlags]);
 
   const allLocationsOptions = React.useMemo(() => {
     const opts = [];
@@ -1718,15 +1720,20 @@ const Inbound = () => {
                   </div>
                   <div>
                     <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Flag (es. ADR)</label>
-                    <CreatableSelect
+                    <Select
                       isMulti
                       styles={selectStyles}
-                      placeholder="Flag..."
-                      noOptionsMessage={() => "Nessun flag"}
-                      formatCreateLabel={(val) => `+ "${val}"`}
+                      placeholder="Seleziona flag..."
+                      noOptionsMessage={() => "Nessun flag disponibile (creali in Amministrazione → Regole Base)"}
+                      filterOption={(option, inputValue) => {
+                        const q = (inputValue || '').trim().toLowerCase();
+                        if (!q) return true;
+                        const val = option.value.toLowerCase();
+                        return val.includes(q) || `flag_${val}`.includes(q);
+                      }}
                       value={formData.flags}
                       options={availableFlagsOptions}
-                      onChange={val => setFormData({...formData, flags: val})}
+                      onChange={val => setFormData({...formData, flags: val || []})}
                     />
                   </div>
                 </div>

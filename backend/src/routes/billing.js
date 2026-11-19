@@ -30,13 +30,20 @@ async function billingRoutes(fastify, options) {
   // POST Rule
   fastify.post('/rules', async (request, reply) => {
     const { rule_code, description, default_price, rule_type } = request.body;
+    let normalizedCode = String(rule_code || '').trim().toUpperCase().replace(/\s+/g, '_');
+    if (rule_type === 'FLAG' && normalizedCode && !normalizedCode.startsWith('FLAG_')) {
+      normalizedCode = `FLAG_${normalizedCode}`;
+    }
+    if (!normalizedCode || !description || !rule_type) {
+      return reply.code(400).send({ error: 'Codice, descrizione e tipo regola sono obbligatori' });
+    }
     try {
       const [result] = await db.query(
         'INSERT INTO billing_rules (rule_code, description, default_price, rule_type) VALUES (?, ?, ?, ?)',
-        [rule_code, description, default_price || 0, rule_type]
+        [normalizedCode, description, default_price || 0, rule_type]
       );
       if (fastify.io) fastify.io.emit('billing_updated');
-      return { success: true, id: result.insertId };
+      return { success: true, id: result.insertId, rule_code: normalizedCode };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore creazione regola, forse il codice esiste già?' });
@@ -322,7 +329,7 @@ async function billingRoutes(fastify, options) {
 
         const tariffs = {};
         tariffRows.forEach(t => {
-          tariffs[t.rule_code] = { price: parseFloat(t.price) || 0, desc: t.description };
+          tariffs[String(t.rule_code).trim().toUpperCase()] = { price: parseFloat(t.price) || 0, desc: t.description };
         });
 
         if (!tariffs['DEPOSITO_PALLET']) {
@@ -624,11 +631,13 @@ async function billingRoutes(fastify, options) {
 
           // 5. FLAGS (EXTRA es. ADR, FRIGO, ecc.)
           uniqueFlags.forEach(f => {
-            const ruleCode = `FLAG_${f.toUpperCase()}`;
-            if (tariffs[ruleCode]) {
+            const cleanF = String(f).trim().toUpperCase().replace(/^FLAG_/, '');
+            const prefixedCode = `FLAG_${cleanF}`;
+            const ruleCode = tariffs[prefixedCode] ? prefixedCode : (tariffs[cleanF] ? cleanF : null);
+            if (ruleCode && tariffs[ruleCode]) {
               const c = addSectionCost('SERVIZI EXTRA', ruleCode, tariffs[ruleCode].desc, 1, palletSummaryObj);
               if (c > 0) {
-                palletCharges.push({ code: ruleCode, label: `Tag ${f.toUpperCase()}`, price: c });
+                palletCharges.push({ code: ruleCode, label: `Tag ${cleanF}`, price: c });
                 palletTotalPrice += c;
               }
             }

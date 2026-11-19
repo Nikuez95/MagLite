@@ -37,26 +37,44 @@ async function productRoutes(fastify, options) {
   // GET /api/products/flags
   fastify.get('/flags', async (request, reply) => {
     try {
-      const [prodRows] = await db.query(`SELECT flags FROM PRODUCTS WHERE flags IS NOT NULL AND flags != '[]'`);
-      const [palRows] = await db.query(`SELECT flags FROM PALLETS WHERE flags IS NOT NULL AND flags != '[]'`);
-      
+      const source = request.query?.source;
       const flagsSet = new Set();
-      
-      const processFlags = (rows) => {
-        rows.forEach(r => {
-          if (r.flags) {
-            try {
-              const parsed = typeof r.flags === 'string' ? JSON.parse(r.flags) : r.flags;
-              if (Array.isArray(parsed)) parsed.forEach(f => flagsSet.add(f));
-            } catch(e) {}
-          }
-        });
-      };
-      
-      processFlags(prodRows);
-      processFlags(palRows);
-      
-      return Array.from(flagsSet);
+
+      const [ruleRows] = await db.query(
+        `SELECT rule_code FROM billing_rules WHERE rule_type = 'FLAG' ORDER BY rule_code ASC`
+      );
+      ruleRows.forEach(r => {
+        if (r.rule_code) {
+          const clean = String(r.rule_code).trim().toUpperCase().replace(/^FLAG_/, '');
+          if (clean) flagsSet.add(clean);
+        }
+      });
+
+      if (source !== 'rules') {
+        const [prodRows] = await db.query(`SELECT flags FROM PRODUCTS WHERE flags IS NOT NULL AND flags != '[]'`);
+        const [palRows] = await db.query(`SELECT flags FROM PALLETS WHERE flags IS NOT NULL AND flags != '[]'`);
+
+        const processFlags = (rows) => {
+          rows.forEach(r => {
+            if (r.flags) {
+              try {
+                const parsed = typeof r.flags === 'string' ? JSON.parse(r.flags) : r.flags;
+                if (Array.isArray(parsed)) {
+                  parsed.forEach(f => {
+                    const clean = String(f || '').trim().toUpperCase().replace(/^FLAG_/, '');
+                    if (clean) flagsSet.add(clean);
+                  });
+                }
+              } catch (e) {}
+            }
+          });
+        };
+
+        processFlags(prodRows);
+        processFlags(palRows);
+      }
+
+      return Array.from(flagsSet).sort();
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore recupero flags' });

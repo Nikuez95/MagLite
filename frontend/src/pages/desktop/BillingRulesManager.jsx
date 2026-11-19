@@ -43,18 +43,30 @@ const BillingRulesManager = () => {
     fetchRules();
     fetchFlags();
     const socket = io(`http://${window.location.hostname}:3000`);
-    socket.on('billing_updated', fetchRules);
-    return () => socket.disconnect();
+    const refresh = () => {
+      fetchRules();
+      fetchFlags();
+    };
+    socket.on('billing_updated', refresh);
+    return () => {
+      socket.off('billing_updated', refresh);
+      socket.disconnect();
+    };
   }, []);
 
   const handleCreateRule = async (e) => {
     e.preventDefault();
     if (!canManageFinance) return appAlert('Permesso Gestione Finanza richiesto.');
     const formData = new FormData(e.target);
+    const ruleType = formData.get('rule_type');
+    let normalizedCode = String(formData.get('rule_code') || '').trim().toUpperCase().replace(/\s+/g, '_');
+    if (ruleType === 'FLAG' && normalizedCode && !normalizedCode.startsWith('FLAG_')) {
+      normalizedCode = `FLAG_${normalizedCode}`;
+    }
     const payload = {
-      rule_code: formData.get('rule_code'),
-      description: formData.get('description'),
-      rule_type: formData.get('rule_type'),
+      rule_code: normalizedCode,
+      description: String(formData.get('description') || '').trim(),
+      rule_type: ruleType,
       default_price: parseFloat(formData.get('default_price')) || 0
     };
     if (!payload.rule_code || !payload.description) {
@@ -68,6 +80,7 @@ const BillingRulesManager = () => {
       appAlert('Regola creata con successo!', 'Successo', 'success');
       e.target.reset();
       fetchRules();
+      fetchFlags();
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore creazione regola');
     } finally {
@@ -84,6 +97,7 @@ const BillingRulesManager = () => {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       fetchRules();
+      fetchFlags();
     } catch (err) {
       appAlert('Impossibile eliminare, la regola è in uso da un cliente?');
     }

@@ -221,6 +221,7 @@ const ProductsManagement = () => {
   const [pallets, setPallets] = useState([]);
   const [selectedPallets, setSelectedPallets] = useState([]);
   const [products, setProducts] = useState([]);
+  const [serverFlags, setServerFlags] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
   const [freeLocations, setFreeLocations] = useState([]);
@@ -421,18 +422,20 @@ const ProductsManagement = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [palletsRes, productsRes, custRes, locRes, freeRes] = await Promise.all([
+      const [palletsRes, productsRes, custRes, locRes, freeRes, flagsRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/pallets`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] }))
       ]);
       setPallets(palletsRes.data);
       setProducts(productsRes.data);
       setCustomers(custRes.data);
       setLocations(locRes.data);
       setFreeLocations(freeRes.data || []);
+      setServerFlags(flagsRes.data || []);
     } catch (err) {
       console.error(err);
     }
@@ -447,12 +450,14 @@ const ProductsManagement = () => {
     socket.on('inventory_updated', refresh);
     socket.on('dashboard_update', refresh);
     socket.on('quarantine_updated', refresh);
+    socket.on('billing_updated', refresh);
     return () => {
       socket.off('stow_updated', refresh);
       socket.off('locations_updated', refresh);
       socket.off('inventory_updated', refresh);
       socket.off('dashboard_update', refresh);
       socket.off('quarantine_updated', refresh);
+      socket.off('billing_updated', refresh);
       socket.disconnect();
     };
   }, []);
@@ -948,17 +953,20 @@ const ProductsManagement = () => {
   }, [products, searchTerm, filterCustomer, productStockFilter, stockByProduct]);
 
   const availableFlagsOptions = React.useMemo(() => {
-    const flagsSet = new Set();
-    products.forEach(p => {
-      const pf = typeof p.flags === 'string' ? JSON.parse(p.flags) : (p.flags || []);
-      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
-    });
-    pallets.forEach(p => {
-      const pf = typeof p.flags === 'string' ? JSON.parse(p.flags) : (p.flags || []);
-      if (Array.isArray(pf)) pf.forEach(f => flagsSet.add(f));
-    });
-    return Array.from(flagsSet).map(f => ({ label: f, value: f }));
-  }, [products, pallets]);
+    const flagsSet = new Set(
+      (serverFlags || [])
+        .map(f => String(f || '').trim().toUpperCase().replace(/^FLAG_/, ''))
+        .filter(Boolean)
+    );
+    return Array.from(flagsSet).sort().map(f => ({ label: f, value: f }));
+  }, [serverFlags]);
+
+  const filterFlagOption = (option, inputValue) => {
+    const q = (inputValue || '').trim().toLowerCase();
+    if (!q) return true;
+    const val = option.value.toLowerCase();
+    return val.includes(q) || `flag_${val}`.includes(q);
+  };
 
   const indexOfLastPallet = palletsCurrentPage * itemsPerPage;
   const indexOfFirstPallet = indexOfLastPallet - itemsPerPage;
@@ -1903,15 +1911,15 @@ const ProductsManagement = () => {
               </div>
               <div>
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
-                <CreatableSelect
+                <Select
                   isMulti
                   styles={selectStyles}
-                  placeholder="Digita un flag e premi invio..."
-                  noOptionsMessage={() => "Nessun flag trovato"}
-                  formatCreateLabel={(val) => `Crea flag "${val}"`}
+                  placeholder="Seleziona flag..."
+                  noOptionsMessage={() => "Nessun flag disponibile (creali in Amministrazione → Regole Base)"}
+                  filterOption={filterFlagOption}
                   value={newProduct.flags}
                   options={availableFlagsOptions}
-                  onChange={val => setNewProduct({...newProduct, flags: val})}
+                  onChange={val => setNewProduct({...newProduct, flags: val || []})}
                 />
               </div>
               <div>
@@ -1974,15 +1982,15 @@ const ProductsManagement = () => {
               </div>
               <div>
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
-                <CreatableSelect
+                <Select
                   isMulti
                   styles={selectStyles}
-                  placeholder="Digita un flag e premi invio..."
-                  noOptionsMessage={() => "Nessun flag trovato"}
-                  formatCreateLabel={(val) => `Crea flag "${val}"`}
+                  placeholder="Seleziona flag..."
+                  noOptionsMessage={() => "Nessun flag disponibile (creali in Amministrazione → Regole Base)"}
+                  filterOption={filterFlagOption}
                   value={editProductModal.product.flags || []}
                   options={availableFlagsOptions}
-                  onChange={val => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, flags: val }})}
+                  onChange={val => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, flags: val || [] }})}
                 />
               </div>
               <div>
