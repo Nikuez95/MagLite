@@ -4,39 +4,31 @@ import Select from 'react-select';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Calculator, Download, Loader2, ReceiptText, Plus, Trash2, Edit2, Check,
-  Eye, EyeOff, History, GitBranch, Boxes, Coins, Building2,
+  Eye, EyeOff, GitBranch, Boxes, Coins, Building2, Layers, SlidersHorizontal,
   ArrowUpRight, ArrowDownLeft, X, Package, MapPin, Calendar, Clock,
-  FileText, User, Tag, Search, ExternalLink, MessageSquare
+  FileText, User, Tag, Search, ExternalLink, MessageSquare, Sparkles, Archive
 } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
-import { generateProformaPdf, formatDateIT } from '../../utils/invoicePdf';
+import { generateProformaPdf, formatDateIT, DEFAULT_PDF_OPTIONS } from '../../utils/invoicePdf';
 import { io } from 'socket.io-client';
+import FinanceAdminNav from '../../components/FinanceAdminNav';
 
-const STORAGE_MODES = [
-  {
-    id: 'GIORNALIERO',
-    title: 'Giorni di Sosta (Mensile)',
-    desc: 'Tariffa giornaliera (SOSTA_GIORNO) × giorni effettivi nel mese selezionato. Se in deposito da mesi, fattura solo i gg del mese.',
-    accent: 'amber'
-  },
-  {
-    id: 'DEPOSITO_FINE_MESE',
-    title: 'Deposito Mensile Fisso',
-    desc: 'Fattura una quota fissa mensile (DEPOSITO_PALLET) per ogni paletta rimasta in giacenza a fine mese.',
-    accent: 'emerald'
-  },
-  {
-    id: 'QUINDICINA',
-    title: 'Sosta a Quindicina',
-    desc: 'Applica gli scaglioni SOSTA_15 (ingresso <= 15) e SOSTA_MAGGIORE_15 (ingresso > 15).',
-    accent: 'sky'
-  },
-  {
-    id: 'NESSUNO',
-    title: 'Solo Eventi IN/OUT & Extra',
-    desc: 'Nessun addebito deposito/sosta: calcola esclusivamente ingressi, uscite e servizi extra (Tag).',
-    accent: 'slate'
-  }
+const PDF_FIELDS_CONFIG = [
+  { key: 'showSku', label: 'Cod. Articolo / SKU' },
+  { key: 'showBatch', label: 'Lotto' },
+  { key: 'showWeights', label: 'KG Netti / Lordi' },
+  { key: 'showExpiration', label: 'Scadenza' },
+  { key: 'showArrival', label: 'Data Arrivo (IN)' },
+  { key: 'showDeparture', label: 'Uscita / Stato' },
+  { key: 'showQtyDays', label: 'Q.tà & Gg Sosta' },
+  { key: 'showCharges', label: 'Causali Addebiti' },
+  { key: 'showNotes', label: 'Note Paletta' },
+  { key: 'showLocation', label: 'Posizione Scaffale' },
+  { key: 'showClientRef', label: 'Rif. Paletta Cliente' },
+  { key: 'showTags', label: 'Tag / Flag' },
+  { key: 'showSummaryLines', label: 'Barra Conteggi Rapidi' },
+  { key: 'showGoodsTable', label: 'Tabella Dettaglio Bancali' },
+  { key: 'showTariffSummary', label: 'Tabella Riepilogo Voci' }
 ];
 
 const PreBillingDashboard = () => {
@@ -48,12 +40,27 @@ const PreBillingDashboard = () => {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [year, setYear] = useState(new Date().getFullYear());
 
-  // Opzioni di calcolo e stampa PDF
-  const [storageMode, setStorageMode] = useState('GIORNALIERO');
-  const [capToToday, setCapToToday] = useState(false);
-  const [includeHistorical, setIncludeHistorical] = useState(true);
-  const [includeNotesInPdf, setIncludeNotesInPdf] = useState(true);
+  // Opzioni personalizzazione PDF salvate in locale
+  const [pdfOptions, setPdfOptions] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('maglite_billing_pdf_options') || 'null');
+      return saved ? { ...DEFAULT_PDF_OPTIONS, ...saved } : { ...DEFAULT_PDF_OPTIONS };
+    } catch {
+      return { ...DEFAULT_PDF_OPTIONS };
+    }
+  });
+  const [showPdfCustomizer, setShowPdfCustomizer] = useState(false);
   const [vatRate, setVatRate] = useState(22);
+
+  const togglePdfOption = (key) => {
+    setPdfOptions(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      try {
+        localStorage.setItem('maglite_billing_pdf_options', JSON.stringify(next));
+      } catch (_) {}
+      return next;
+    });
+  };
 
   const [reportData, setReportData] = useState(null);
   const [invoiceItems, setInvoiceItems] = useState([]);
@@ -146,12 +153,7 @@ const PreBillingDashboard = () => {
         clientId: targetId,
         month,
         year,
-        includeHistorical,
-        includeDeposit: storageMode === 'DEPOSITO_FINE_MESE',
-        includeStorage: storageMode === 'QUINDICINA',
-        includeDailyStorage: storageMode === 'GIORNALIERO',
-        capToToday,
-        storageMode
+        storageMode: 'AUTO'
       }, { headers: { Authorization: `Bearer ${getToken()}` } });
 
       setReportData(res.data);
@@ -225,13 +227,36 @@ const PreBillingDashboard = () => {
   const toggleVisibility = (id) => setInvoiceItems(prev => prev.map(i => i.id === id ? { ...i, visible: !i.visible } : i));
   const toggleEdit = (id) => setInvoiceItems(prev => prev.map(i => i.id === id ? { ...i, isEditing: !i.isEditing } : i));
 
-  const handleRuleSelect = (val) => {
+  const handleRuleSelect = async (val) => {
     if (val === 'CUSTOM_SERVICE') setNewRow(prev => ({ ...prev, type: 'SERVICE', description: '', qty: 1, price: 0 }));
     else if (val === 'CUSTOM_DISCOUNT_FIXED') setNewRow(prev => ({ ...prev, type: 'DISCOUNT_FIXED', description: '', qty: 1, price: 0 }));
     else if (val === 'CUSTOM_DISCOUNT_PERCENT') setNewRow(prev => ({ ...prev, type: 'DISCOUNT_PERCENT', description: '', qty: 1, price: 0 }));
     else {
       const r = rules.find(x => x.id === parseInt(val));
-      if (r) setNewRow(prev => ({ ...prev, type: r.rule_type === 'MANUAL' ? 'SERVICE' : r.rule_type, description: r.description, qty: 1, price: r.default_price }));
+      if (r) {
+        let resolvedPrice = r.default_price;
+        const targetClientId = newRow.sectionId || selectedCustomer?.value;
+        if (targetClientId) {
+          try {
+            const tRes = await axios.get(`http://${window.location.hostname}:3000/api/billing/tariffs/${targetClientId}`, {
+              headers: { Authorization: `Bearer ${getToken()}` }
+            });
+            const match = (tRes.data || []).find(t => t.rule_code === r.rule_code);
+            if (match && match.final_price !== undefined && match.final_price !== null) {
+              resolvedPrice = match.final_price;
+            }
+          } catch {
+            // fallback to default_price
+          }
+        }
+        setNewRow(prev => ({
+          ...prev,
+          type: r.rule_type === 'MANUAL' ? 'SERVICE' : r.rule_type,
+          description: r.description,
+          qty: 1,
+          price: resolvedPrice
+        }));
+      }
     }
   };
 
@@ -312,15 +337,59 @@ const PreBillingDashboard = () => {
     return { sectionTotalsMap: secMap, finalTotal: final, baseTotal: base, vatAmount: vat, grandTotal: grand };
   }, [invoiceItems, vatRate, reportData]);
 
+  const saveProformaArchive = async () => {
+    const cust = selectedCustomer.raw;
+    const storageModeLabel = 'Calcolo automatico per paletta in base al listino assegnato';
+    const visibleItems = invoiceItems.filter(i => i.visible);
+    const visiblePallets = palletDetails.filter(p => p.visibleInPdf);
+
+    await axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, {
+      customer_id: selectedCustomer.value,
+      period_month: month,
+      period_year: year,
+      base_total: finalTotal,
+      vat_amount: vatAmount,
+      grand_total: grandTotal,
+      invoice_data: {
+        clientName: cust.business_name,
+        includeNotesInPdf: pdfOptions.showNotes,
+        pdfOptions,
+        storageMode: 'AUTO',
+        storageModeLabel,
+        sections: (reportData.sections || []).map(sec => ({
+          ...sec,
+          sectionTotal: sectionTotalsMap[sec.sectionId] || 0
+        })),
+        items: visibleItems,
+        pallets: visiblePallets,
+        vatRate,
+        period: reportData.period
+      }
+    }, { headers: { Authorization: `Bearer ${getToken()}` } });
+
+    return { cust, storageModeLabel, visibleItems, visiblePallets };
+  };
+
+  const handleSaveArchiveOnly = async () => {
+    if (!reportData || isExporting) return;
+    setIsExporting(true);
+    try {
+      await saveProformaArchive();
+      appAlert('Proforma salvata correttamente nella cartella cliente dell\'Archivio Proforme!', 'Archiviata', 'success');
+    } catch (err) {
+      console.error(err);
+      appAlert(err.response?.data?.error || 'Errore durante il salvataggio della proforma in archivio');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const exportPDF = async () => {
     if (!reportData || isExporting) return;
     setIsExporting(true);
     try {
-      const cust = selectedCustomer.raw;
-      const modeObj = STORAGE_MODES.find(m => m.id === storageMode);
-      const storageModeLabel = modeObj ? modeObj.title : storageMode;
-      const visibleItems = invoiceItems.filter(i => i.visible);
-      const visiblePallets = palletDetails.filter(p => p.visibleInPdf);
+      // Prima salva in Archivio Proforme, poi genera/scarica il PDF
+      const { cust, storageModeLabel, visibleItems, visiblePallets } = await saveProformaArchive();
 
       await generateProformaPdf({
         companySettings,
@@ -331,40 +400,18 @@ const PreBillingDashboard = () => {
         items: visibleItems,
         pallets: visiblePallets,
         sectionTotalsMap,
-        includeNotesInPdf,
+        includeNotesInPdf: pdfOptions.showNotes,
+        pdfOptions,
         vatRate,
         baseTotal: finalTotal,
         vatAmount,
         grandTotal
       });
 
-      await axios.post(`http://${window.location.hostname}:3000/api/finances/invoices`, {
-        customer_id: selectedCustomer.value,
-        period_month: month,
-        period_year: year,
-        base_total: finalTotal,
-        vat_amount: vatAmount,
-        grand_total: grandTotal,
-        invoice_data: {
-          clientName: cust.business_name,
-          includeNotesInPdf,
-          storageMode,
-          storageModeLabel,
-          sections: (reportData.sections || []).map(sec => ({
-            ...sec,
-            sectionTotal: sectionTotalsMap[sec.sectionId] || 0
-          })),
-          items: visibleItems,
-          pallets: visiblePallets,
-          vatRate,
-          period: reportData.period
-        }
-      }, { headers: { Authorization: `Bearer ${getToken()}` } });
-
-      appAlert('PDF generato e Proforma archiviata correttamente nel registro storico!');
+      appAlert('Proforma salvata in Archivio e PDF generato con successo!', 'Successo', 'success');
     } catch (err) {
       console.error(err);
-      appAlert('Errore durante il salvataggio della proforma');
+      appAlert(err.response?.data?.error || 'Errore durante il salvataggio o generazione PDF della proforma');
     } finally {
       setIsExporting(false);
     }
@@ -382,8 +429,9 @@ const PreBillingDashboard = () => {
   const years = [currentYear - 1, currentYear, currentYear + 1].map(y => ({ value: y, label: y.toString() }));
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
+    <div className="flex-1 p-6 md:p-8 overflow-y-auto bg-brand-black min-h-screen">
       <div className="max-w-7xl mx-auto animate-fade-in-up">
+        <FinanceAdminNav />
         {/* Header */}
         <div className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
           <div>
@@ -467,98 +515,62 @@ const PreBillingDashboard = () => {
             </div>
           )}
 
-          {/* Modalità di Calcolo Giacenza / Sosta */}
-          <div className="pt-4 border-t border-slate-800/80 space-y-3">
-            <div className="text-[11px] font-black uppercase tracking-wider text-slate-400">
-              1. Modalità Addebito Sosta / Deposito nel Mese
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {STORAGE_MODES.map((m) => {
-                const active = storageMode === m.id;
-                const activeBorder =
-                  m.accent === 'amber'
-                    ? 'bg-amber-950/25 border-amber-500/60 text-amber-100 ring-1 ring-amber-500/30'
-                    : m.accent === 'emerald'
-                    ? 'bg-emerald-950/25 border-emerald-500/60 text-emerald-100 ring-1 ring-emerald-500/30'
-                    : m.accent === 'sky'
-                    ? 'bg-sky-950/25 border-sky-500/60 text-sky-100 ring-1 ring-sky-500/30'
-                    : 'bg-slate-800/70 border-slate-500/60 text-slate-100';
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setStorageMode(m.id)}
-                    className={`text-left p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                      active ? activeBorder : 'bg-slate-950/50 border-slate-800 text-slate-400 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-xs font-black uppercase tracking-wider">{m.title}</span>
-                      <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${active ? 'border-white bg-white/20' : 'border-slate-600'}`}>
-                        {active && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-snug">{m.desc}</p>
-                  </button>
-                );
-              })}
+          {/* Banner informativo calcolo automatico + Personalizza PDF */}
+          <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-xs text-slate-300 bg-brand-blue/10 border border-brand-blue/25 px-3.5 py-2 rounded-xl">
+              <Sparkles size={15} className="text-brand-blue shrink-0" />
+              <span>
+                <b className="text-white">Calcolo Automatico Multilistino:</b> ogni paletta viene calcolata in base al proprio listino assegnato su <b className="text-brand-blue">Nuova Merce In</b> e raggruppata per Frammentazione e Listino.
+              </span>
             </div>
 
-            <div className="flex flex-wrap gap-3 pt-1">
-              <label
-                htmlFor="chkStorico"
-                className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
-                  includeHistorical ? 'bg-amber-950/20 border-amber-500/40 text-amber-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  id="chkStorico"
-                  checked={includeHistorical}
-                  onChange={e => setIncludeHistorical(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-800 text-amber-500 focus:ring-amber-500"
-                />
-                <History size={14} className="text-amber-400" />
-                Includi Giacenze Storiche (mesi precedenti ancora presenti)
-              </label>
-
-              {storageMode === 'GIORNALIERO' && (
-                <label
-                  htmlFor="chkCapToday"
-                  className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
-                    capToToday ? 'bg-sky-950/20 border-sky-500/40 text-sky-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    id="chkCapToday"
-                    checked={capToToday}
-                    onChange={e => setCapToToday(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-800 text-brand-blue focus:ring-brand-blue"
-                  />
-                  <Clock size={14} className="text-brand-blue" />
-                  Mese corrente: conta giorni solo fino ad oggi (non fine mese)
-                </label>
-              )}
-
-              <label
-                htmlFor="chkNotesPdf"
-                className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border cursor-pointer text-xs font-bold transition-all ${
-                  includeNotesInPdf ? 'bg-violet-950/20 border-violet-500/40 text-violet-200' : 'bg-slate-950/50 border-slate-800 text-slate-400'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  id="chkNotesPdf"
-                  checked={includeNotesInPdf}
-                  onChange={e => setIncludeNotesInPdf(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-800 text-violet-500 focus:ring-violet-500"
-                />
-                <MessageSquare size={14} className="text-violet-400" />
-                Includi Note nel Report PDF
-              </label>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowPdfCustomizer(!showPdfCustomizer)}
+              className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all flex items-center gap-2 ${
+                showPdfCustomizer
+                  ? 'bg-violet-500 text-white border-violet-400 shadow'
+                  : 'bg-slate-950 hover:bg-slate-800 text-violet-300 border-slate-700'
+              }`}
+            >
+              <SlidersHorizontal size={14} />
+              Personalizza Colonne &amp; Sezioni PDF
+            </button>
           </div>
+
+          {showPdfCustomizer && (
+            <div className="mt-3 p-4 rounded-2xl bg-slate-950/90 border border-violet-500/35 space-y-3 animate-fade-in-up">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-black uppercase tracking-wider text-violet-300 flex items-center gap-1.5">
+                  <FileText size={14} /> Campi e Sezioni Visibili nella Fattura PDF
+                </span>
+                <span className="text-[11px] text-slate-400">Le preferenze vengono salvate automaticamente per i prossimi PDF.</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                {PDF_FIELDS_CONFIG.map(f => {
+                  const active = Boolean(pdfOptions[f.key]);
+                  return (
+                    <label
+                      key={f.key}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-xs font-semibold transition-all select-none ${
+                        active
+                          ? 'bg-violet-500/15 border-violet-500/40 text-violet-100'
+                          : 'bg-slate-900/70 border-slate-800 text-slate-500 hover:border-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={active}
+                        onChange={() => togglePdfOption(f.key)}
+                        className="rounded border-slate-700 bg-slate-900 text-violet-500"
+                      />
+                      <span className="truncate">{f.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {reportData && (
@@ -699,11 +711,314 @@ const PreBillingDashboard = () => {
                 </div>
               )}
 
-              {/* Card per ogni Frammentazione / Sezione */}
+              {/* Card per ogni Frammentazione / Sezione, suddivisa per Listino Globale */}
               {(reportData.sections || []).map((sec) => {
                 const secItems = invoiceItems.filter(i => String(i.sectionId) === String(sec.sectionId));
                 const secPallets = palletDetails.filter(p => String(p.sectionId) === String(sec.sectionId));
                 const secTotal = sectionTotalsMap[sec.sectionId] || 0;
+                const planGroups = Array.isArray(sec.planGroups) && sec.planGroups.length > 0 ? sec.planGroups : null;
+
+                const renderPalletTable = (palletsList, titleSuffix = '') => {
+                  if (!palletsList || palletsList.length === 0) return null;
+                  return (
+                    <div className="border-b border-slate-800/80">
+                      <div className="px-5 py-2.5 bg-slate-950/60 flex justify-between items-center">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-brand-blue">
+                          Dettaglio Bancali {titleSuffix ? `— ${titleSuffix}` : ''} ({palletsList.length})
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-950/50 text-slate-400 uppercase text-[10px]">
+                            <tr>
+                              <th className="p-3">PDF</th>
+                              <th className="p-3">Cod. Articolo</th>
+                              <th className="p-3">Prodotto (Clicca per Storico)</th>
+                              <th className="p-3">Lotto</th>
+                              <th className="p-3 text-center">KG Netti / Lordi</th>
+                              <th className="p-3 text-center">Scadenza</th>
+                              <th className="p-3 text-center">Arrivo (IN)</th>
+                              <th className="p-3 text-center">Uscita / Stato</th>
+                              <th className="p-3 text-center">Q.tà &amp; Gg Sosta</th>
+                              <th className="p-3">Rif. Cl. / Voci</th>
+                              {pdfOptions.showNotes && <th className="p-3">Note PDF</th>}
+                              <th className="p-3 text-right">Prezzo</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-slate-200 divide-y divide-slate-800/50">
+                            {palletsList.map(pal => (
+                              <tr key={pal.pallet_code} className={`hover:bg-slate-800/30 transition-colors ${!pal.visibleInPdf ? 'opacity-40' : ''}`}>
+                                <td className="p-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={pal.visibleInPdf}
+                                    onChange={e => updatePalletDetail(sec.sectionId, pal.pallet_code, { visibleInPdf: e.target.checked })}
+                                    className="rounded border-slate-700 bg-slate-900 text-brand-blue"
+                                    title="Includi questa riga nel PDF Proforma"
+                                  />
+                                </td>
+                                <td className="p-3 font-mono font-bold text-sky-400">
+                                  {pal.sku || '-'}
+                                </td>
+                                <td className="p-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => openPalletHistoryModal(pal.pallet_code, pal)}
+                                    className="text-left group flex items-center gap-1.5 font-bold text-white hover:text-brand-blue transition-colors"
+                                  >
+                                    <span className="underline decoration-slate-600 group-hover:decoration-brand-blue underline-offset-2">
+                                      {pal.product_name}
+                                    </span>
+                                    <ExternalLink size={12} className="text-slate-500 group-hover:text-brand-blue shrink-0" />
+                                  </button>
+                                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                    ID: {pal.pallet_code} {pal.location ? `• Pos: ${pal.location}` : ''}
+                                  </div>
+                                </td>
+                                <td className="p-3 font-mono font-bold text-amber-300">
+                                  {pal.batch || '-'}
+                                </td>
+                                <td className="p-3 text-center font-mono text-[11px] whitespace-nowrap">
+                                  {Number(pal.net_weight_kg) > 0 || Number(pal.gross_weight_kg) > 0 ? (
+                                    <div className="space-y-0.5">
+                                      {Number(pal.net_weight_kg) > 0 && <div className="text-sky-300">N: {Number(pal.net_weight_kg)} kg</div>}
+                                      {Number(pal.gross_weight_kg) > 0 && <div className="text-amber-300">L: {Number(pal.gross_weight_kg)} kg</div>}
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-600">-</span>
+                                  )}
+                                </td>
+                                <td className="p-3 text-center font-mono text-slate-300 whitespace-nowrap">
+                                  {pal.expiration_date_str || (pal.expiration_date ? formatDateIT(pal.expiration_date) : '-')}
+                                </td>
+                                <td className="p-3 text-center font-mono text-sky-300 whitespace-nowrap">
+                                  {formatDateIT(pal.created_at)}
+                                </td>
+                                <td className="p-3 text-center whitespace-nowrap">
+                                  {pal.shipped_at ? (
+                                    <span className="px-2 py-0.5 rounded bg-rose-950/40 text-rose-300 border border-rose-500/30 font-mono text-[10px] font-bold">
+                                      OUT {formatDateIT(pal.shipped_at)}
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                                      In Deposito
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-3 text-center">
+                                  <div className="font-bold text-white whitespace-nowrap">{pal.quantity} {pal.pallet_uom}</div>
+                                  <div className="text-[10px] font-mono text-amber-400 font-bold">
+                                    {pal.storageDays || 0} gg sosta
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  {pal.customer_pallet_ref && (
+                                    <div className="text-[10px] font-mono text-violet-300 font-bold mb-1">
+                                      Rif.Cl: {pal.customer_pallet_ref}
+                                    </div>
+                                  )}
+                                  <div className="flex flex-wrap gap-1">
+                                    {(pal.charges || []).map((ch, idx) => (
+                                      <span key={idx} className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-slate-300">
+                                        {ch.label}: <b className="text-brand-blue">€{parseFloat(ch.price).toFixed(2)}</b>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
+                                {pdfOptions.showNotes && (
+                                  <td className="p-3 min-w-[160px]">
+                                    <input
+                                      type="text"
+                                      value={pal.customNote !== undefined ? pal.customNote : (pal.notes || '')}
+                                      onChange={e => updatePalletDetail(sec.sectionId, pal.pallet_code, { customNote: e.target.value })}
+                                      placeholder="Aggiungi nota..."
+                                      className="w-full bg-slate-950 border border-slate-800 focus:border-violet-400 rounded-lg px-2 py-1 text-xs text-slate-200 outline-none"
+                                    />
+                                  </td>
+                                )}
+                                <td className="p-3 text-right font-mono font-black text-emerald-400 whitespace-nowrap">
+                                  € {parseFloat(pal.customPrice !== undefined ? pal.customPrice : (pal.totalPrice || 0)).toFixed(2)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                };
+
+                const renderItemsTable = (itemsList, headerLabel) => {
+                  if (!itemsList || itemsList.length === 0) return null;
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-950/60 text-slate-400 uppercase text-xs">
+                          <tr>
+                            <th className="p-3.5">{headerLabel}</th>
+                            <th className="p-3.5 text-center">Q.ta</th>
+                            <th className="p-3.5 text-right">Tariffa Unit.</th>
+                            <th className="p-3.5 text-right">Subtotale</th>
+                            <th className="p-3.5 text-center">Azioni</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-slate-200">
+                          {itemsList.map((item) => (
+                            <tr
+                              key={item.id}
+                              className={`border-b border-slate-800/50 ${
+                                !item.visible ? 'opacity-30 bg-slate-950' : 'hover:bg-slate-800/30'
+                              }`}
+                            >
+                              <td className="p-3.5">
+                                {item.isEditing ? (
+                                  <input
+                                    type="text"
+                                    value={item.description}
+                                    onChange={e => handleItemChange(item.id, 'description', e.target.value)}
+                                    className="w-full bg-slate-950 border border-brand-blue p-1.5 rounded-lg outline-none text-white"
+                                  />
+                                ) : (
+                                  <div>
+                                    <div className="font-bold text-white flex items-center gap-2">
+                                      {item.description}
+                                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                                        {item.code}
+                                      </span>
+                                    </div>
+                                    {item.palletsList && item.palletsList.length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                        {item.palletsList.map(pl => (
+                                          <button
+                                            key={pl.pallet_code}
+                                            type="button"
+                                            onClick={() => openPalletHistoryModal(pl.pallet_code, pl)}
+                                            className="text-[10px] px-2 py-0.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-brand-blue text-slate-300 hover:text-brand-blue transition-colors flex items-center gap-1"
+                                          >
+                                            <span>{pl.product_name}</span>
+                                            {pl.batch && pl.batch !== '-' && <span className="text-amber-300">({pl.batch})</span>}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-3.5 text-center font-mono font-bold">
+                                {item.code === 'DISCOUNT_PERCENT' ? '-' : (
+                                  item.isEditing ? (
+                                    <input
+                                      type="number"
+                                      value={item.qty}
+                                      onChange={e => handleItemChange(item.id, 'qty', e.target.value)}
+                                      className="w-16 bg-slate-950 border border-brand-blue p-1 rounded text-center outline-none"
+                                    />
+                                  ) : item.qty
+                                )}
+                              </td>
+                              <td className="p-3.5 text-right font-mono">
+                                {item.isEditing ? (
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={item.price}
+                                    onChange={e => handleItemChange(item.id, 'price', e.target.value)}
+                                    className="w-24 bg-slate-950 border border-brand-blue p-1 rounded text-right outline-none"
+                                  />
+                                ) : (
+                                  item.code === 'DISCOUNT_PERCENT' ? `${Math.abs(item.price)}%` : `€ ${parseFloat(item.price).toFixed(2)}`
+                                )}
+                              </td>
+                              <td className={`p-3.5 text-right font-black ${item.subtotal < 0 ? 'text-rose-400' : 'text-brand-blue'}`}>
+                                € {parseFloat(item.subtotal).toFixed(2)}
+                              </td>
+                              <td className="p-3.5">
+                                <div className="flex justify-center gap-2">
+                                  <button onClick={() => toggleVisibility(item.id)} className="text-slate-400 hover:text-white" title="Mostra/Nascondi in PDF">
+                                    {item.visible ? <Eye size={16} /> : <EyeOff size={16} />}
+                                  </button>
+                                  <button onClick={() => toggleEdit(item.id)} className="text-slate-400 hover:text-sky-400" title="Modifica tariffa">
+                                    {item.isEditing ? <Check size={16} className="text-emerald-400" /> : <Edit2 size={16} />}
+                                  </button>
+                                  <button onClick={() => removeItem(item.id)} className="text-slate-400 hover:text-rose-500" title="Elimina riga">
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                };
+
+                const renderDescriptiveLinesBlock = (linesList) => {
+                  if (!linesList || linesList.length === 0) return null;
+                  return (
+                    <div className="p-4 bg-slate-950/40 border-b border-slate-800/70 space-y-2.5">
+                      {linesList.map((line, lIdx) => (
+                        <div
+                          key={lIdx}
+                          className={`p-3.5 rounded-2xl border ${
+                            line.type === 'OUT'
+                              ? 'bg-rose-950/15 border-rose-500/25 text-rose-200'
+                              : line.type === 'IN'
+                              ? 'bg-sky-950/15 border-sky-500/25 text-sky-200'
+                              : line.type === 'DAILY_STORAGE'
+                              ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+                              : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 font-black text-sm mb-2">
+                            {line.type === 'OUT' && <ArrowUpRight size={16} className="text-rose-400 shrink-0" />}
+                            {line.type === 'IN' && <ArrowDownLeft size={16} className="text-sky-400 shrink-0" />}
+                            {line.type === 'DAILY_STORAGE' && <Clock size={16} className="text-amber-400 shrink-0" />}
+                            {line.type === 'DEPOSIT' && <Boxes size={16} className="text-emerald-400 shrink-0" />}
+                            <span>{line.headerText || line.text}</span>
+                          </div>
+
+                          {line.pallets && line.pallets.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pl-6">
+                              {line.pallets.map((pal) => (
+                                <button
+                                  key={pal.pallet_code}
+                                  type="button"
+                                  onClick={() => openPalletHistoryModal(pal.pallet_code, pal)}
+                                  className="group text-left px-3 py-1.5 rounded-xl bg-slate-950/90 hover:bg-slate-900 border border-slate-700 hover:border-brand-blue transition-all flex items-center gap-2 shadow-sm"
+                                  title={`Clicca per vedere tutti i dettagli e lo storico di ${pal.product_name} (${pal.pallet_code})`}
+                                >
+                                  <div>
+                                    <div className="text-xs font-bold text-white group-hover:text-brand-blue flex items-center gap-1.5">
+                                      <span>{pal.product_name}</span>
+                                      {pal.sku && pal.sku !== '-' && (
+                                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-sky-300">
+                                          {pal.sku}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-mono flex flex-wrap items-center gap-2 mt-0.5">
+                                      <span>Lotto: <b className="text-amber-300">{pal.batch || '-'}</b></span>
+                                      <span>• Q.tà: <b className="text-slate-200">{pal.quantity} {pal.pallet_uom}</b></span>
+                                      {Number(pal.net_weight_kg) > 0 && <span>• Netti: <b className="text-sky-300">{Number(pal.net_weight_kg)}kg</b></span>}
+                                      {Number(pal.gross_weight_kg) > 0 && <span>• Lordi: <b className="text-amber-300">{Number(pal.gross_weight_kg)}kg</b></span>}
+                                      {pal.customer_pallet_ref && (
+                                        <span>• Rif.Cl: <b className="text-violet-300">{pal.customer_pallet_ref}</b></span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <ExternalLink size={13} className="text-slate-500 group-hover:text-brand-blue shrink-0 ml-1" />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                };
+
+                const coveredItemIds = new Set();
 
                 return (
                   <div
@@ -726,22 +1041,15 @@ const PreBillingDashboard = () => {
                               <GitBranch size={11} /> Frammentazione
                             </span>
                           )}
+                          {planGroups && planGroups.length > 0 && (
+                            <span className="px-2.5 py-0.5 text-[10px] font-bold uppercase rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                              <Layers size={11} /> {planGroups.length} {planGroups.length === 1 ? 'Listino' : 'Listini'}
+                            </span>
+                          )}
                           <span className="text-xs font-mono text-slate-500">({sec.uniqueId})</span>
                         </div>
-                        <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-400">
-                          <span>Listino applicato:</span>
-                          <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 font-mono">
-                            IN: €{Number(sec.tariffsSummary?.inPallet || 0).toFixed(2)}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 font-mono">
-                            OUT: €{Number(sec.tariffsSummary?.outPallet || 0).toFixed(2)}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 font-mono font-bold">
-                            DEPOSITO: €{Number(sec.tariffsSummary?.depositPallet || 0).toFixed(2)}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300 font-mono font-bold">
-                            SOSTA/GG: €{Number(sec.tariffsSummary?.sostaGiorno || 0).toFixed(2)}/gg
-                          </span>
+                        <div className="text-[11px] text-slate-400 mt-1">
+                          Clicca su qualsiasi prodotto/paletta per aprire lo storico completo. Ogni listino mostra la sua dicitura dedicata in fattura.
                         </div>
                       </div>
 
@@ -749,305 +1057,73 @@ const PreBillingDashboard = () => {
                         onClick={() => navigate(`/desktop/billing-tariffs?clientId=${sec.sectionId}`)}
                         className="px-3 py-1.5 bg-slate-900 hover:bg-amber-500 text-amber-400 hover:text-brand-black border border-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
                       >
-                        <Coins size={13} /> Listino {sec.sectionName}
+                        <Coins size={13} /> Listini {sec.sectionName}
                       </button>
                     </div>
 
-                    {/* Righe Descrittive con Palette Comprensibili (Prodotto + Lotto) e Cliccabili per aprire Pop-up Storico */}
-                    <div className="p-5 bg-slate-950/40 border-b border-slate-800/70">
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                          Riepilogo Movimenti & Giacenza in Deposito ({sec.sectionName})
-                        </span>
-                        <span className="text-[11px] text-brand-blue font-semibold">
-                          Clicca su qualsiasi prodotto/paletta per aprire lo storico completo
-                        </span>
-                      </div>
+                    {planGroups ? (
+                      <div className="divide-y divide-slate-800">
+                        {planGroups.map(pg => {
+                          const pgPallets = secPallets.filter(p => (p.tariff_plan_id ? String(p.tariff_plan_id) : 'LEGACY') === pg.planKey);
+                          const pgItems = secItems.filter(i => (i.tariffPlanId ? String(i.tariffPlanId) : 'LEGACY') === pg.planKey);
+                          pgItems.forEach(i => coveredItemIds.add(i.id));
+                          const pgLiveSubtotal = pgItems
+                            .filter(i => i.visible && i.code !== 'DISCOUNT_PERCENT')
+                            .reduce((acc, it) => acc + (parseFloat(it.subtotal) || 0), 0);
 
-                      {sec.descriptiveLines && sec.descriptiveLines.length > 0 ? (
-                        <div className="space-y-2.5">
-                          {sec.descriptiveLines.map((line, lIdx) => (
-                            <div
-                              key={lIdx}
-                              className={`p-3.5 rounded-2xl border ${
-                                line.type === 'OUT'
-                                  ? 'bg-rose-950/15 border-rose-500/25 text-rose-200'
-                                  : line.type === 'IN'
-                                  ? 'bg-sky-950/15 border-sky-500/25 text-sky-200'
-                                  : line.type === 'DAILY_STORAGE'
-                                  ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
-                                  : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 font-black text-sm mb-2">
-                                {line.type === 'OUT' && <ArrowUpRight size={16} className="text-rose-400 shrink-0" />}
-                                {line.type === 'IN' && <ArrowDownLeft size={16} className="text-sky-400 shrink-0" />}
-                                {line.type === 'DAILY_STORAGE' && <Clock size={16} className="text-amber-400 shrink-0" />}
-                                {line.type === 'DEPOSIT' && <Boxes size={16} className="text-emerald-400 shrink-0" />}
-                                <span>{line.headerText || line.text}</span>
+                          return (
+                            <div key={pg.planKey} className="bg-slate-900/60">
+                              <div className="px-5 py-3.5 bg-slate-950/70 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex flex-wrap items-center gap-2.5">
+                                  <span className="px-2.5 py-1 rounded-xl bg-brand-blue/15 text-brand-blue border border-brand-blue/30 text-xs font-black flex items-center gap-1.5">
+                                    <Layers size={13} />
+                                    {pg.invoiceLabel || pg.planName}
+                                  </span>
+                                  {pg.invoiceLabel && pg.planName && pg.invoiceLabel !== pg.planName && (
+                                    <span className="text-[11px] text-slate-500 font-semibold">({pg.planName})</span>
+                                  )}
+                                  {pg.isFlatRate ? (
+                                    <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                                      Fisso Mensile (Escluso da calcolo)
+                                    </span>
+                                  ) : (
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400 font-mono">
+                                      <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800">IN €{Number(pg.tariffsSummary?.inPallet || 0).toFixed(2)}</span>
+                                      <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800">OUT €{Number(pg.tariffsSummary?.outPallet || 0).toFixed(2)}</span>
+                                      {Number(pg.tariffsSummary?.sostaGiorno || 0) > 0 ? (
+                                        <span className="px-1.5 py-0.5 rounded bg-amber-950/40 border border-amber-500/30 text-amber-300">SOSTA/GG €{Number(pg.tariffsSummary.sostaGiorno).toFixed(2)}</span>
+                                      ) : Number(pg.tariffsSummary?.depositPallet || 0) > 0 ? (
+                                        <span className="px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-300">DEP €{Number(pg.tariffsSummary.depositPallet).toFixed(2)}</span>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mr-2">Subtotale Listino:</span>
+                                  <span className="font-mono font-black text-emerald-400 text-sm">
+                                    € {pgLiveSubtotal.toFixed(2)}
+                                  </span>
+                                </div>
                               </div>
 
-                              {/* Elenco palette cliccabili con Nome Prodotto, Cod. Articolo, Lotto, Q.tà e Rif. Paletta */}
-                              {line.pallets && line.pallets.length > 0 && (
-                                <div className="flex flex-wrap gap-2 pl-6">
-                                  {line.pallets.map((pal) => (
-                                    <button
-                                      key={pal.pallet_code}
-                                      type="button"
-                                      onClick={() => openPalletHistoryModal(pal.pallet_code, pal)}
-                                      className="group text-left px-3 py-1.5 rounded-xl bg-slate-950/90 hover:bg-slate-900 border border-slate-700 hover:border-brand-blue transition-all flex items-center gap-2 shadow-sm"
-                                      title={`Clicca per vedere tutti i dettagli e lo storico di ${pal.product_name} (${pal.pallet_code})`}
-                                    >
-                                      <div>
-                                        <div className="text-xs font-bold text-white group-hover:text-brand-blue flex items-center gap-1.5">
-                                          <span>{pal.product_name}</span>
-                                          {pal.sku && pal.sku !== '-' && (
-                                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-sky-300">
-                                              {pal.sku}
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="text-[10px] text-slate-400 font-mono flex flex-wrap items-center gap-2 mt-0.5">
-                                          <span>Lotto: <b className="text-amber-300">{pal.batch || '-'}</b></span>
-                                          <span>• Q.tà: <b className="text-slate-200">{pal.quantity} {pal.pallet_uom}</b></span>
-                                          {pal.customer_pallet_ref && (
-                                            <span>• Rif.Cl: <b className="text-violet-300">{pal.customer_pallet_ref}</b></span>
-                                          )}
-                                        </div>
-                                      </div>
-                                      <ExternalLink size={13} className="text-slate-500 group-hover:text-brand-blue shrink-0 ml-1" />
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
+                              {renderDescriptiveLinesBlock(pg.descriptiveLines)}
+                              {renderPalletTable(pgPallets, pg.invoiceLabel || pg.planName)}
+                              {renderItemsTable(pgItems, `Voci Listino — ${pg.invoiceLabel || pg.planName}`)}
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-slate-500 italic">
-                          Nessuna paletta movimentata o in deposito nel periodo per questa frammentazione.
-                        </div>
-                      )}
-                    </div>
+                          );
+                        })}
 
-                    {/* Tabella Dettagliata Articoli/Bancali della Frammentazione (stampata nel PDF Proforma) */}
-                    {secPallets.length > 0 && (
-                      <div className="border-b border-slate-800">
-                        <div className="px-5 py-3 bg-slate-950/80 flex justify-between items-center">
-                          <span className="text-xs font-bold uppercase tracking-wider text-brand-blue">
-                            Dettaglio Articoli, Lotti, Note e Prezzi in Proforma ({secPallets.length} bancali)
-                          </span>
-                        </div>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-950/50 text-slate-400 uppercase text-[10px]">
-                              <tr>
-                                <th className="p-3">PDF</th>
-                                <th className="p-3">Cod. Articolo</th>
-                                <th className="p-3">Prodotto (Clicca per Storico)</th>
-                                <th className="p-3">Lotto</th>
-                                <th className="p-3 text-center">Scadenza</th>
-                                <th className="p-3 text-center">Arrivo (IN)</th>
-                                <th className="p-3 text-center">Uscita / Stato</th>
-                                <th className="p-3 text-center">Q.tà &amp; Gg Sosta</th>
-                                <th className="p-3">Rif. Cl. / Voci</th>
-                                {includeNotesInPdf && <th className="p-3">Note PDF</th>}
-                                <th className="p-3 text-right">Prezzo</th>
-                              </tr>
-                            </thead>
-                            <tbody className="text-slate-200 divide-y divide-slate-800/50">
-                              {secPallets.map(pal => (
-                                <tr key={pal.pallet_code} className={`hover:bg-slate-800/30 transition-colors ${!pal.visibleInPdf ? 'opacity-40' : ''}`}>
-                                  <td className="p-3">
-                                    <input
-                                      type="checkbox"
-                                      checked={pal.visibleInPdf}
-                                      onChange={e => updatePalletDetail(sec.sectionId, pal.pallet_code, { visibleInPdf: e.target.checked })}
-                                      className="rounded border-slate-700 bg-slate-900 text-brand-blue"
-                                      title="Includi questa riga nel PDF Proforma"
-                                    />
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-sky-400">
-                                    {pal.sku || '-'}
-                                  </td>
-                                  <td className="p-3">
-                                    <button
-                                      type="button"
-                                      onClick={() => openPalletHistoryModal(pal.pallet_code, pal)}
-                                      className="text-left group flex items-center gap-1.5 font-bold text-white hover:text-brand-blue transition-colors"
-                                    >
-                                      <span className="underline decoration-slate-600 group-hover:decoration-brand-blue underline-offset-2">
-                                        {pal.product_name}
-                                      </span>
-                                      <ExternalLink size={12} className="text-slate-500 group-hover:text-brand-blue shrink-0" />
-                                    </button>
-                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                                      ID: {pal.pallet_code} {pal.location ? `• Pos: ${pal.location}` : ''}
-                                    </div>
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-amber-300">
-                                    {pal.batch || '-'}
-                                  </td>
-                                  <td className="p-3 text-center font-mono text-slate-300 whitespace-nowrap">
-                                    {pal.expiration_date_str || (pal.expiration_date ? formatDateIT(pal.expiration_date) : '-')}
-                                  </td>
-                                  <td className="p-3 text-center font-mono text-sky-300 whitespace-nowrap">
-                                    {formatDateIT(pal.created_at)}
-                                  </td>
-                                  <td className="p-3 text-center whitespace-nowrap">
-                                    {pal.shipped_at ? (
-                                      <span className="px-2 py-0.5 rounded bg-rose-950/40 text-rose-300 border border-rose-500/30 font-mono text-[10px] font-bold">
-                                        OUT {formatDateIT(pal.shipped_at)}
-                                      </span>
-                                    ) : (
-                                      <span className="px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
-                                        In Deposito
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <div className="font-bold text-white whitespace-nowrap">{pal.quantity} {pal.pallet_uom}</div>
-                                    <div className="text-[10px] font-mono text-amber-400 font-bold">
-                                      {pal.storageDays || 0} gg sosta
-                                    </div>
-                                  </td>
-                                  <td className="p-3">
-                                    {pal.customer_pallet_ref && (
-                                      <div className="text-[10px] font-mono text-violet-300 font-bold mb-1">
-                                        Rif.Cl: {pal.customer_pallet_ref}
-                                      </div>
-                                    )}
-                                    <div className="flex flex-wrap gap-1">
-                                      {(pal.charges || []).map((ch, idx) => (
-                                        <span key={idx} className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-slate-300">
-                                          {ch.label}: <b className="text-brand-blue">€{parseFloat(ch.price).toFixed(2)}</b>
-                                        </span>
-                                      ))}
-                                    </div>
-                                  </td>
-                                  {includeNotesInPdf && (
-                                    <td className="p-3 min-w-[160px]">
-                                      <input
-                                        type="text"
-                                        value={pal.customNote !== undefined ? pal.customNote : (pal.notes || '')}
-                                        onChange={e => updatePalletDetail(sec.sectionId, pal.pallet_code, { customNote: e.target.value })}
-                                        placeholder="Aggiungi nota..."
-                                        className="w-full bg-slate-950 border border-slate-800 focus:border-violet-400 rounded-lg px-2 py-1 text-xs text-slate-200 outline-none"
-                                      />
-                                    </td>
-                                  )}
-                                  <td className="p-3 text-right font-mono font-black text-emerald-400 whitespace-nowrap">
-                                    € {parseFloat(pal.customPrice !== undefined ? pal.customPrice : (pal.totalPrice || 0)).toFixed(2)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                        {(() => {
+                          const extraManualItems = secItems.filter(i => !coveredItemIds.has(i.id));
+                          return renderItemsTable(extraManualItems, `Voci Aggiuntive & Sconti — ${sec.sectionName}`);
+                        })()}
                       </div>
-                    )}
-
-                    {/* Tabella Voci Tariffarie Aggregate / Manuali della Frammentazione */}
-                    {secItems.length > 0 && (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                          <thead className="bg-slate-950/60 text-slate-400 uppercase text-xs">
-                            <tr>
-                              <th className="p-3.5">Riepilogo Voce Listino ({sec.sectionName})</th>
-                              <th className="p-3.5 text-center">Q.ta</th>
-                              <th className="p-3.5 text-right">Tariffa Unit.</th>
-                              <th className="p-3.5 text-right">Subtotale</th>
-                              <th className="p-3.5 text-center">Azioni</th>
-                            </tr>
-                          </thead>
-                          <tbody className="text-slate-200">
-                            {secItems.map((item) => (
-                              <tr
-                                key={item.id}
-                                className={`border-b border-slate-800/50 ${
-                                  !item.visible ? 'opacity-30 bg-slate-950' : 'hover:bg-slate-800/30'
-                                }`}
-                              >
-                                <td className="p-3.5">
-                                  {item.isEditing ? (
-                                    <input
-                                      type="text"
-                                      value={item.description}
-                                      onChange={e => handleItemChange(item.id, 'description', e.target.value)}
-                                      className="w-full bg-slate-950 border border-brand-blue p-1.5 rounded-lg outline-none text-white"
-                                    />
-                                  ) : (
-                                    <div>
-                                      <div className="font-bold text-white flex items-center gap-2">
-                                        {item.description}
-                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
-                                          {item.code}
-                                        </span>
-                                      </div>
-                                      {item.palletsList && item.palletsList.length > 0 && (
-                                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                          {item.palletsList.map(pl => (
-                                            <button
-                                              key={pl.pallet_code}
-                                              type="button"
-                                              onClick={() => openPalletHistoryModal(pl.pallet_code, pl)}
-                                              className="text-[10px] px-2 py-0.5 rounded-md bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-brand-blue text-slate-300 hover:text-brand-blue transition-colors flex items-center gap-1"
-                                            >
-                                              <span>{pl.product_name}</span>
-                                              {pl.batch && pl.batch !== '-' && <span className="text-amber-300">({pl.batch})</span>}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="p-3.5 text-center font-mono font-bold">
-                                  {item.code === 'DISCOUNT_PERCENT' ? '-' : (
-                                    item.isEditing ? (
-                                      <input
-                                        type="number"
-                                        value={item.qty}
-                                        onChange={e => handleItemChange(item.id, 'qty', e.target.value)}
-                                        className="w-16 bg-slate-950 border border-brand-blue p-1 rounded text-center outline-none"
-                                      />
-                                    ) : item.qty
-                                  )}
-                                </td>
-                                <td className="p-3.5 text-right font-mono">
-                                  {item.isEditing ? (
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      value={item.price}
-                                      onChange={e => handleItemChange(item.id, 'price', e.target.value)}
-                                      className="w-24 bg-slate-950 border border-brand-blue p-1 rounded text-right outline-none"
-                                    />
-                                  ) : (
-                                    item.code === 'DISCOUNT_PERCENT' ? `${Math.abs(item.price)}%` : `€ ${parseFloat(item.price).toFixed(2)}`
-                                  )}
-                                </td>
-                                <td className={`p-3.5 text-right font-black ${item.subtotal < 0 ? 'text-rose-400' : 'text-brand-blue'}`}>
-                                  € {parseFloat(item.subtotal).toFixed(2)}
-                                </td>
-                                <td className="p-3.5">
-                                  <div className="flex justify-center gap-2">
-                                    <button onClick={() => toggleVisibility(item.id)} className="text-slate-400 hover:text-white" title="Mostra/Nascondi in PDF">
-                                      {item.visible ? <Eye size={16} /> : <EyeOff size={16} />}
-                                    </button>
-                                    <button onClick={() => toggleEdit(item.id)} className="text-slate-400 hover:text-sky-400" title="Modifica tariffa">
-                                      {item.isEditing ? <Check size={16} className="text-emerald-400" /> : <Edit2 size={16} />}
-                                    </button>
-                                    <button onClick={() => removeItem(item.id)} className="text-slate-400 hover:text-rose-500" title="Elimina riga">
-                                      <Trash2 size={16} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                    ) : (
+                      <>
+                        {renderDescriptiveLinesBlock(sec.descriptiveLines)}
+                        {renderPalletTable(secPallets, sec.sectionName)}
+                        {renderItemsTable(secItems, `Riepilogo Voce Listino (${sec.sectionName})`)}
+                      </>
                     )}
 
                     {/* Totale della singola Frammentazione */}
@@ -1072,19 +1148,36 @@ const PreBillingDashboard = () => {
                   Suddivisione importi per frammentazione e totale complessivo per <b className="text-white">{reportData.clientName}</b>.
                 </p>
 
-                {/* Elenco Totali per Frammentazione */}
+                {/* Elenco Totali per Frammentazione e per Listino */}
                 <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 mb-5 space-y-2.5">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                    Suddivisione Reparti / Frammentazioni
+                    Suddivisione Reparti / Frammentazioni &amp; Listini
                   </div>
                   {(reportData.sections || []).map(sec => (
-                    <div key={sec.sectionId} className="flex justify-between items-center text-sm border-b border-slate-800/60 pb-2 last:border-0 last:pb-0">
-                      <span className="text-slate-300 font-semibold truncate pr-2">
-                        {sec.sectionName}
-                      </span>
-                      <span className="font-mono font-bold text-brand-blue shrink-0">
-                        € {(sectionTotalsMap[sec.sectionId] || 0).toFixed(2)}
-                      </span>
+                    <div key={sec.sectionId} className="border-b border-slate-800/60 pb-2 last:border-0 last:pb-0 space-y-1">
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-200 font-bold truncate pr-2">
+                          {sec.sectionName}
+                        </span>
+                        <span className="font-mono font-bold text-brand-blue shrink-0">
+                          € {(sectionTotalsMap[sec.sectionId] || 0).toFixed(2)}
+                        </span>
+                      </div>
+                      {Array.isArray(sec.planGroups) && sec.planGroups.length > 0 && (
+                        <div className="pl-3 space-y-0.5">
+                          {sec.planGroups.map(pg => {
+                            const pgSub = invoiceItems
+                              .filter(i => i.visible && i.code !== 'DISCOUNT_PERCENT' && String(i.sectionId) === String(sec.sectionId) && (i.tariffPlanId ? String(i.tariffPlanId) : 'LEGACY') === pg.planKey)
+                              .reduce((acc, it) => acc + (parseFloat(it.subtotal) || 0), 0);
+                            return (
+                              <div key={pg.planKey} className="flex justify-between items-center text-[11px] text-slate-400">
+                                <span className="truncate pr-2">• {pg.invoiceLabel || pg.planName}</span>
+                                <span className="font-mono shrink-0 text-slate-300">€ {pgSub.toFixed(2)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1129,14 +1222,24 @@ const PreBillingDashboard = () => {
                   </div>
                 </div>
 
-                <button
-                  onClick={exportPDF}
-                  disabled={isExporting}
-                  className="w-full py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-base transition-all shadow-[0_0_25px_rgba(14,165,233,0.3)] flex items-center justify-center gap-2 disabled:opacity-60"
-                >
-                  {isExporting ? <Loader2 className="animate-spin" size={22} /> : <Download size={22} />}
-                  {isExporting ? 'Generazione & Salvataggio...' : 'Scarica Proforma PDF & Archivia'}
-                </button>
+                <div className="space-y-2.5">
+                  <button
+                    onClick={exportPDF}
+                    disabled={isExporting}
+                    className="w-full py-4 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-base transition-all shadow-[0_0_25px_rgba(14,165,233,0.3)] flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isExporting ? <Loader2 className="animate-spin" size={22} /> : <Download size={22} />}
+                    {isExporting ? 'Salvataggio & Generazione...' : 'Salva in Archivio & Scarica PDF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveArchiveOnly}
+                    disabled={isExporting}
+                    className="w-full py-2.5 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-emerald-500/35 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    <Archive size={15} /> Salva Solo in Archivio Proforme
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1241,6 +1344,23 @@ const PreBillingDashboard = () => {
                           {firstRow.inbound_ddt_number || sum.inbound_ddt_number || 'Inserimento Diretto'}
                         </p>
                       </div>
+                      {(Number(firstRow.net_weight_kg || sum.net_weight_kg) > 0 || Number(firstRow.gross_weight_kg || sum.gross_weight_kg) > 0) && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase text-slate-500">Pesi Registrati</p>
+                          <p className="text-xs font-mono text-slate-200 mt-0.5">
+                            {Number(firstRow.net_weight_kg || sum.net_weight_kg) > 0 ? `Netti: ${Number(firstRow.net_weight_kg || sum.net_weight_kg)} kg ` : ''}
+                            {Number(firstRow.gross_weight_kg || sum.gross_weight_kg) > 0 ? `• Lordi: ${Number(firstRow.gross_weight_kg || sum.gross_weight_kg)} kg` : ''}
+                          </p>
+                        </div>
+                      )}
+                      {(sum.invoice_label || sum.tariff_plan_name) && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase text-slate-500">Listino Applicato</p>
+                          <p className="text-xs font-bold text-amber-300 mt-0.5">
+                            {sum.invoice_label || sum.tariff_plan_name}
+                          </p>
+                        </div>
+                      )}
                       {(firstRow.notes || sum.notes) && (
                         <div className="col-span-2 sm:col-span-4 pt-2 border-t border-slate-800/80">
                           <p className="text-[10px] font-bold uppercase text-violet-400">Note Bancale</p>

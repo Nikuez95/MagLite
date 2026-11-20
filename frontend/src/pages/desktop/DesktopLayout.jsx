@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
@@ -7,7 +7,7 @@ import {
   LayoutDashboard,
   Users,
   Box,
-  Map,
+  Map as MapIcon,
   History,
   LogOut,
   Settings,
@@ -20,7 +20,6 @@ import {
   Menu,
   X,
   ChevronDown,
-  ChevronUp,
   ChevronRight,
   Package,
   Calculator,
@@ -38,10 +37,50 @@ import {
   ArrowUpRight,
   ClipboardList,
   Ticket as TicketIcon,
-  Megaphone
+  Megaphone,
+  Star,
+  GripVertical,
+  SlidersHorizontal,
+  Check
 } from 'lucide-react';
 import { hasPerm, refreshUserProfile } from '../../utils/permissions';
 import NotificationCenter from '../../components/NotificationCenter';
+
+const DEFAULT_SIDEBAR_PREFS = {
+  favorites: [],
+  categoryOrder: [],
+  itemOrder: {}
+};
+
+function mergeOrder(savedOrder = [], defaultIds = []) {
+  const safeSaved = Array.isArray(savedOrder) ? savedOrder : [];
+  const validSet = new Set(defaultIds);
+  const result = [];
+  const seen = new Set();
+  for (const id of safeSaved) {
+    if (validSet.has(id) && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  for (const id of defaultIds) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+function reorderList(list, fromId, toId) {
+  const fromIdx = list.indexOf(fromId);
+  const toIdx = list.indexOf(toId);
+  if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return list;
+  const copy = [...list];
+  const [moved] = copy.splice(fromIdx, 1);
+  copy.splice(toIdx, 0, moved);
+  return copy;
+}
 
 const DesktopLayout = () => {
   const navigate = useNavigate();
@@ -59,10 +98,25 @@ const DesktopLayout = () => {
     }
   });
 
+  const [sidebarPrefs, setSidebarPrefs] = useState(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+      return u?.preferences?.desktopSidebar || DEFAULT_SIDEBAR_PREFS;
+    } catch {
+      return DEFAULT_SIDEBAR_PREFS;
+    }
+  });
+
+  const [isCustomizingMenu, setIsCustomizingMenu] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState('');
+  const [dragState, setDragState] = useState(null); // { kind: 'FAV'|'TOP'|'SUB', id, catId? }
+  const [dragOverId, setDragOverId] = useState(null);
+
   const [openSubmenus, setOpenSubmenus] = useState({
-    Merce: ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
-    Finanza: ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
-    Amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
+    cat_merce: ['/desktop/inbound', '/desktop/custom-forms', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
+    cat_finanza: ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
+    cat_amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname),
+    cat_config: ['/desktop/settings', '/desktop/settings/routing'].includes(location.pathname)
   });
 
   // Global Search / Command Palette state
@@ -73,22 +127,92 @@ const DesktopLayout = () => {
   const searchInputRef = useRef(null);
   const searchContainerRef = useRef(null);
 
+  const rawMenu = useMemo(() => [
+    { id: 'dashboard', name: 'Dashboard', path: '/desktop', icon: LayoutDashboard, perm: 'view_dashboard' },
+    {
+      id: 'cat_merce',
+      name: 'Merce',
+      icon: Package,
+      submenu: [
+        { id: 'inbound', name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus, perm: 'view_inbound' },
+        { id: 'custom_forms', name: 'Moduli & Check-in', path: '/desktop/custom-forms', icon: ClipboardList, perm: ['view_custom_forms', 'manage_custom_forms'] },
+        { id: 'outbound', name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
+        { id: 'outbound_returns', name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
+        { id: 'products', name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
+        { id: 'quarantine', name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
+        { id: 'inventory', name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' }
+      ]
+    },
+    { id: 'customers', name: 'Cartelle Clienti', path: '/desktop/customers', icon: Users, perm: 'view_customers' },
+    { id: 'locations', name: 'Magazzino', path: '/desktop/locations', icon: MapIcon, perm: 'view_locations' },
+    { id: 'documents', name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_documents' },
+    { id: 'tms', name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: ['view_tms', 'tms_manage'] },
+    {
+      id: 'cat_finanza',
+      name: 'Finanza',
+      icon: DollarSign,
+      perm: ['view_finances', 'finance_manage'],
+      submenu: [
+        { id: 'finances', name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, perm: ['view_finances', 'finance_manage'] },
+        { id: 'expenses', name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, perm: ['view_finances', 'finance_manage'] },
+        { id: 'invoices_history', name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, perm: ['view_finances', 'finance_manage'] }
+      ]
+    },
+    {
+      id: 'cat_amministrazione',
+      name: 'Amministrazione',
+      icon: Calculator,
+      perm: ['view_billing', 'finance_manage'],
+      submenu: [
+        { id: 'billing_rules', name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: ['view_billing', 'finance_manage'] },
+        { id: 'billing_tariffs', name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: ['view_billing', 'finance_manage'] },
+        { id: 'billing_dashboard', name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: ['view_billing', 'finance_manage'] }
+      ]
+    },
+    { id: 'users', name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: ['view_users', 'users_manage'] },
+    { id: 'audit', name: 'Audit Logs', path: '/desktop/audit', icon: History, perm: 'view_audit' },
+    { id: 'tickets', name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, badge: openTicketsCount },
+    { id: 'changelogs', name: 'Changelog & Novità', path: '/desktop/changelogs', icon: Megaphone },
+    {
+      id: 'cat_config',
+      name: 'Configurazione',
+      icon: Settings,
+      perm: ['view_settings', 'settings_manage', 'pallet_move'],
+      submenu: [
+        { id: 'settings', name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, perm: ['view_settings', 'settings_manage', 'pallet_move'] },
+        { id: 'routing', name: 'Regole di Prelievo', path: '/desktop/settings/routing', icon: MapIcon, perm: ['view_settings', 'settings_manage', 'pallet_move'] }
+      ]
+    }
+  ], [openTicketsCount]);
+
   useEffect(() => {
-    setOpenSubmenus(prev => ({
-      ...prev,
-      Merce: prev.Merce || ['/desktop/inbound', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
-      Finanza: prev.Finanza || ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
-      Amministrazione: prev.Amministrazione || ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname)
-    }));
-  }, [location.pathname]);
+    setOpenSubmenus(prev => {
+      const next = { ...prev };
+      rawMenu.forEach(cat => {
+        if (cat.submenu && cat.submenu.some(s => s.path === location.pathname)) {
+          next[cat.id] = true;
+        }
+      });
+      return next;
+    });
+  }, [location.pathname, rawMenu]);
 
   useEffect(() => {
     refreshUserProfile().then(u => {
-      if (u) setUser(u);
+      if (u) {
+        setUser(u);
+        if (u.preferences?.desktopSidebar) {
+          setSidebarPrefs(u.preferences.desktopSidebar);
+        }
+      }
     });
     const handlePermSync = () => {
       try {
-        setUser(JSON.parse(localStorage.getItem('maglite_user') || '{}'));
+        const u = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+        setUser(u);
+        if (u?.preferences?.desktopSidebar) {
+          setSidebarPrefs(u.preferences.desktopSidebar);
+        }
       } catch {
         // ignore
       }
@@ -144,7 +268,6 @@ const DesktopLayout = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Click outside search dropdown to close
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
@@ -155,7 +278,6 @@ const DesktopLayout = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Live debounced search
   useEffect(() => {
     const q = searchQuery.trim();
     if (q.length < 2) {
@@ -181,67 +303,173 @@ const DesktopLayout = () => {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const toggleSubmenu = (name) => {
-    setOpenSubmenus(prev => ({ ...prev, [name]: !prev[name] }));
+  // Persist sidebar preferences per user profile
+  const persistSidebarPrefs = async (nextPrefs) => {
+    setSidebarPrefs(nextPrefs);
+    try {
+      const currentUser = JSON.parse(localStorage.getItem('maglite_user') || '{}');
+      const updatedUser = {
+        ...currentUser,
+        preferences: {
+          ...(currentUser.preferences || {}),
+          desktopSidebar: nextPrefs
+        }
+      };
+      localStorage.setItem('maglite_user', JSON.stringify(updatedUser));
+      setUser(updatedUser);
+    } catch {
+      // ignore
+    }
+
+    try {
+      const token = localStorage.getItem('maglite_token');
+      if (token) {
+        await axios.put(
+          `http://${window.location.hostname}:3000/api/auth/preferences`,
+          { preferences: { desktopSidebar: nextPrefs } },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        setSaveFeedback('Salvato');
+        setTimeout(() => setSaveFeedback(''), 1800);
+      }
+    } catch {
+      // ignore offline error
+    }
   };
 
-  const rawMenu = [
-    { name: 'Dashboard', path: '/desktop', icon: LayoutDashboard, perm: 'view_dashboard' },
-    { 
-      name: 'Merce', 
-      icon: Package, 
-      submenu: [
-        { name: 'Nuova Merce (In)', path: '/desktop/inbound', icon: PackagePlus, perm: 'view_inbound' },
-        { name: 'Moduli & Check-in', path: '/desktop/custom-forms', icon: ClipboardList, perm: ['view_custom_forms', 'manage_custom_forms'] },
-        { name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
-        { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
-        { name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
-        { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
-        { name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' },
-      ]
-    },
-    { name: 'Clienti', path: '/desktop/customers', icon: Users, perm: 'view_customers' },
-    { name: 'Magazzino', path: '/desktop/locations', icon: Map, perm: 'view_locations' },
-    { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_documents' },
-    { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: ['view_tms', 'tms_manage'] },
-    {
-      name: 'Finanza',
-      icon: DollarSign,
-      perm: ['view_finances', 'finance_manage'],
-      submenu: [
-        { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, perm: ['view_finances', 'finance_manage'] },
-        { name: 'Gestione Uscite', path: '/desktop/expenses', icon: TrendingDown, perm: ['view_finances', 'finance_manage'] },
-        { name: 'Archivio Proforme', path: '/desktop/invoices-history', icon: Archive, perm: ['view_finances', 'finance_manage'] }
-      ]
-    },
-    {
-      name: 'Amministrazione',
-      icon: Calculator,
-      perm: ['view_billing', 'finance_manage'],
-      submenu: [
-        { name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: ['view_billing', 'finance_manage'] },
-        { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: ['view_billing', 'finance_manage'] },
-        { name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: ['view_billing', 'finance_manage'] }
-      ]
-    },
-    { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: ['view_users', 'users_manage'] },
-    { name: 'Audit Logs', path: '/desktop/audit', icon: History, perm: 'view_audit' },
-    { name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, badge: openTicketsCount },
-    { name: 'Changelog & Novità', path: '/desktop/changelogs', icon: Megaphone },
-  ];
-
-  const menu = rawMenu
-    .map(item => {
-      if (item.submenu) {
+  // Permitted menu items + user custom ordering
+  const permittedMenu = useMemo(() => {
+    return rawMenu
+      .map(item => {
+        if (item.submenu) {
+          if (item.perm && !hasPerm(item.perm, user)) return null;
+          const filteredSub = item.submenu.filter(s => !s.perm || hasPerm(s.perm, user));
+          if (filteredSub.length === 0) return null;
+          return { ...item, submenu: filteredSub };
+        }
         if (item.perm && !hasPerm(item.perm, user)) return null;
-        const filteredSub = item.submenu.filter(s => !s.perm || hasPerm(s.perm, user));
-        if (filteredSub.length === 0) return null;
-        return { ...item, submenu: filteredSub };
+        return item;
+      })
+      .filter(Boolean);
+  }, [rawMenu, user]);
+
+  const orderedMenu = useMemo(() => {
+    const topIds = permittedMenu.map(i => i.id);
+    const orderedTopIds = mergeOrder(sidebarPrefs.categoryOrder || [], topIds);
+    const byId = new Map(permittedMenu.map(i => [i.id, i]));
+
+    return orderedTopIds.map(id => {
+      const entry = byId.get(id);
+      if (!entry) return null;
+      if (entry.submenu) {
+        const subIds = entry.submenu.map(s => s.id);
+        const orderedSubIds = mergeOrder(sidebarPrefs.itemOrder?.[entry.id] || [], subIds);
+        const subMap = new Map(entry.submenu.map(s => [s.id, s]));
+        return {
+          ...entry,
+          submenu: orderedSubIds.map(sid => subMap.get(sid)).filter(Boolean)
+        };
       }
-      if (item.perm && !hasPerm(item.perm, user)) return null;
-      return item;
-    })
-    .filter(Boolean);
+      return entry;
+    }).filter(Boolean);
+  }, [permittedMenu, sidebarPrefs]);
+
+  // Flat lookup of all navigable items for Favorites + Search
+  const navigableItemsMap = useMemo(() => {
+    const map = new Map();
+    permittedMenu.forEach(item => {
+      if (item.submenu) {
+        item.submenu.forEach(sub => map.set(sub.id, { ...sub, groupName: item.name }));
+      } else {
+        map.set(item.id, { ...item, groupName: 'Menu' });
+      }
+    });
+    return map;
+  }, [permittedMenu]);
+
+  const favoriteItems = useMemo(() => {
+    const favIds = Array.isArray(sidebarPrefs.favorites) ? sidebarPrefs.favorites : [];
+    return favIds.map(id => navigableItemsMap.get(id)).filter(Boolean);
+  }, [sidebarPrefs.favorites, navigableItemsMap]);
+
+  const favoriteIdSet = useMemo(() => new Set(sidebarPrefs.favorites || []), [sidebarPrefs.favorites]);
+
+  const toggleFavorite = (e, itemId) => {
+    e.stopPropagation();
+    const current = Array.isArray(sidebarPrefs.favorites) ? sidebarPrefs.favorites : [];
+    const nextFavs = current.includes(itemId)
+      ? current.filter(id => id !== itemId)
+      : [...current, itemId];
+    persistSidebarPrefs({ ...sidebarPrefs, favorites: nextFavs });
+  };
+
+  const handleResetMenuLayout = () => {
+    persistSidebarPrefs({
+      favorites: sidebarPrefs.favorites || [],
+      categoryOrder: [],
+      itemOrder: {}
+    });
+  };
+
+  // Drag & Drop handlers
+  const handleDropOnFavorite = (e, targetFavId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverId(null);
+    if (!dragState || dragState.kind !== 'FAV' || dragState.id === targetFavId) {
+      setDragState(null);
+      return;
+    }
+    const currentFavs = favoriteItems.map(f => f.id);
+    const nextFavs = reorderList(currentFavs, dragState.id, targetFavId);
+    setDragState(null);
+    persistSidebarPrefs({ ...sidebarPrefs, favorites: nextFavs });
+  };
+
+  const handleDropOnTopItem = (e, targetTopId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverId(null);
+    if (!dragState || dragState.kind !== 'TOP' || dragState.id === targetTopId) {
+      setDragState(null);
+      return;
+    }
+    const allDefaultIds = rawMenu.map(m => m.id);
+    const currentFullOrder = mergeOrder(sidebarPrefs.categoryOrder || [], allDefaultIds);
+    const nextOrder = reorderList(currentFullOrder, dragState.id, targetTopId);
+    setDragState(null);
+    persistSidebarPrefs({ ...sidebarPrefs, categoryOrder: nextOrder });
+  };
+
+  const handleDropOnSubItem = (e, catId, targetSubId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverId(null);
+    if (!dragState || dragState.kind !== 'SUB' || dragState.catId !== catId || dragState.id === targetSubId) {
+      setDragState(null);
+      return;
+    }
+    const rawCat = rawMenu.find(m => m.id === catId);
+    if (!rawCat?.submenu) {
+      setDragState(null);
+      return;
+    }
+    const allSubIds = rawCat.submenu.map(s => s.id);
+    const currentSubOrder = mergeOrder(sidebarPrefs.itemOrder?.[catId] || [], allSubIds);
+    const nextSubOrder = reorderList(currentSubOrder, dragState.id, targetSubId);
+    setDragState(null);
+    persistSidebarPrefs({
+      ...sidebarPrefs,
+      itemOrder: {
+        ...(sidebarPrefs.itemOrder || {}),
+        [catId]: nextSubOrder
+      }
+    });
+  };
+
+  const toggleSubmenu = (catId) => {
+    setOpenSubmenus(prev => ({ ...prev, [catId]: !prev[catId] }));
+  };
 
   const allFlatPages = [
     { name: 'Dashboard Control Center', path: '/desktop', icon: LayoutDashboard, group: 'Generale', perm: 'view_dashboard' },
@@ -253,8 +481,8 @@ const DesktopLayout = () => {
     { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce', perm: 'view_products' },
     { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, group: 'Merce', perm: 'view_quarantine' },
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },
-    { name: 'Anagrafica Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
-    { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: Map, group: 'Magazzino', perm: 'view_locations' },
+    { name: 'Cartelle Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
+    { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: MapIcon, group: 'Magazzino', perm: 'view_locations' },
     { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce', perm: 'view_documents' },
     { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica', perm: ['view_tms', 'tms_manage'] },
     { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza', perm: ['view_finances', 'finance_manage'] },
@@ -268,7 +496,7 @@ const DesktopLayout = () => {
     { name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, group: 'Sistema' },
     { name: 'Changelog & Novità', path: '/desktop/changelogs', icon: Megaphone, group: 'Sistema' },
     { name: 'Impostazioni Aziendali', path: '/desktop/settings', icon: Settings, group: 'Configurazione', perm: 'view_settings' },
-    { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: Map, group: 'Configurazione', perm: 'view_settings' }
+    { name: 'Regole di Prelievo (Routing)', path: '/desktop/settings/routing', icon: MapIcon, group: 'Configurazione', perm: 'view_settings' }
   ].filter(p => !p.perm || hasPerm(p.perm, user));
 
   const currentPageMeta = allFlatPages.find(p => p.path === location.pathname) || { name: 'Gestionale', group: 'MagLite' };
@@ -302,45 +530,44 @@ const DesktopLayout = () => {
         </div>
       </div>
 
-      {/* Sidebar Navigation */}
-      <aside className={`${mobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col w-full md:w-72 bg-slate-900/95 md:bg-slate-900/70 border-r border-slate-800/90 backdrop-blur-md z-40 fixed md:sticky top-0 h-screen overflow-y-auto shrink-0`}>
-        
-        {/* Header Sidebar (Desktop only) - Light Logo */}
+      {/* Modern Sidebar Navigation */}
+      <aside className={`${mobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col w-full md:w-72 bg-gradient-to-b from-slate-900/95 via-slate-900/90 to-slate-950 border-r border-slate-800/90 backdrop-blur-xl z-40 fixed md:sticky top-0 h-screen shrink-0`}>
+        {/* Header Sidebar */}
         <div
-          className="hidden md:flex px-5 py-5 items-center gap-3.5 border-b border-slate-800/80 cursor-pointer hover:bg-slate-800/30 transition-colors group"
+          className="hidden md:flex px-5 py-4 items-center gap-3.5 border-b border-slate-800/80 cursor-pointer hover:bg-slate-800/30 transition-colors group shrink-0"
           onClick={() => navigate('/')}
           title="Torna alla selezione modalità"
         >
-          <div className="h-12 w-20 flex items-center justify-center shrink-0">
+          <div className="h-11 w-16 flex items-center justify-center shrink-0">
             <img
               src="/logo.png"
               alt="Logistic Porcelli Logo"
               className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.35)] group-hover:scale-105 transition-transform"
             />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="font-black text-lg leading-tight tracking-tight text-brand-white truncate">MagLite</h1>
             <p className="text-brand-blue text-[10px] uppercase font-extrabold tracking-[0.18em] truncate">Logistic Porcelli</p>
           </div>
         </div>
 
         {/* Global Search Bar with Ctrl+K */}
-        <div className="px-4 mt-4 relative" ref={searchContainerRef}>
+        <div className="px-3.5 pt-3.5 pb-2 relative shrink-0" ref={searchContainerRef}>
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Search size={16} className="text-slate-500" />
+              <Search size={15} className="text-slate-500" />
             </div>
-            <input 
+            <input
               ref={searchInputRef}
-              type="text" 
+              type="text"
               value={searchQuery}
               onFocus={() => setSearchOpen(true)}
               onChange={(e) => {
                 setSearchQuery(e.target.value);
                 setSearchOpen(true);
               }}
-              placeholder="Cerca paletta, lotto, pagina..." 
-              className="w-full bg-slate-950/90 border border-slate-800 text-brand-white text-xs rounded-xl focus:ring-1 focus:ring-brand-blue focus:border-brand-blue block pl-9 pr-12 py-2.5 transition-all placeholder-slate-500"
+              placeholder="Cerca paletta, cliente, pagina..."
+              className="w-full bg-slate-950/90 border border-slate-800 text-brand-white text-xs rounded-xl focus:ring-1 focus:ring-brand-blue focus:border-brand-blue block pl-9 pr-12 py-2.5 transition-all placeholder-slate-500 outline-none"
             />
             {searchQuery ? (
               <button
@@ -359,7 +586,7 @@ const DesktopLayout = () => {
 
           {/* Global Search Results Dropdown */}
           {searchOpen && searchQuery.trim().length >= 1 && (
-            <div className="absolute left-4 right-4 top-full mt-2 bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl z-50 max-h-[70vh] overflow-y-auto divide-y divide-slate-800/80">
+            <div className="absolute left-3.5 right-3.5 top-full mt-2 bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl z-50 max-h-[70vh] overflow-y-auto divide-y divide-slate-800/80">
               {matchingPages.length > 0 && (
                 <div className="p-2">
                   <div className="px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Pagine</div>
@@ -469,13 +696,13 @@ const DesktopLayout = () => {
 
               {searchResults.customers.length > 0 && (
                 <div className="p-2">
-                  <div className="px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Clienti</div>
+                  <div className="px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Cartelle Clienti</div>
                   {searchResults.customers.map((c) => (
                     <button
                       key={c.id}
                       type="button"
                       onClick={() => {
-                        navigate('/desktop/customers');
+                        navigate(`/desktop/customers?customerId=${c.id}`);
                         setSearchOpen(false);
                         setSearchQuery('');
                         setMobileMenuOpen(false);
@@ -491,131 +718,375 @@ const DesktopLayout = () => {
 
               {!searchLoading && !hasAnySearchResults && (
                 <div className="p-4 text-center text-xs text-slate-500">
-                  Nessun risultato per "{searchQuery}"
+                  Nessun risultato per &ldquo;{searchQuery}&rdquo;
                 </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Menu Links */}
-        <nav className="flex-1 px-3 py-4 flex flex-col gap-1">
-          <p className="px-3 text-[10px] font-extrabold text-slate-500 uppercase tracking-widest mb-1.5">Menu Principale</p>
-          {menu.map((item) => {
-            if (item.submenu) {
-              const isOpen = openSubmenus[item.name];
-              const isChildActive = item.submenu.some(subItem => location.pathname === subItem.path);
-              const Icon = item.icon;
-              return (
-                <div key={item.name} className="flex flex-col gap-1">
-                  <button
-                    onClick={() => toggleSubmenu(item.name)}
-                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl transition-all ${
-                      isChildActive
-                        ? 'bg-brand-blue/10 text-brand-blue font-bold border border-brand-blue/25'
-                        : 'text-slate-400 hover:bg-slate-800/70 hover:text-brand-white font-medium border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Icon size={19} className={isChildActive ? 'text-brand-blue' : 'text-slate-400'} />
-                      <span className="text-sm">{item.name}</span>
-                    </div>
-                    {isOpen ? <ChevronUp size={16} className={isChildActive ? 'text-brand-blue' : 'text-slate-400'} /> : <ChevronDown size={16} className={isChildActive ? 'text-brand-blue' : 'text-slate-400'} />}
-                  </button>
-                  {isOpen && (
-                    <div className="flex flex-col gap-1 pl-9 pr-1 py-0.5">
-                      {item.submenu.map((subItem) => {
-                        const isSubActive = location.pathname === subItem.path;
-                        const SubIcon = subItem.icon;
-                        return (
-                          <button
-                            key={subItem.name}
-                            onClick={() => {
-                              navigate(subItem.path);
-                              setMobileMenuOpen(false);
-                            }}
-                            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl transition-all ${
-                              isSubActive
-                                ? 'bg-brand-blue text-brand-black font-bold shadow-[0_0_15px_rgba(14,165,233,0.25)]'
-                                : 'text-slate-400 hover:bg-slate-800/70 hover:text-brand-white font-medium'
-                            }`}
-                          >
-                            <SubIcon size={16} className={isSubActive ? 'text-brand-black' : 'text-slate-400'} />
-                            <span className="text-xs">{subItem.name}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            }
+        {/* Scrollable Navigation */}
+        <nav className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3">
+          {/* Toolbar Personalizzazione Menu & Preferiti */}
+          <div className="flex items-center justify-between px-1.5 pt-1">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Navigazione
+            </span>
+            <div className="flex items-center gap-1.5">
+              {saveFeedback && (
+                <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-0.5">
+                  <Check size={11} /> {saveFeedback}
+                </span>
+              )}
+              {isCustomizingMenu && (
+                <button
+                  type="button"
+                  onClick={handleResetMenuLayout}
+                  className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300 transition-colors"
+                  title="Ripristina ordine predefinito"
+                >
+                  Ripristina
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsCustomizingMenu(prev => !prev)}
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all border ${
+                  isCustomizingMenu
+                    ? 'bg-brand-blue text-brand-black border-brand-blue shadow'
+                    : 'bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-white border-slate-800'
+                }`}
+                title="Personalizza ordine menu e preferiti (Drag & Drop)"
+              >
+                <SlidersHorizontal size={11} />
+                {isCustomizingMenu ? 'Fine' : 'Personalizza'}
+              </button>
+            </div>
+          </div>
 
-            const isActive = location.pathname === item.path;
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.name}
-                onClick={() => {
-                  navigate(item.path);
-                  setMobileMenuOpen(false);
-                }}
-                className={`flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition-all ${
-                  isActive 
-                    ? 'bg-brand-blue text-brand-black font-bold shadow-[0_0_15px_rgba(14,165,233,0.25)]' 
-                    : 'text-slate-400 hover:bg-slate-800/70 hover:text-brand-white font-medium'
-                }`}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <Icon size={19} className={isActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
-                  <span className="text-sm truncate">{item.name}</span>
-                </div>
-                {item.badge > 0 && (
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
-                    isActive ? 'bg-brand-black text-brand-blue' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                  }`}>
-                    {item.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Footer Sidebar */}
-        <div className="p-3 border-t border-slate-800/80 flex flex-col gap-1.5 bg-slate-950/40">
-          {hasPerm(['view_settings', 'settings_manage', 'pallet_move'], user) && (
-            <>
-              <button
-                onClick={() => { navigate('/desktop/settings'); setMobileMenuOpen(false); }}
-                className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
-                  location.pathname === '/desktop/settings'
-                    ? 'bg-brand-blue text-brand-black font-bold'
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
-                }`}
-              >
-                <Settings size={17} />
-                <span>Impostazioni Aziendali</span>
-              </button>
-              <button
-                onClick={() => { navigate('/desktop/settings/routing'); setMobileMenuOpen(false); }}
-                className={`flex items-center gap-3 px-3.5 py-2 rounded-xl w-full transition-all text-xs font-semibold ${
-                  location.pathname === '/desktop/settings/routing'
-                    ? 'bg-brand-blue text-brand-black font-bold'
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-brand-white'
-                }`}
-              >
-                <Map size={17} />
-                <span>Regole di Prelievo</span>
-              </button>
-            </>
+          {isCustomizingMenu && (
+            <div className="mx-1 px-3 py-2 rounded-xl bg-brand-blue/10 border border-brand-blue/30 text-[11px] text-sky-200 leading-snug">
+              Trascina le <b>macro-categorie</b> o le <b>singole caselle</b> per riordinarle. Clicca la <b>★</b> per i preferiti.
+            </div>
           )}
 
-          {/* User Profile & Logout Bar */}
-          <div className="mt-1 pt-2 border-t border-slate-800/70 flex items-center justify-between gap-2 px-2">
+          {/* Sezione Preferiti */}
+          {(favoriteItems.length > 0 || isCustomizingMenu) && (
+            <div className="bg-slate-950/60 border border-amber-500/20 rounded-2xl p-2 space-y-1">
+              <div className="px-2 py-1 flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
+                  <Star size={11} className="fill-amber-400 text-amber-400" />
+                  Preferiti ({favoriteItems.length})
+                </span>
+              </div>
+
+              {favoriteItems.length === 0 ? (
+                <div className="px-2.5 py-2.5 text-[11px] text-slate-500 text-center border border-dashed border-slate-800 rounded-xl">
+                  Clicca la ★ su qualsiasi voce sotto per aggiungerla qui
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {favoriteItems.map(fav => {
+                    const FavIcon = fav.icon;
+                    const isActive = location.pathname === fav.path;
+                    const isOver = dragOverId === `FAV:${fav.id}`;
+                    return (
+                      <div
+                        key={`fav-${fav.id}`}
+                        draggable
+                        onDragStart={e => {
+                          e.stopPropagation();
+                          setDragState({ kind: 'FAV', id: fav.id });
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={e => {
+                          if (dragState?.kind === 'FAV') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOverId(`FAV:${fav.id}`);
+                          }
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverId === `FAV:${fav.id}`) setDragOverId(null);
+                        }}
+                        onDrop={e => handleDropOnFavorite(e, fav.id)}
+                        onDragEnd={() => { setDragState(null); setDragOverId(null); }}
+                        className={`group flex items-center gap-1.5 rounded-xl transition-all ${
+                          isOver ? 'ring-2 ring-amber-400 bg-amber-500/10' : ''
+                        }`}
+                      >
+                        {isCustomizingMenu && (
+                          <span className="pl-1.5 text-slate-600 cursor-grab active:cursor-grabbing shrink-0">
+                            <GripVertical size={13} />
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigate(fav.path);
+                            setMobileMenuOpen(false);
+                          }}
+                          className={`flex-1 min-w-0 flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl transition-all text-left ${
+                            isActive
+                              ? 'bg-amber-400 text-brand-black font-black shadow-[0_0_15px_rgba(251,191,36,0.25)]'
+                              : 'text-slate-200 hover:bg-slate-800/80 font-semibold'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <FavIcon size={15} className={isActive ? 'text-brand-black shrink-0' : 'text-amber-400 shrink-0'} />
+                            <span className="text-xs truncate">{fav.name}</span>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={e => toggleFavorite(e, fav.id)}
+                          title="Rimuovi dai preferiti"
+                          className={`p-1.5 rounded-lg transition-all shrink-0 ${
+                            isCustomizingMenu
+                              ? 'opacity-100 text-amber-400 hover:bg-slate-800'
+                              : 'opacity-0 group-hover:opacity-100 text-amber-400 hover:bg-slate-800'
+                          }`}
+                        >
+                          <Star size={13} className="fill-amber-400" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Lista Macro-Categorie & Voci Principali (Drag & Drop) */}
+          <div className="flex flex-col gap-1 pb-4">
+            {orderedMenu.map((item) => {
+              const isTopOver = dragOverId === `TOP:${item.id}`;
+              const isDraggingThis = dragState?.kind === 'TOP' && dragState.id === item.id;
+
+              if (item.submenu) {
+                const isOpen = Boolean(openSubmenus[item.id]);
+                const isChildActive = item.submenu.some(subItem => location.pathname === subItem.path);
+                const Icon = item.icon;
+
+                return (
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={e => {
+                      setDragState({ kind: 'TOP', id: item.id });
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragOver={e => {
+                      if (dragState?.kind === 'TOP') {
+                        e.preventDefault();
+                        setDragOverId(`TOP:${item.id}`);
+                      }
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverId === `TOP:${item.id}`) setDragOverId(null);
+                    }}
+                    onDrop={e => handleDropOnTopItem(e, item.id)}
+                    onDragEnd={() => { setDragState(null); setDragOverId(null); }}
+                    className={`flex flex-col gap-1 rounded-2xl transition-all ${
+                      isTopOver ? 'ring-2 ring-brand-blue bg-brand-blue/5' : ''
+                    } ${isDraggingThis ? 'opacity-40' : ''}`}
+                  >
+                    <div className="group flex items-center gap-1">
+                      <span
+                        title="Trascina per spostare la macro-categoria"
+                        className={`pl-1.5 text-slate-600 hover:text-brand-blue cursor-grab active:cursor-grabbing transition-opacity shrink-0 ${
+                          isCustomizingMenu ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      >
+                        <GripVertical size={14} />
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => toggleSubmenu(item.id)}
+                        className={`flex-1 flex items-center justify-between px-3 py-2.5 rounded-xl transition-all ${
+                          isChildActive
+                            ? 'bg-brand-blue/12 text-brand-blue font-bold border border-brand-blue/25'
+                            : 'text-slate-300 hover:bg-slate-800/70 hover:text-brand-white font-semibold border border-transparent'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Icon size={18} className={isChildActive ? 'text-brand-blue shrink-0' : 'text-slate-400 shrink-0'} />
+                          <span className="text-sm truncate">{item.name}</span>
+                        </div>
+                        {isOpen ? (
+                          <ChevronDown size={15} className={isChildActive ? 'text-brand-blue shrink-0' : 'text-slate-500 shrink-0'} />
+                        ) : (
+                          <ChevronRight size={15} className={isChildActive ? 'text-brand-blue shrink-0' : 'text-slate-500 shrink-0'} />
+                        )}
+                      </button>
+                    </div>
+
+                    {isOpen && (
+                      <div className="flex flex-col gap-1 pl-7 pr-1 py-0.5 ml-3 border-l border-slate-800/90">
+                        {item.submenu.map((subItem) => {
+                          const isSubActive = location.pathname === subItem.path;
+                          const SubIcon = subItem.icon;
+                          const isFav = favoriteIdSet.has(subItem.id);
+                          const isSubOver = dragOverId === `SUB:${item.id}:${subItem.id}`;
+                          const isSubDragging = dragState?.kind === 'SUB' && dragState.id === subItem.id;
+
+                          return (
+                            <div
+                              key={subItem.id}
+                              draggable
+                              onDragStart={e => {
+                                e.stopPropagation();
+                                setDragState({ kind: 'SUB', catId: item.id, id: subItem.id });
+                                e.dataTransfer.effectAllowed = 'move';
+                              }}
+                              onDragOver={e => {
+                                if (dragState?.kind === 'SUB' && dragState.catId === item.id) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setDragOverId(`SUB:${item.id}:${subItem.id}`);
+                                }
+                              }}
+                              onDragLeave={() => {
+                                if (dragOverId === `SUB:${item.id}:${subItem.id}`) setDragOverId(null);
+                              }}
+                              onDrop={e => handleDropOnSubItem(e, item.id, subItem.id)}
+                              onDragEnd={e => { e.stopPropagation(); setDragState(null); setDragOverId(null); }}
+                              className={`group/sub flex items-center gap-1 rounded-xl transition-all ${
+                                isSubOver ? 'ring-2 ring-brand-blue bg-brand-blue/10' : ''
+                              } ${isSubDragging ? 'opacity-40' : ''}`}
+                            >
+                              <span
+                                title="Trascina per riordinare nella categoria"
+                                className={`text-slate-600 hover:text-brand-blue cursor-grab active:cursor-grabbing shrink-0 transition-opacity ${
+                                  isCustomizingMenu ? 'opacity-100' : 'opacity-0 group-hover/sub:opacity-100'
+                                }`}
+                              >
+                                <GripVertical size={12} />
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigate(subItem.path);
+                                  setMobileMenuOpen(false);
+                                }}
+                                className={`flex-1 min-w-0 flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-all text-left ${
+                                  isSubActive
+                                    ? 'bg-brand-blue text-brand-black font-bold shadow-[0_0_15px_rgba(14,165,233,0.25)]'
+                                    : 'text-slate-400 hover:bg-slate-800/70 hover:text-brand-white font-medium'
+                                }`}
+                              >
+                                <SubIcon size={15} className={isSubActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
+                                <span className="text-xs truncate">{subItem.name}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={e => toggleFavorite(e, subItem.id)}
+                                title={isFav ? 'Rimuovi dai preferiti' : 'Aggiungi ai preferiti'}
+                                className={`p-1 rounded-lg transition-all shrink-0 ${
+                                  isFav
+                                    ? 'opacity-100 text-amber-400 hover:bg-slate-800'
+                                    : isCustomizingMenu
+                                      ? 'opacity-100 text-slate-600 hover:text-amber-300'
+                                      : 'opacity-0 group-hover/sub:opacity-100 text-slate-500 hover:text-amber-300'
+                                }`}
+                              >
+                                <Star size={12} className={isFav ? 'fill-amber-400' : ''} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              // Standalone top-level item
+              const isActive = location.pathname === item.path;
+              const Icon = item.icon;
+              const isFav = favoriteIdSet.has(item.id);
+
+              return (
+                <div
+                  key={item.id}
+                  draggable
+                  onDragStart={e => {
+                    setDragState({ kind: 'TOP', id: item.id });
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragOver={e => {
+                    if (dragState?.kind === 'TOP') {
+                      e.preventDefault();
+                      setDragOverId(`TOP:${item.id}`);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverId === `TOP:${item.id}`) setDragOverId(null);
+                  }}
+                  onDrop={e => handleDropOnTopItem(e, item.id)}
+                  onDragEnd={() => { setDragState(null); setDragOverId(null); }}
+                  className={`group flex items-center gap-1 rounded-xl transition-all ${
+                    isTopOver ? 'ring-2 ring-brand-blue bg-brand-blue/10' : ''
+                  } ${isDraggingThis ? 'opacity-40' : ''}`}
+                >
+                  <span
+                    title="Trascina per spostare"
+                    className={`pl-1.5 text-slate-600 hover:text-brand-blue cursor-grab active:cursor-grabbing transition-opacity shrink-0 ${
+                      isCustomizingMenu ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
+                    <GripVertical size={14} />
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate(item.path);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl transition-all ${
+                      isActive
+                        ? 'bg-brand-blue text-brand-black font-bold shadow-[0_0_15px_rgba(14,165,233,0.25)]'
+                        : 'text-slate-300 hover:bg-slate-800/70 hover:text-brand-white font-semibold'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Icon size={18} className={isActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
+                      <span className="text-sm truncate">{item.name}</span>
+                    </div>
+                    {item.badge > 0 && (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                        isActive ? 'bg-brand-black text-brand-blue' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      }`}>
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={e => toggleFavorite(e, item.id)}
+                    title={isFav ? 'Rimuovi dai preferiti' : 'Aggiungi ai preferiti'}
+                    className={`p-1.5 rounded-lg transition-all shrink-0 ${
+                      isFav
+                        ? 'opacity-100 text-amber-400 hover:bg-slate-800'
+                        : isCustomizingMenu
+                          ? 'opacity-100 text-slate-600 hover:text-amber-300'
+                          : 'opacity-0 group-hover:opacity-100 text-slate-500 hover:text-amber-300'
+                    }`}
+                  >
+                    <Star size={13} className={isFav ? 'fill-amber-400' : ''} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </nav>
+
+        {/* Footer Sidebar: Profilo Utente & Logout */}
+        <div className="p-3 border-t border-slate-800/80 bg-slate-950/70 shrink-0">
+          <div className="flex items-center justify-between gap-2 px-2 py-1">
             <div className="flex items-center gap-2.5 min-w-0">
               <div
-                className="w-8 h-8 rounded-xl border flex items-center justify-center font-black text-xs shrink-0 uppercase"
+                className="w-9 h-9 rounded-xl border flex items-center justify-center font-black text-xs shrink-0 uppercase"
                 style={{
                   backgroundColor: `${user.role_color || '#38bdf8'}20`,
                   borderColor: `${user.role_color || '#38bdf8'}55`,
@@ -634,12 +1105,12 @@ const DesktopLayout = () => {
                 </div>
               </div>
             </div>
-            <button 
+            <button
               onClick={() => {
                 localStorage.removeItem('maglite_token');
                 localStorage.removeItem('maglite_user');
                 window.location.href = '/login';
-              }} 
+              }}
               title="Log Out Sicuro"
               className="p-2 rounded-xl text-rose-400 hover:bg-rose-500/15 hover:text-rose-300 transition-all shrink-0"
             >
@@ -651,7 +1122,6 @@ const DesktopLayout = () => {
 
       {/* Main Content Area + Top Context Bar */}
       <div className="flex-1 flex flex-col min-w-0 bg-brand-black">
-        {/* Desktop Top Quick-Action & Breadcrumb Bar */}
         <header className="hidden md:flex items-center justify-between px-8 py-3.5 bg-slate-900/50 border-b border-slate-800/80 backdrop-blur-md sticky top-0 z-30">
           <div className="flex items-center gap-2 text-xs">
             <span className="text-slate-500 font-semibold">{currentPageMeta.group}</span>

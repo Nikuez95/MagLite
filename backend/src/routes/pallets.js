@@ -61,16 +61,19 @@ async function palletRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
+               p.net_weight_kg, p.gross_weight_kg, p.tariff_plan_id,
                p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
                p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
                p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
                pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
                c.business_name as customer_name, c.parent_id as customer_parent_id,
+               tp.name as tariff_plan_name, tp.is_flat_rate as tariff_plan_flat_rate,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                IF(mx.pallet_code IS NOT NULL, 1, 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
+        LEFT JOIN tariff_plans tp ON tp.id = p.tariff_plan_id
         LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
         LEFT JOIN (
           SELECT pallet_code
@@ -94,17 +97,20 @@ async function palletRoutes(fastify, options) {
     try {
       const [rows] = await db.query(`
         SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
+               p.net_weight_kg, p.gross_weight_kg, p.tariff_plan_id,
                p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
                p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
                p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
                pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
                c.business_name as customer_name, c.parent_id as customer_parent_id,
+               tp.name as tariff_plan_name,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
                l.zone, l.col, l.pos,
                IF(mx.pallet_code IS NOT NULL, 1, 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
+        LEFT JOIN tariff_plans tp ON tp.id = p.tariff_plan_id
         LEFT JOIN LOCATIONS l ON p.location = l.barcode
         LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
         LEFT JOIN (
@@ -192,15 +198,21 @@ async function palletRoutes(fastify, options) {
           );
         }
         
+        const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
+        const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
+
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date, num_pallets } = item;
           const cleanExpDate = sanitizeExpirationDate(expiration_date);
           const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
           const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
+          const itemPlanId = parseOptInt(item.tariff_plan_id);
+          const itemNetKg = parseOptNum(item.net_weight_kg);
+          const itemGrossKg = parseOptNum(item.gross_weight_kg);
           
           await connection.query(
-            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
           );
           
           if (item.units_per_box || item.boxes_per_pallet) {
@@ -273,13 +285,21 @@ async function palletRoutes(fastify, options) {
         // Generazione rigorosamente progressiva e in ordine di riga (1° riga -> 1° barcode, 2° riga -> 2° barcode, ecc.)
         // Se la posizione ha già una paletta con barcode esistente, si aggancia a quel barcode senza cambiarlo.
         // Se più righe condividono la stessa identica posizione, si frammentano/unificano nel barcode di quella posizione.
+        const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
+        const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
+
         const orderedSlots = [];
         const locSlotMap = new Map();
+        const groupSlotMap = new Map();
 
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, num_pallets, notes, client_pallet_number, client_article_number, expiration_date, arrival_date } = item;
           const itemLoc = (item.location || '').trim().toUpperCase();
+          const itemGroup = (item.pallet_group || '').trim();
           const cleanExpDate = sanitizeExpirationDate(expiration_date);
+          const itemPlanId = parseOptInt(item.tariff_plan_id);
+          const itemNetKg = parseOptNum(item.net_weight_kg);
+          const itemGrossKg = parseOptNum(item.gross_weight_kg);
           
           const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
@@ -304,13 +324,45 @@ async function palletRoutes(fastify, options) {
             const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
 
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
               "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
               ['INBOUND', `${slot.existedBefore ? 'Agganciata merce a paletta' : 'Creata/stivata paletta'} ${slot.code} in ${itemLoc} (${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
+            );
+
+            slot.rows.push({
+              customer_name: customer.business_name,
+              product_name: product.name,
+              quantity: totalQtyForRow,
+              batch,
+              warehouse,
+              client_pallet_number,
+              client_article_number,
+              expiration_date: cleanExpDate
+            });
+          } else if (itemGroup) {
+            let slot = groupSlotMap.get(itemGroup);
+            if (!slot) {
+              const code = nextPalletCode();
+              slot = { type: 'GROUP', group: itemGroup, loc: null, code, rows: [] };
+              groupSlotMap.set(itemGroup, slot);
+              orderedSlots.push(slot);
+            }
+
+            const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
+            const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
+
+            await connection.query(
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+            );
+
+            await connection.query(
+              "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
+              ['INBOUND', `Aggiunta riga a paletta frammentata ${slot.code} (${itemGroup}: ${product.name}, ${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
             );
 
             slot.rows.push({
@@ -329,8 +381,8 @@ async function palletRoutes(fastify, options) {
               const code = nextPalletCode();
               
               await connection.query(
-                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
               );
               
               await connection.query(
@@ -374,7 +426,7 @@ async function palletRoutes(fastify, options) {
         for (const slot of orderedSlots) {
           if (slot.type === 'DIRECT') {
             labelsData.push(slot.label);
-          } else if (slot.type === 'LOC' && slot.rows.length > 0) {
+          } else if ((slot.type === 'LOC' || slot.type === 'GROUP') && slot.rows.length > 0) {
             const [activeRows] = await connection.query(`
               SELECT p.*, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, c.business_name as customer_name
               FROM PALLETS p
@@ -1196,8 +1248,8 @@ async function palletRoutes(fastify, options) {
               await connection.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [remainingQty, row.id]);
               await connection.query(
                 `INSERT INTO PALLETS
-                 (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, flags, client_ddt, checkin_id, checkin_session_code, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STOCKED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, flags, client_ddt, checkin_id, checkin_session_code, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOCKED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                   targetPalletCode,
                   row.customer_id,
@@ -1205,6 +1257,9 @@ async function palletRoutes(fastify, options) {
                   requestedMoveQty,
                   row.units_per_box || null,
                   row.pallet_uom || null,
+                  row.net_weight_kg || null,
+                  row.gross_weight_kg || null,
+                  row.tariff_plan_id || null,
                   row.batch || null,
                   row.warehouse || 'Settala',
                   cleanTargetLoc,
@@ -1522,7 +1577,7 @@ async function palletRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare le palette.' });
     }
     const { code } = request.params;
-    const { notes, client_pallet_number, client_article_number, expiration_date } = request.body;
+    const { notes, client_pallet_number, client_article_number, expiration_date, net_weight_kg, gross_weight_kg } = request.body;
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
@@ -1539,10 +1594,29 @@ async function palletRoutes(fastify, options) {
         await connection.rollback();
         return reply.code(403).send({ error: 'Accesso negato: non puoi modificare la merce di questo cliente.' });
       }
-      await connection.query(
-        'UPDATE PALLETS SET notes = ?, client_pallet_number = ?, client_article_number = ?, expiration_date = ? WHERE pallet_code = ?',
-        [notes || null, client_pallet_number || null, client_article_number || null, sanitizeExpirationDate(expiration_date), code]
-      );
+      const parseOptWeight = (w) => (w === undefined || w === null || w === '') ? null : (Number.isFinite(parseFloat(w)) ? parseFloat(w) : null);
+      const netVal = net_weight_kg !== undefined ? parseOptWeight(net_weight_kg) : undefined;
+      const grossVal = gross_weight_kg !== undefined ? parseOptWeight(gross_weight_kg) : undefined;
+
+      if (netVal !== undefined || grossVal !== undefined) {
+        await connection.query(
+          'UPDATE PALLETS SET notes = ?, client_pallet_number = ?, client_article_number = ?, expiration_date = ?, net_weight_kg = ?, gross_weight_kg = ? WHERE pallet_code = ?',
+          [
+            notes || null,
+            client_pallet_number || null,
+            client_article_number || null,
+            sanitizeExpirationDate(expiration_date),
+            netVal !== undefined ? netVal : null,
+            grossVal !== undefined ? grossVal : null,
+            code
+          ]
+        );
+      } else {
+        await connection.query(
+          'UPDATE PALLETS SET notes = ?, client_pallet_number = ?, client_article_number = ?, expiration_date = ? WHERE pallet_code = ?',
+          [notes || null, client_pallet_number || null, client_article_number || null, sanitizeExpirationDate(expiration_date), code]
+        );
+      }
       
       await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',

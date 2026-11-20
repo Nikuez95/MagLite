@@ -6,11 +6,24 @@ async function billingRoutes(fastify, options) {
   fastify.addHook('preHandler', async (request, reply) => {
     const isRead = request.method === 'GET' || request.url.includes('/calculate');
     if (isRead) {
-      if (!hasPermission(request.user, 'view_billing') && !hasPermission(request.user, 'finance_manage')) {
+      if (
+        !hasPermission(request.user, 'view_billing') &&
+        !hasPermission(request.user, 'finance_manage') &&
+        !hasPermission(request.user, 'tariff_plans_manage') &&
+        !hasPermission(request.user, 'client_tariffs_manage')
+      ) {
         return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di accedere al modulo Amministrazione/Fatturazione.' });
       }
+    } else if (request.url.includes('/tariff-plans')) {
+      if (!hasPermission(request.user, 'tariff_plans_manage') && !hasPermission(request.user, 'finance_manage')) {
+        return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di aggiungere o modificare i Listini Globali.' });
+      }
+    } else if (request.url.includes('/tariffs/')) {
+      if (!hasPermission(request.user, 'client_tariffs_manage') && !hasPermission(request.user, 'finance_manage')) {
+        return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di personalizzare i listini dei singoli clienti.' });
+      }
     } else {
-      if (!hasPermission(request.user, 'finance_manage')) {
+      if (!hasPermission(request.user, 'finance_manage') && !hasPermission(request.user, 'tariff_plans_manage')) {
         return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare regole o listini di fatturazione.' });
       }
     }
@@ -27,23 +40,45 @@ async function billingRoutes(fastify, options) {
     }
   });
 
-  // POST Rule
+  // POST Rule (supporta anche creazione rapida Servizio Globale con default 0€)
   fastify.post('/rules', async (request, reply) => {
-    const { rule_code, description, default_price, rule_type } = request.body;
-    let normalizedCode = String(rule_code || '').trim().toUpperCase().replace(/\s+/g, '_');
-    if (rule_type === 'FLAG' && normalizedCode && !normalizedCode.startsWith('FLAG_')) {
-      normalizedCode = `FLAG_${normalizedCode}`;
+    const { rule_code, description, default_price, rule_type } = request.body || {};
+    const finalType = rule_type || 'MANUAL';
+    const cleanDesc = String(description || '').trim();
+    let normalizedCode = String(rule_code || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    if (!normalizedCode && cleanDesc) {
+      const slug = cleanDesc
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 36);
+      const prefix = finalType === 'FLAG' ? 'FLAG_' : 'SRV_';
+      normalizedCode = `${prefix}${slug || Date.now()}`.slice(0, 50);
     }
-    if (!normalizedCode || !description || !rule_type) {
-      return reply.code(400).send({ error: 'Codice, descrizione e tipo regola sono obbligatori' });
+
+    if (finalType === 'FLAG' && normalizedCode && !normalizedCode.startsWith('FLAG_')) {
+      normalizedCode = `FLAG_${normalizedCode}`.slice(0, 50);
+    }
+    if (!normalizedCode || !cleanDesc) {
+      return reply.code(400).send({ error: 'Descrizione e codice regola sono obbligatori' });
     }
     try {
+      const priceVal = default_price !== undefined && default_price !== '' && !isNaN(parseFloat(default_price))
+        ? parseFloat(default_price)
+        : 0;
       const [result] = await db.query(
         'INSERT INTO billing_rules (rule_code, description, default_price, rule_type) VALUES (?, ?, ?, ?)',
-        [normalizedCode, description, default_price || 0, rule_type]
+        [normalizedCode, cleanDesc, priceVal, finalType]
       );
       if (fastify.io) fastify.io.emit('billing_updated');
-      return { success: true, id: result.insertId, rule_code: normalizedCode };
+      return { success: true, id: result.insertId, rule_code: normalizedCode, description: cleanDesc, default_price: priceVal, rule_type: finalType };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore creazione regola, forse il codice esiste già?' });
@@ -78,12 +113,73 @@ async function billingRoutes(fastify, options) {
     }
   });
 
-  // GET Tariffs (supporta ereditarietà da Cliente Madre se la frammentazione non ha ancora sovrascritto una voce)
+  // GET Tariffs (supporta ?planId=X per personalizzare i prezzi di ciascun Listino Globale per singolo cliente / frammentazione)
   fastify.get('/tariffs/:clientId', async (request, reply) => {
     const { clientId } = request.params;
+    const requestedPlanId = request.query?.planId ? parseInt(request.query.planId, 10) : null;
     try {
-      const [[cust]] = await db.query('SELECT id, parent_id FROM CUSTOMERS WHERE id = ?', [clientId]);
+      const [[cust]] = await db.query(
+        `SELECT c.id, c.parent_id, c.tariff_plan_id, tp.name AS tariff_plan_name
+         FROM CUSTOMERS c
+         LEFT JOIN tariff_plans tp ON c.tariff_plan_id = tp.id
+         WHERE c.id = ?`,
+        [clientId]
+      );
       const parentId = cust?.parent_id || null;
+      const effectivePlanId = requestedPlanId || cust?.tariff_plan_id || null;
+
+      let activePlan = null;
+      if (effectivePlanId) {
+        const [[pRow]] = await db.query('SELECT * FROM tariff_plans WHERE id = ?', [effectivePlanId]);
+        activePlan = pRow || null;
+      }
+
+      if (requestedPlanId) {
+        const [rows] = await db.query(`
+          SELECT 
+            br.rule_code, 
+            br.description, 
+            br.default_price, 
+            br.rule_type,
+            cpt.custom_price,
+            pcpt.custom_price AS parent_custom_price,
+            tpi.price AS plan_price
+          FROM billing_rules br
+          LEFT JOIN customer_plan_tariffs cpt ON br.rule_code = cpt.rule_code AND cpt.customer_id = ? AND cpt.plan_id = ?
+          LEFT JOIN customer_plan_tariffs pcpt ON br.rule_code = pcpt.rule_code AND pcpt.customer_id = ? AND pcpt.plan_id = ?
+          LEFT JOIN tariff_plan_items tpi ON br.rule_code = tpi.rule_code AND tpi.plan_id = ?
+          ORDER BY br.rule_type, br.rule_code
+        `, [clientId, requestedPlanId, parentId, requestedPlanId, requestedPlanId]);
+
+        const isFlat = Boolean(activePlan?.is_flat_rate);
+        const filteredRows = isFlat
+          ? rows.filter(r => r.rule_code === 'CANONE_FISSO_MENSILE')
+          : rows.filter(r => r.rule_code !== 'CANONE_FISSO_MENSILE');
+
+        return filteredRows.map(r => {
+          let effective = parseFloat(r.default_price) || 0;
+          let source = 'default';
+          if (r.custom_price !== null && r.custom_price !== undefined) {
+            effective = parseFloat(r.custom_price);
+            source = 'custom';
+          } else if (r.parent_custom_price !== null && r.parent_custom_price !== undefined) {
+            effective = parseFloat(r.parent_custom_price);
+            source = 'parent';
+          } else if (r.plan_price !== null && r.plan_price !== undefined) {
+            effective = parseFloat(r.plan_price);
+            source = 'plan';
+          }
+          return {
+            ...r,
+            tariff_plan_id: requestedPlanId,
+            tariff_plan_name: activePlan?.name || null,
+            is_flat_rate: isFlat,
+            is_customer_default_plan: Number(cust?.tariff_plan_id) === Number(requestedPlanId),
+            source,
+            final_price: effective
+          };
+        });
+      }
 
       const [rows] = await db.query(`
         SELECT 
@@ -91,22 +187,43 @@ async function billingRoutes(fastify, options) {
           br.description, 
           br.default_price, 
           br.rule_type,
-          ct.custom_price,
-          pct.custom_price as parent_custom_price
+          COALESCE(cpt.custom_price, ct.custom_price) AS custom_price,
+          COALESCE(pcpt.custom_price, pct.custom_price) AS parent_custom_price,
+          tpi.price as plan_price
         FROM billing_rules br
+        LEFT JOIN customer_plan_tariffs cpt ON br.rule_code = cpt.rule_code AND cpt.customer_id = ? AND cpt.plan_id = ?
+        LEFT JOIN customer_plan_tariffs pcpt ON br.rule_code = pcpt.rule_code AND pcpt.customer_id = ? AND pcpt.plan_id = ?
         LEFT JOIN client_tariffs ct ON br.rule_code = ct.rule_code AND ct.customer_id = ?
         LEFT JOIN client_tariffs pct ON br.rule_code = pct.rule_code AND pct.customer_id = ?
+        LEFT JOIN tariff_plan_items tpi ON br.rule_code = tpi.rule_code AND tpi.plan_id = ?
         ORDER BY br.rule_type, br.rule_code
-      `, [clientId, parentId]);
+      `, [clientId, effectivePlanId, parentId, effectivePlanId, clientId, parentId, effectivePlanId]);
 
-      return rows.map(r => {
-        const effective = r.custom_price !== null && r.custom_price !== undefined
-          ? parseFloat(r.custom_price)
-          : (r.parent_custom_price !== null && r.parent_custom_price !== undefined
-              ? parseFloat(r.parent_custom_price)
-              : parseFloat(r.default_price));
+      const isFlat = Boolean(activePlan?.is_flat_rate);
+      const filteredRows = isFlat
+        ? rows.filter(r => r.rule_code === 'CANONE_FISSO_MENSILE')
+        : rows.filter(r => r.rule_code !== 'CANONE_FISSO_MENSILE');
+
+      return filteredRows.map(r => {
+        let effective = parseFloat(r.default_price) || 0;
+        let source = 'default';
+        if (r.custom_price !== null && r.custom_price !== undefined) {
+          effective = parseFloat(r.custom_price);
+          source = 'custom';
+        } else if (r.parent_custom_price !== null && r.parent_custom_price !== undefined) {
+          effective = parseFloat(r.parent_custom_price);
+          source = 'parent';
+        } else if (r.plan_price !== null && r.plan_price !== undefined) {
+          effective = parseFloat(r.plan_price);
+          source = 'plan';
+        }
         return {
           ...r,
+          tariff_plan_id: effectivePlanId,
+          tariff_plan_name: activePlan?.name || cust?.tariff_plan_name || null,
+          is_flat_rate: isFlat,
+          is_customer_default_plan: Boolean(effectivePlanId && Number(cust?.tariff_plan_id) === Number(effectivePlanId)),
+          source,
           final_price: effective
         };
       });
@@ -116,24 +233,47 @@ async function billingRoutes(fastify, options) {
     }
   });
 
-  // POST Tariffs (Upsert)
+  // POST Tariffs (Upsert per listino globale specifico o legacy)
   fastify.post('/tariffs/:clientId', async (request, reply) => {
     const { clientId } = request.params;
-    const { tariffs } = request.body; // [{ rule_code, custom_price }]
+    const { tariffs, plan_id = null } = request.body || {}; // [{ rule_code, custom_price }]
     
     if (!tariffs || !Array.isArray(tariffs)) {
       return reply.code(400).send({ error: 'Formato tariffe non valido' });
     }
 
+    const parsedPlanId = plan_id ? parseInt(plan_id, 10) : null;
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-      for (const t of tariffs) {
-        await conn.query(`
-          INSERT INTO client_tariffs (customer_id, rule_code, custom_price) 
-          VALUES (?, ?, ?)
-          ON DUPLICATE KEY UPDATE custom_price = ?
-        `, [clientId, t.rule_code, t.custom_price, t.custom_price]);
+      const [[cust]] = await conn.query('SELECT tariff_plan_id FROM CUSTOMERS WHERE id = ?', [clientId]);
+
+      if (parsedPlanId) {
+        for (const t of tariffs) {
+          const val = parseFloat(t.custom_price) || 0;
+          await conn.query(`
+            INSERT INTO customer_plan_tariffs (customer_id, plan_id, rule_code, custom_price)
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE custom_price = ?
+          `, [clientId, parsedPlanId, t.rule_code, val, val]);
+
+          if (cust && Number(cust.tariff_plan_id) === parsedPlanId) {
+            await conn.query(`
+              INSERT INTO client_tariffs (customer_id, rule_code, custom_price) 
+              VALUES (?, ?, ?)
+              ON DUPLICATE KEY UPDATE custom_price = ?
+            `, [clientId, t.rule_code, val, val]);
+          }
+        }
+      } else {
+        for (const t of tariffs) {
+          const val = parseFloat(t.custom_price) || 0;
+          await conn.query(`
+            INSERT INTO client_tariffs (customer_id, rule_code, custom_price) 
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE custom_price = ?
+          `, [clientId, t.rule_code, val, val]);
+        }
       }
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated', { clientId });
@@ -142,6 +282,271 @@ async function billingRoutes(fastify, options) {
       await conn.rollback();
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore salvataggio tariffe' });
+    } finally {
+      conn.release();
+    }
+  });
+
+  // POST /api/billing/tariffs/:clientId/reset-plan - Rimuove le personalizzazioni locali del cliente su un listino globale
+  fastify.post('/tariffs/:clientId/reset-plan', async (request, reply) => {
+    const clientId = parseInt(request.params.clientId, 10);
+    const planId = parseInt(request.body?.plan_id, 10);
+    if (!planId) return reply.code(400).send({ error: 'plan_id richiesto' });
+    try {
+      await db.query('DELETE FROM customer_plan_tariffs WHERE customer_id = ? AND plan_id = ?', [clientId, planId]);
+      if (fastify.io) fastify.io.emit('billing_updated', { clientId });
+      return { success: true };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore ripristino listino' });
+    }
+  });
+
+  // ==========================================
+  // LISTINI GLOBALI (TARIFF PLANS)
+  // ==========================================
+
+  // GET /api/billing/tariff-plans
+  fastify.get('/tariff-plans', async (request, reply) => {
+    try {
+      const [plans] = await db.query(`
+        SELECT tp.*, COALESCE(c_agg.cnt, 0) AS assigned_count
+        FROM tariff_plans tp
+        LEFT JOIN (
+          SELECT tariff_plan_id, COUNT(*) AS cnt
+          FROM CUSTOMERS
+          WHERE tariff_plan_id IS NOT NULL
+          GROUP BY tariff_plan_id
+        ) c_agg ON c_agg.tariff_plan_id = tp.id
+        ORDER BY tp.is_flat_rate DESC, tp.is_default DESC, tp.name ASC
+      `);
+      const [items] = await db.query('SELECT plan_id, rule_code, price FROM tariff_plan_items');
+      const itemsByPlan = new Map();
+      items.forEach(it => {
+        if (!itemsByPlan.has(it.plan_id)) itemsByPlan.set(it.plan_id, {});
+        itemsByPlan.get(it.plan_id)[it.rule_code] = parseFloat(it.price) || 0;
+      });
+
+      return plans.map(p => ({
+        ...p,
+        is_default: Boolean(p.is_default),
+        is_flat_rate: Boolean(p.is_flat_rate),
+        items: itemsByPlan.get(p.id) || {}
+      }));
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore caricamento listini globali' });
+    }
+  });
+
+  // POST /api/billing/tariff-plans
+  fastify.post('/tariff-plans', async (request, reply) => {
+    const { name, invoice_label, description, is_default = false, is_flat_rate = false, items = {} } = request.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return reply.code(400).send({ error: 'Il nome del listino globale è obbligatorio' });
+    }
+    const cleanInvoiceLabel = String(invoice_label || '').trim() || cleanName;
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      if (is_default) {
+        await conn.query('UPDATE tariff_plans SET is_default = FALSE');
+      }
+      const [res] = await conn.query(
+        'INSERT INTO tariff_plans (name, invoice_label, description, is_default, is_flat_rate) VALUES (?, ?, ?, ?, ?)',
+        [cleanName, cleanInvoiceLabel, description ? String(description).trim() : null, Boolean(is_default), Boolean(is_flat_rate)]
+      );
+      const planId = res.insertId;
+
+      const entries = Boolean(is_flat_rate)
+        ? [['CANONE_FISSO_MENSILE', parseFloat(items?.CANONE_FISSO_MENSILE) || 0]]
+        : (Array.isArray(items)
+            ? items.map(i => [i.rule_code, parseFloat(i.price) || 0])
+            : Object.entries(items || {}).map(([code, val]) => [code, parseFloat(val) || 0]));
+
+      for (const [ruleCode, price] of entries) {
+        if (!ruleCode) continue;
+        await conn.query(
+          'INSERT INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = ?',
+          [planId, ruleCode, price, price]
+        );
+      }
+
+      await conn.commit();
+      if (fastify.io) fastify.io.emit('billing_updated');
+      return reply.code(201).send({ success: true, id: planId, name: cleanName, invoice_label: cleanInvoiceLabel });
+    } catch (err) {
+      await conn.rollback();
+      if (err.code === 'ER_DUP_ENTRY') {
+        return reply.code(400).send({ error: 'Esiste già un listino globale con questo nome' });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore creazione listino globale' });
+    } finally {
+      conn.release();
+    }
+  });
+
+  // PUT /api/billing/tariff-plans/:id
+  fastify.put('/tariff-plans/:id', async (request, reply) => {
+    const planId = parseInt(request.params.id, 10);
+    const { name, invoice_label, description, is_default = false, items = {}, sync_assigned = false } = request.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return reply.code(400).send({ error: 'Il nome del listino globale è obbligatorio' });
+    }
+    const cleanInvoiceLabel = String(invoice_label || '').trim() || cleanName;
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [existingRows] = await conn.query('SELECT id, is_flat_rate FROM tariff_plans WHERE id = ?', [planId]);
+      if (existingRows.length === 0) {
+        await conn.rollback();
+        return reply.code(404).send({ error: 'Listino globale non trovato' });
+      }
+      const isFlatRate = Boolean(existingRows[0].is_flat_rate);
+
+      if (is_default) {
+        await conn.query('UPDATE tariff_plans SET is_default = FALSE WHERE id != ?', [planId]);
+      }
+      await conn.query(
+        'UPDATE tariff_plans SET name = ?, invoice_label = ?, description = ?, is_default = ? WHERE id = ?',
+        [cleanName, cleanInvoiceLabel, description ? String(description).trim() : null, Boolean(is_default), planId]
+      );
+
+      const entries = isFlatRate
+        ? [['CANONE_FISSO_MENSILE', parseFloat(items?.CANONE_FISSO_MENSILE) || 0]]
+        : (Array.isArray(items)
+            ? items.map(i => [i.rule_code, parseFloat(i.price) || 0])
+            : Object.entries(items || {}).map(([code, val]) => [code, parseFloat(val) || 0]));
+
+      for (const [ruleCode, price] of entries) {
+        if (!ruleCode) continue;
+        await conn.query(
+          'INSERT INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = ?',
+          [planId, ruleCode, price, price]
+        );
+      }
+
+      if (sync_assigned) {
+        const [assignedCustomers] = await conn.query('SELECT id FROM CUSTOMERS WHERE tariff_plan_id = ?', [planId]);
+        for (const c of assignedCustomers) {
+          for (const [ruleCode, price] of entries) {
+            if (!ruleCode) continue;
+            await conn.query(
+              'INSERT INTO customer_plan_tariffs (customer_id, plan_id, rule_code, custom_price) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE custom_price = ?',
+              [c.id, planId, ruleCode, price, price]
+            );
+            await conn.query(
+              'INSERT INTO client_tariffs (customer_id, rule_code, custom_price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE custom_price = ?',
+              [c.id, ruleCode, price, price]
+            );
+          }
+        }
+      }
+
+      await conn.commit();
+      if (fastify.io) fastify.io.emit('billing_updated');
+      return { success: true };
+    } catch (err) {
+      await conn.rollback();
+      if (err.code === 'ER_DUP_ENTRY') {
+        return reply.code(400).send({ error: 'Esiste già un listino globale con questo nome' });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore aggiornamento listino globale' });
+    } finally {
+      conn.release();
+    }
+  });
+
+  // DELETE /api/billing/tariff-plans/:id
+  fastify.delete('/tariff-plans/:id', async (request, reply) => {
+    const planId = parseInt(request.params.id, 10);
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [planRows] = await conn.query('SELECT id, name, is_flat_rate, is_default FROM tariff_plans WHERE id = ?', [planId]);
+      if (planRows.length === 0) {
+        await conn.rollback();
+        return reply.code(404).send({ error: 'Listino globale non trovato' });
+      }
+      if (planRows[0].is_flat_rate && (planRows[0].is_default || String(planRows[0].name).toLowerCase() === 'fisso mensile')) {
+        await conn.rollback();
+        return reply.code(400).send({ error: 'Il listino predefinito "Fisso Mensile" non può essere eliminato' });
+      }
+      await conn.query('UPDATE CUSTOMERS SET tariff_plan_id = NULL WHERE tariff_plan_id = ?', [planId]);
+      await conn.query('DELETE FROM tariff_plans WHERE id = ?', [planId]);
+      await conn.commit();
+      if (fastify.io) fastify.io.emit('billing_updated');
+      return { success: true };
+    } catch (err) {
+      await conn.rollback();
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore eliminazione listino globale' });
+    } finally {
+      conn.release();
+    }
+  });
+
+  // POST /api/billing/tariffs/:clientId/apply-plan - Applica un Listino Globale a un cliente (o anche alle sue frammentazioni)
+  fastify.post('/tariffs/:clientId/apply-plan', async (request, reply) => {
+    const clientId = parseInt(request.params.clientId, 10);
+    const { plan_id, apply_to_fragments = false } = request.body || {};
+    const planId = parseInt(plan_id, 10);
+
+    if (!planId) {
+      return reply.code(400).send({ error: 'Seleziona un listino globale valido' });
+    }
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[plan]] = await conn.query('SELECT * FROM tariff_plans WHERE id = ?', [planId]);
+      if (!plan) {
+        await conn.rollback();
+        return reply.code(404).send({ error: 'Listino globale non trovato' });
+      }
+
+      const [rules] = await conn.query('SELECT rule_code, default_price FROM billing_rules');
+      const [planItems] = await conn.query('SELECT rule_code, price FROM tariff_plan_items WHERE plan_id = ?', [planId]);
+      const itemMap = new Map(planItems.map(i => [i.rule_code, parseFloat(i.price) || 0]));
+
+      const targetIds = [clientId];
+      if (apply_to_fragments) {
+        const [children] = await conn.query('SELECT id FROM CUSTOMERS WHERE parent_id = ?', [clientId]);
+        children.forEach(ch => targetIds.push(ch.id));
+      }
+
+      for (const tid of targetIds) {
+        await conn.query('UPDATE CUSTOMERS SET tariff_plan_id = ? WHERE id = ?', [planId, tid]);
+        for (const r of rules) {
+          const price = itemMap.has(r.rule_code) ? itemMap.get(r.rule_code) : (parseFloat(r.default_price) || 0);
+          await conn.query(
+            `INSERT INTO customer_plan_tariffs (customer_id, plan_id, rule_code, custom_price)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE custom_price = VALUES(custom_price)`,
+            [tid, planId, r.rule_code, price]
+          );
+          await conn.query(
+            `INSERT INTO client_tariffs (customer_id, rule_code, custom_price)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE custom_price = ?`,
+            [tid, r.rule_code, price, price]
+          );
+        }
+      }
+
+      await conn.commit();
+      if (fastify.io) fastify.io.emit('billing_updated', { clientId });
+      return { success: true, appliedCount: targetIds.length, planName: plan.name };
+    } catch (err) {
+      await conn.rollback();
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore applicazione listino globale' });
     } finally {
       conn.release();
     }
@@ -290,11 +695,12 @@ async function billingRoutes(fastify, options) {
       const entitiesToProcess = [mainCustomer, ...childFragments];
       const hasFragments = childFragments.length > 0;
 
-      // Calcolo date del mese selezionato (solo i giorni ricadenti nel mese selezionato per evitare doppi addebiti multi-mese)
+      // Calcolo date del mese selezionato (se il mese è in corso, conta i giorni solo fino ad oggi automaticamente)
       const startDate = new Date(year, month - 1, 1, 0, 0, 0);
       const endDate = new Date(year, month, 0, 23, 59, 59);
       const now = new Date();
-      const effectiveMonthEnd = (capToToday && now >= startDate && now <= endDate) ? now : endDate;
+      const isAutoMode = !storageMode || storageMode === 'AUTO';
+      const effectiveMonthEnd = ((isAutoMode || capToToday) && now >= startDate && now <= endDate) ? now : endDate;
 
       const toDayIndex = (dt) => {
         const d = new Date(dt);
@@ -314,40 +720,127 @@ async function billingRoutes(fastify, options) {
       const sections = [];
       let grandBaseTotal = 0;
 
-      for (const entity of entitiesToProcess) {
-        // Carico il listino specifico di questa entità (frammentazione o cliente madre)
-        const [tariffRows] = await db.query(`
-          SELECT 
-            br.rule_code, 
-            br.description, 
-            br.rule_type, 
-            COALESCE(ct.custom_price, pct.custom_price, br.default_price) as price
-          FROM billing_rules br
-          LEFT JOIN client_tariffs ct ON br.rule_code = ct.rule_code AND ct.customer_id = ?
-          LEFT JOIN client_tariffs pct ON br.rule_code = pct.rule_code AND pct.customer_id = ?
-        `, [entity.id, entity.parent_id || null]);
+      // Precaricamento Listini Globali e Regole Base per risoluzione per-paletta (multilistino cliente/frammentazione)
+      const [allPlansRows] = await db.query('SELECT id, name, invoice_label, is_default, is_flat_rate FROM tariff_plans');
+      const planMap = new Map();
+      let defaultGlobalPlan = null;
+      allPlansRows.forEach(p => {
+        const obj = {
+          id: p.id,
+          name: p.name,
+          invoice_label: (p.invoice_label && String(p.invoice_label).trim()) || p.name,
+          is_default: Boolean(p.is_default),
+          is_flat_rate: Boolean(p.is_flat_rate)
+        };
+        planMap.set(p.id, obj);
+        if (obj.is_default && !defaultGlobalPlan) defaultGlobalPlan = obj;
+      });
 
-        const tariffs = {};
-        tariffRows.forEach(t => {
-          tariffs[String(t.rule_code).trim().toUpperCase()] = { price: parseFloat(t.price) || 0, desc: t.description };
+      const [allRulesRows] = await db.query('SELECT rule_code, description, rule_type, default_price FROM billing_rules');
+      const [allPlanItemsRows] = await db.query('SELECT plan_id, rule_code, price FROM tariff_plan_items');
+      const globalPlanItemsMap = new Map(); // plan_id -> Map<rule_code, price>
+      allPlanItemsRows.forEach(item => {
+        if (!globalPlanItemsMap.has(item.plan_id)) globalPlanItemsMap.set(item.plan_id, new Map());
+        globalPlanItemsMap.get(item.plan_id).set(String(item.rule_code).trim().toUpperCase(), parseFloat(item.price) || 0);
+      });
+
+      for (const entity of entitiesToProcess) {
+        // Carico personalizzazioni per listino globale (frammentazione -> cliente madre) e fallback legacy client_tariffs
+        const entityIdsForLookup = entity.parent_id ? [entity.id, entity.parent_id] : [entity.id];
+        const placeholders = entityIdsForLookup.map(() => '?').join(',');
+        const [cptRows] = await db.query(
+          `SELECT customer_id, plan_id, rule_code, custom_price FROM customer_plan_tariffs WHERE customer_id IN (${placeholders})`,
+          entityIdsForLookup
+        );
+        const [legacyRows] = await db.query(
+          `SELECT customer_id, rule_code, custom_price FROM client_tariffs WHERE customer_id IN (${placeholders})`,
+          entityIdsForLookup
+        );
+
+        const entityCptMap = new Map(); // `${plan_id}||${rule_code}` -> price
+        const parentCptMap = new Map();
+        cptRows.forEach(r => {
+          const k = `${r.plan_id}||${String(r.rule_code).trim().toUpperCase()}`;
+          if (r.customer_id === entity.id) entityCptMap.set(k, parseFloat(r.custom_price) || 0);
+          else if (entity.parent_id && r.customer_id === entity.parent_id) parentCptMap.set(k, parseFloat(r.custom_price) || 0);
         });
 
-        if (!tariffs['DEPOSITO_PALLET']) {
-          tariffs['DEPOSITO_PALLET'] = {
-            price: tariffs['SOSTA_15']?.price || 10.0,
-            desc: 'Deposito Paletta (Giacenza Rimasta)'
-          };
-        }
-        if (!tariffs['SOSTA_GIORNO']) {
-          tariffs['SOSTA_GIORNO'] = {
-            price: 0.50,
-            desc: 'Sosta Giornaliera (Prezzo al Giorno per Paletta)'
-          };
-        }
+        const entityLegacyMap = new Map();
+        const parentLegacyMap = new Map();
+        legacyRows.forEach(r => {
+          const rc = String(r.rule_code).trim().toUpperCase();
+          if (r.customer_id === entity.id) entityLegacyMap.set(rc, parseFloat(r.custom_price) || 0);
+          else if (entity.parent_id && r.customer_id === entity.parent_id) parentLegacyMap.set(rc, parseFloat(r.custom_price) || 0);
+        });
 
-        // Trovo le palette di questa specifica entità con tutti i dettagli prodotto, codice articolo, lotto, rif. paletta cliente, note e quantità storica se spedita
+        const planTariffsCache = new Map();
+        const getTariffsForPlan = (requestedPlanId) => {
+          const parsedReq = requestedPlanId ? parseInt(requestedPlanId, 10) : null;
+          const effectivePlanId = parsedReq || entity.tariff_plan_id || defaultGlobalPlan?.id || null;
+          const cacheKey = effectivePlanId ? String(effectivePlanId) : 'LEGACY';
+          if (planTariffsCache.has(cacheKey)) return planTariffsCache.get(cacheKey);
+
+          const planInfo = effectivePlanId ? planMap.get(effectivePlanId) : null;
+          const planItems = effectivePlanId ? globalPlanItemsMap.get(effectivePlanId) : null;
+          const useLegacyClientFallback = !effectivePlanId || effectivePlanId === entity.tariff_plan_id;
+
+          const rules = {};
+          allRulesRows.forEach(br => {
+            const rc = String(br.rule_code).trim().toUpperCase();
+            let resolvedPrice = null;
+            if (effectivePlanId) {
+              const key = `${effectivePlanId}||${rc}`;
+              if (entityCptMap.has(key)) resolvedPrice = entityCptMap.get(key);
+              else if (parentCptMap.has(key)) resolvedPrice = parentCptMap.get(key);
+            }
+            if (resolvedPrice === null && useLegacyClientFallback) {
+              if (entityLegacyMap.has(rc)) resolvedPrice = entityLegacyMap.get(rc);
+              else if (parentLegacyMap.has(rc)) resolvedPrice = parentLegacyMap.get(rc);
+            }
+            if (resolvedPrice === null && planItems && planItems.has(rc)) {
+              resolvedPrice = planItems.get(rc);
+            }
+            if (resolvedPrice === null) {
+              resolvedPrice = parseFloat(br.default_price) || 0;
+            }
+            rules[rc] = { price: resolvedPrice, desc: br.description };
+          });
+
+          if (!rules['DEPOSITO_PALLET']) {
+            rules['DEPOSITO_PALLET'] = {
+              price: rules['SOSTA_15']?.price || 10.0,
+              desc: 'Deposito Paletta (Giacenza Rimasta)'
+            };
+          }
+          if (!rules['SOSTA_GIORNO']) {
+            rules['SOSTA_GIORNO'] = {
+              price: 0.50,
+              desc: 'Sosta Giornaliera (Prezzo al Giorno per Paletta)'
+            };
+          }
+
+          const planName = planInfo?.name || (effectivePlanId ? `Listino #${effectivePlanId}` : 'Listino Standard');
+          const invoiceLabel = planInfo?.invoice_label || planName;
+          const bundle = {
+            planId: effectivePlanId,
+            planName,
+            invoiceLabel,
+            isFlatRate: Boolean(planInfo?.is_flat_rate),
+            rules
+          };
+          planTariffsCache.set(cacheKey, bundle);
+          return bundle;
+        };
+
+        const defaultEntityBundle = getTariffsForPlan(entity.tariff_plan_id || defaultGlobalPlan?.id || null);
+        const tariffs = defaultEntityBundle.rules;
+
+        // Trovo le palette di questa specifica entità con tutti i dettagli prodotto, codice articolo, lotto, rif. paletta cliente, note, pesi, listino e quantità storica se spedita
         const [pallets] = await db.query(`
           SELECT p.id, p.pallet_code,
+                 p.tariff_plan_id,
+                 p.net_weight_kg,
+                 p.gross_weight_kg,
                  p.client_pallet_number AS customer_pallet_ref,
                  p.client_pallet_number,
                  COALESCE(NULLIF(p.client_article_number, ''), pr.sku) AS sku,
@@ -394,15 +887,45 @@ async function billingRoutes(fastify, options) {
         const sectionPallets = [];
         let sectionTotal = 0;
 
+        const planGroupsMap = new Map();
+        const getOrCreatePlanGroup = (bundle) => {
+          const pKey = bundle.planId ? String(bundle.planId) : 'LEGACY';
+          if (!planGroupsMap.has(pKey)) {
+            planGroupsMap.set(pKey, {
+              planKey: pKey,
+              planId: bundle.planId || null,
+              planName: bundle.planName || 'Listino Standard',
+              invoiceLabel: bundle.invoiceLabel || bundle.planName || 'Listino Standard',
+              isFlatRate: Boolean(bundle.isFlatRate),
+              tariffsSummary: {
+                inPallet: bundle.rules['IN_PALLET']?.price || 0,
+                outPallet: bundle.rules['OUT_PALLET']?.price || 0,
+                depositPallet: bundle.rules['DEPOSITO_PALLET']?.price || 0,
+                sosta15: bundle.rules['SOSTA_15']?.price || 0,
+                sostaGiorno: bundle.rules['SOSTA_GIORNO']?.price || 0
+              },
+              inboundByDayAndTag: new Map(),
+              outboundByDayAndTag: new Map(),
+              depositByTag: new Map(),
+              dailyStorageSummary: { palletCount: 0, totalDays: 0, totalAmount: 0, pallets: [] },
+              pallets: [],
+              subtotal: 0
+            });
+          }
+          return planGroupsMap.get(pKey);
+        };
+
         const inboundByDayAndTag = new Map();
         const outboundByDayAndTag = new Map();
         const depositByTag = new Map();
         const dailyStorageSummary = { palletCount: 0, totalDays: 0, totalAmount: 0, pallets: [] };
 
-        const addSectionCost = (group, code, desc, qty, palletSummaryObj, priceOverride) => {
-          const price = priceOverride !== undefined ? priceOverride : (tariffs[code]?.price || 0);
+        const addSectionCost = (group, code, desc, qty, palletSummaryObj, priceOverride, activeTariffs = tariffs, planMeta = null) => {
+          const price = priceOverride !== undefined ? priceOverride : (activeTariffs[code]?.price || 0);
           if (price === 0) return 0;
-          const existing = sectionItems.find(i => i.code === code && i.price === price);
+          const pPlanId = planMeta?.planId || null;
+          const pPlanKey = pPlanId ? String(pPlanId) : 'LEGACY';
+          const existing = sectionItems.find(i => i.code === code && i.price === price && (i.tariffPlanId || null) === pPlanId);
           if (existing) {
             existing.qty += qty;
             existing.subtotal += (qty * price);
@@ -416,9 +939,12 @@ async function billingRoutes(fastify, options) {
               sectionId: entity.id,
               sectionName: entity.business_name,
               isParent: !entity.parent_id,
+              tariffPlanId: pPlanId,
+              tariffPlanName: planMeta?.planName || null,
+              invoiceLabel: planMeta?.invoiceLabel || planMeta?.planName || null,
               group,
               code,
-              description: desc || tariffs[code]?.desc || code,
+              description: desc || activeTariffs[code]?.desc || code,
               palletCodes: palletSummaryObj ? [palletSummaryObj.pallet_code] : [],
               palletsList: palletSummaryObj ? [palletSummaryObj] : [],
               qty,
@@ -427,8 +953,13 @@ async function billingRoutes(fastify, options) {
             });
           }
           sectionTotal += (qty * price);
+          if (planGroupsMap.has(pPlanKey)) {
+            planGroupsMap.get(pPlanKey).subtotal += (qty * price);
+          }
           return qty * price;
         };
+
+        const addedFlatFeePlanKeys = new Set();
 
         // Raggruppo per pallet_code per evitare sovrafatturazione sulle palette miste
         const groupedPalletsMap = new Map();
@@ -447,6 +978,18 @@ async function billingRoutes(fastify, options) {
           const allShipped = rows.every(r => Boolean(r.shipped_at));
           const shippedTimes = allShipped ? rows.map(r => new Date(r.shipped_at).getTime()).filter(t => !isNaN(t)) : [];
           const outDate = (allShipped && shippedTimes.length > 0) ? new Date(Math.max(...shippedTimes)) : null;
+
+          // Risolvo il Listino Globale assegnato a questa paletta (con fallback al listino dell'entità)
+          const rowPlanId = rows.find(r => r.tariff_plan_id)?.tariff_plan_id || null;
+          const palletPlanBundle = getTariffsForPlan(rowPlanId);
+          const pTariffs = palletPlanBundle.rules;
+          const isFlatRatePallet = palletPlanBundle.isFlatRate;
+          const pGroupBucket = getOrCreatePlanGroup(palletPlanBundle);
+
+          const netWeights = rows.map(r => parseFloat(r.net_weight_kg)).filter(w => !isNaN(w) && w > 0);
+          const grossWeights = rows.map(r => parseFloat(r.gross_weight_kg)).filter(w => !isNaN(w) && w > 0);
+          const totalNetWeightKg = netWeights.length > 0 ? Number(netWeights.reduce((a, b) => a + b, 0).toFixed(3)) : null;
+          const totalGrossWeightKg = grossWeights.length > 0 ? Number(grossWeights.reduce((a, b) => a + b, 0).toFixed(3)) : null;
 
           const uniqueFlagsSet = new Set();
           rows.forEach(r => {
@@ -483,7 +1026,6 @@ async function billingRoutes(fastify, options) {
           const uomStr = uniqueUoms.join('/');
           const notesStr = uniqueNotes.join(' | ') || '';
 
-          // Etichetta parlante e comprensibile per l'operatore (Nome Prodotto + Lotto + eventuale Rif. Paletta Cliente)
           const humanLabel = `${prodNameStr}${batchStr !== '-' ? ` (Lotto: ${batchStr})` : ''}${custRef ? ` • Rif.Pal: ${custRef}` : ''}`;
 
           const isEnteredInMonth = inDate >= startDate && inDate <= endDate;
@@ -491,7 +1033,7 @@ async function billingRoutes(fastify, options) {
           const isRemainingInDeposit = !outDate || outDate > endDate;
 
           const isHistoricalPallet = inDate < startDate;
-          if (isHistoricalPallet && !isExitedInMonth && !includeHistorical) {
+          if (!isAutoMode && isHistoricalPallet && !isExitedInMonth && !includeHistorical) {
             return;
           }
 
@@ -519,6 +1061,12 @@ async function billingRoutes(fastify, options) {
             batch: batchStr,
             quantity: totalQty,
             pallet_uom: uomStr,
+            net_weight_kg: totalNetWeightKg,
+            gross_weight_kg: totalGrossWeightKg,
+            tariff_plan_id: palletPlanBundle.planId,
+            tariff_plan_name: palletPlanBundle.planName,
+            invoice_label: palletPlanBundle.invoiceLabel,
+            is_flat_rate: isFlatRatePallet,
             customer_pallet_ref: custRef,
             notes: notesStr,
             expiration_date: rawFirstExpDate,
@@ -528,69 +1076,92 @@ async function billingRoutes(fastify, options) {
             storageDays
           };
 
+          // Helper locale per pushare sia nella mappa sezione sia nel gruppo Listino
+          const pushTagEntry = (secMap, grpMap, key, factory) => {
+            if (!secMap.has(key)) secMap.set(key, factory());
+            secMap.get(key).pallets.push(palletSummaryObj);
+            if (!grpMap.has(key)) grpMap.set(key, factory());
+            grpMap.get(key).pallets.push(palletSummaryObj);
+          };
+
           // 1. INBOUND
           if (isEnteredInMonth) {
-            const c = addSectionCost('EVENTI', 'IN_PALLET', tariffs['IN_PALLET']?.desc || 'Ingresso Paletta (IN)', 1, palletSummaryObj);
-            if (c > 0) {
-              palletCharges.push({ code: 'IN_PALLET', label: `Ingresso (${formatDateIT(inDate)})`, price: c });
-              palletTotalPrice += c;
+            if (!isFlatRatePallet) {
+              const c = addSectionCost('EVENTI', 'IN_PALLET', pTariffs['IN_PALLET']?.desc || 'Ingresso Paletta (IN)', 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
+              if (c > 0) {
+                palletCharges.push({ code: 'IN_PALLET', label: `Ingresso (${formatDateIT(inDate)})`, price: c });
+                palletTotalPrice += c;
+              }
             }
             const dateStr = formatDateIT(inDate);
             const key = `${dateStr}||${tagLabel}`;
-            if (!inboundByDayAndTag.has(key)) inboundByDayAndTag.set(key, { dateStr, tagLabel, pallets: [] });
-            inboundByDayAndTag.get(key).pallets.push(palletSummaryObj);
+            pushTagEntry(inboundByDayAndTag, pGroupBucket.inboundByDayAndTag, key, () => ({ dateStr, tagLabel, pallets: [] }));
           }
 
           // 2. OUTBOUND
           if (isExitedInMonth) {
-            const c = addSectionCost('EVENTI', 'OUT_PALLET', tariffs['OUT_PALLET']?.desc || 'Uscita Paletta (OUT)', 1, palletSummaryObj);
-            if (c > 0) {
-              palletCharges.push({ code: 'OUT_PALLET', label: `Uscita (${formatDateIT(outDate)})`, price: c });
-              palletTotalPrice += c;
+            if (!isFlatRatePallet) {
+              const c = addSectionCost('EVENTI', 'OUT_PALLET', pTariffs['OUT_PALLET']?.desc || 'Uscita Paletta (OUT)', 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
+              if (c > 0) {
+                palletCharges.push({ code: 'OUT_PALLET', label: `Uscita (${formatDateIT(outDate)})`, price: c });
+                palletTotalPrice += c;
+              }
             }
             const dateStr = formatDateIT(outDate);
             const key = `${dateStr}||${tagLabel}`;
-            if (!outboundByDayAndTag.has(key)) outboundByDayAndTag.set(key, { dateStr, tagLabel, pallets: [] });
-            outboundByDayAndTag.get(key).pallets.push(palletSummaryObj);
+            pushTagEntry(outboundByDayAndTag, pGroupBucket.outboundByDayAndTag, key, () => ({ dateStr, tagLabel, pallets: [] }));
           }
 
-          // 3. STORAGE (Sosta Quindicina)
-          if (includeStorage && inDate <= endDate && (!outDate || outDate >= startDate)) {
+          // 3. GIACENZA / SOSTA AUTOMATICA (o modalità legacy se forzata)
+          const dailyRate = isFlatRatePallet ? 0 : (pTariffs['SOSTA_GIORNO']?.price ?? 0);
+          const depositRate = isFlatRatePallet ? 0 : (pTariffs['DEPOSITO_PALLET']?.price ?? 0);
+          const sosta15Rate = isFlatRatePallet ? 0 : (pTariffs['SOSTA_15']?.price ?? 0);
+          const sostaMag15Rate = isFlatRatePallet ? 0 : (pTariffs['SOSTA_MAGGIORE_15']?.price ?? 0);
+
+          const autoUseDaily = isAutoMode && dailyRate > 0;
+          const autoUseDeposit = isAutoMode && !autoUseDaily && depositRate > 0;
+          const autoUseQuindicina = isAutoMode && !autoUseDaily && !autoUseDeposit && (sosta15Rate > 0 || sostaMag15Rate > 0);
+
+          const shouldRunDaily = autoUseDaily || (!isAutoMode && includeDailyStorage);
+          const shouldRunQuindicina = autoUseQuindicina || (!isAutoMode && includeStorage);
+          const shouldRunDeposit = autoUseDeposit || (!isAutoMode && includeDeposit);
+
+          if (!isFlatRatePallet && shouldRunQuindicina && inDate <= endDate && (!outDate || outDate >= startDate)) {
             if (inDate < startDate) {
-              if (includeHistorical) {
-                const c = addSectionCost('GIACENZA', 'SOSTA_15', tariffs['SOSTA_15']?.desc, 1, palletSummaryObj);
+              if (isAutoMode || includeHistorical) {
+                const c = addSectionCost('GIACENZA', 'SOSTA_15', pTariffs['SOSTA_15']?.desc, 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
                 if (c > 0) {
-                  palletCharges.push({ code: 'SOSTA_15', label: tariffs['SOSTA_15']?.desc || 'Sosta', price: c });
+                  palletCharges.push({ code: 'SOSTA_15', label: pTariffs['SOSTA_15']?.desc || 'Sosta', price: c });
                   palletTotalPrice += c;
                 }
               }
             } else {
               if (inDate.getDate() <= 15) {
-                const c = addSectionCost('GIACENZA', 'SOSTA_15', tariffs['SOSTA_15']?.desc, 1, palletSummaryObj);
+                const c = addSectionCost('GIACENZA', 'SOSTA_15', pTariffs['SOSTA_15']?.desc, 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
                 if (c > 0) {
-                  palletCharges.push({ code: 'SOSTA_15', label: tariffs['SOSTA_15']?.desc || 'Sosta <=15gg', price: c });
+                  palletCharges.push({ code: 'SOSTA_15', label: pTariffs['SOSTA_15']?.desc || 'Sosta <=15gg', price: c });
                   palletTotalPrice += c;
                 }
               } else {
-                const c = addSectionCost('GIACENZA', 'SOSTA_MAGGIORE_15', tariffs['SOSTA_MAGGIORE_15']?.desc, 1, palletSummaryObj);
+                const c = addSectionCost('GIACENZA', 'SOSTA_MAGGIORE_15', pTariffs['SOSTA_MAGGIORE_15']?.desc, 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
                 if (c > 0) {
-                  palletCharges.push({ code: 'SOSTA_MAGGIORE_15', label: tariffs['SOSTA_MAGGIORE_15']?.desc || 'Sosta >15gg', price: c });
+                  palletCharges.push({ code: 'SOSTA_MAGGIORE_15', label: pTariffs['SOSTA_MAGGIORE_15']?.desc || 'Sosta >15gg', price: c });
                   palletTotalPrice += c;
                 }
               }
             }
           }
 
-          // 3b. DAILY STORAGE (Giorni di Sosta pro-rata nel mese selezionato)
-          const dailyRate = tariffs['SOSTA_GIORNO']?.price ?? 0;
-          if (includeDailyStorage && storageDays > 0) {
+          if (!isFlatRatePallet && shouldRunDaily && storageDays > 0) {
             const c = addSectionCost(
               'GIACENZA',
               'SOSTA_GIORNO',
-              `${tariffs['SOSTA_GIORNO']?.desc || 'Sosta Giornaliera'} (Giorni-Paletta)`,
+              `${pTariffs['SOSTA_GIORNO']?.desc || 'Sosta Giornaliera'} (Giorni-Paletta)`,
               storageDays,
               palletSummaryObj,
-              dailyRate
+              dailyRate,
+              pTariffs,
+              palletPlanBundle
             );
             if (c > 0) {
               palletCharges.push({
@@ -605,22 +1176,28 @@ async function billingRoutes(fastify, options) {
               dailyStorageSummary.totalDays += storageDays;
               dailyStorageSummary.totalAmount += c;
               dailyStorageSummary.pallets.push(palletSummaryObj);
+
+              pGroupBucket.dailyStorageSummary.palletCount += 1;
+              pGroupBucket.dailyStorageSummary.totalDays += storageDays;
+              pGroupBucket.dailyStorageSummary.totalAmount += c;
+              pGroupBucket.dailyStorageSummary.pallets.push(palletSummaryObj);
             }
           }
 
-          // 4. PRE-FATTURAZIONE PER DEPOSITO (Tutte le palette rimaste in deposito)
           if (isRemainingInDeposit) {
             const key = tagLabel || 'NO_TAG';
-            if (!depositByTag.has(key)) depositByTag.set(key, { tagLabel, pallets: [] });
-            depositByTag.get(key).pallets.push(palletSummaryObj);
+            pushTagEntry(depositByTag, pGroupBucket.depositByTag, key, () => ({ tagLabel, pallets: [] }));
 
-            if (includeDeposit) {
+            if (!isFlatRatePallet && shouldRunDeposit) {
               const c = addSectionCost(
                 'DEPOSITO',
                 'DEPOSITO_PALLET',
-                tariffs['DEPOSITO_PALLET']?.desc || 'Deposito Paletta (Giacenza Rimasta)',
+                pTariffs['DEPOSITO_PALLET']?.desc || 'Deposito Paletta (Giacenza Rimasta)',
                 1,
-                palletSummaryObj
+                palletSummaryObj,
+                undefined,
+                pTariffs,
+                palletPlanBundle
               );
               if (c > 0) {
                 palletCharges.push({ code: 'DEPOSITO_PALLET', label: 'In Deposito', price: c });
@@ -630,18 +1207,35 @@ async function billingRoutes(fastify, options) {
           }
 
           // 5. FLAGS (EXTRA es. ADR, FRIGO, ecc.)
-          uniqueFlags.forEach(f => {
-            const cleanF = String(f).trim().toUpperCase().replace(/^FLAG_/, '');
-            const prefixedCode = `FLAG_${cleanF}`;
-            const ruleCode = tariffs[prefixedCode] ? prefixedCode : (tariffs[cleanF] ? cleanF : null);
-            if (ruleCode && tariffs[ruleCode]) {
-              const c = addSectionCost('SERVIZI EXTRA', ruleCode, tariffs[ruleCode].desc, 1, palletSummaryObj);
-              if (c > 0) {
-                palletCharges.push({ code: ruleCode, label: `Tag ${cleanF}`, price: c });
-                palletTotalPrice += c;
+          if (!isFlatRatePallet) {
+            uniqueFlags.forEach(f => {
+              const cleanF = String(f).trim().toUpperCase().replace(/^FLAG_/, '');
+              const prefixedCode = `FLAG_${cleanF}`;
+              const ruleCode = pTariffs[prefixedCode] ? prefixedCode : (pTariffs[cleanF] ? cleanF : null);
+              if (ruleCode && pTariffs[ruleCode]) {
+                const c = addSectionCost('SERVIZI EXTRA', ruleCode, pTariffs[ruleCode].desc, 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
+                if (c > 0) {
+                  palletCharges.push({ code: ruleCode, label: `Tag ${cleanF}`, price: c });
+                  palletTotalPrice += c;
+                }
               }
+            });
+          } else if (!addedFlatFeePlanKeys.has(pGroupBucket.planKey)) {
+            addedFlatFeePlanKeys.add(pGroupBucket.planKey);
+            const flatFee = pTariffs['CANONE_FISSO_MENSILE']?.price || 0;
+            if (flatFee > 0) {
+              addSectionCost(
+                'CANONE FISSO',
+                'CANONE_FISSO_MENSILE',
+                pTariffs['CANONE_FISSO_MENSILE']?.desc || palletPlanBundle.invoiceLabel,
+                1,
+                null,
+                flatFee,
+                pTariffs,
+                palletPlanBundle
+              );
             }
-          });
+          }
 
           palletSummaryObj.totalPrice = palletTotalPrice;
           palletSummaryObj.charges = palletCharges;
@@ -654,6 +1248,8 @@ async function billingRoutes(fastify, options) {
           if (isRemainingInDeposit) movementParts.push('In Deposito');
           if (storageDays > 0) movementParts.push(`${storageDays} gg nel mese`);
           if (tagLabel) movementParts.push(`Tag: ${tagLabel}`);
+          if (isFlatRatePallet) movementParts.push(`Listino: ${palletPlanBundle.invoiceLabel} (Esclusa da calcolo)`);
+          else if (palletPlanBundle.invoiceLabel) movementParts.push(`Listino: ${palletPlanBundle.invoiceLabel}`);
 
           const palletRecord = {
             pallet_code: code,
@@ -662,6 +1258,12 @@ async function billingRoutes(fastify, options) {
             customer_pallet_ref: custRef,
             sectionId: entity.id,
             sectionName: entity.business_name,
+            tariff_plan_id: palletPlanBundle.planId,
+            tariff_plan_name: palletPlanBundle.planName,
+            invoice_label: palletPlanBundle.invoiceLabel,
+            is_flat_rate: isFlatRatePallet,
+            net_weight_kg: totalNetWeightKg,
+            gross_weight_kg: totalGrossWeightKg,
             product_name: prodNameStr,
             quantity: totalQty,
             pallet_uom: uomStr,
@@ -685,73 +1287,89 @@ async function billingRoutes(fastify, options) {
           };
 
           sectionPallets.push(palletRecord);
+          pGroupBucket.pallets.push(palletRecord);
           allPalletDetails.push(palletRecord);
         });
 
-        // Costruzione delle righe descrittive parlanti per questa Frammentazione / Cliente
-        // Ogni riga contiene sia il testo sia l'array strutturato `pallets` (cliccabili nel frontend!)
-        const descriptiveLines = [];
-
-        outboundByDayAndTag.forEach(({ dateStr, tagLabel, pallets: pList }) => {
-          const count = pList.length;
-          const noun = count === 1 ? 'Paletta' : 'Palette';
-          const verb = count === 1 ? 'andata via' : 'andate via';
-          const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
-          const namesStr = pList.map(p => p.humanLabel).join('; ');
-          descriptiveLines.push({
-            type: 'OUT',
-            count,
-            pallets: pList,
-            date: dateStr,
-            tags: tagLabel,
-            headerText: `${count} - ${noun} ${verb}${tagPart} il giorno ${dateStr}:`,
-            text: `${count} - ${noun} (${namesStr}) ${verb}${tagPart} il giorno ${dateStr}`
+        const buildDescriptiveLines = ({ inboundByDayAndTag: inMap, outboundByDayAndTag: outMap, depositByTag: depMap, dailyStorageSummary: dailySum }, activeRate = 0) => {
+          const lines = [];
+          outMap.forEach(({ dateStr, tagLabel, pallets: pList }) => {
+            const count = pList.length;
+            const noun = count === 1 ? 'Paletta' : 'Palette';
+            const verb = count === 1 ? 'andata via' : 'andate via';
+            const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
+            const namesStr = pList.map(p => p.humanLabel).join('; ');
+            lines.push({
+              type: 'OUT',
+              count,
+              pallets: pList,
+              date: dateStr,
+              tags: tagLabel,
+              headerText: `${count} - ${noun} ${verb}${tagPart} il giorno ${dateStr}:`,
+              text: `${count} - ${noun} (${namesStr}) ${verb}${tagPart} il giorno ${dateStr}`
+            });
           });
-        });
-
-        inboundByDayAndTag.forEach(({ dateStr, tagLabel, pallets: pList }) => {
-          const count = pList.length;
-          const noun = count === 1 ? 'Paletta' : 'Palette';
-          const verb = count === 1 ? 'entrata' : 'entrate';
-          const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
-          const namesStr = pList.map(p => p.humanLabel).join('; ');
-          descriptiveLines.push({
-            type: 'IN',
-            count,
-            pallets: pList,
-            date: dateStr,
-            tags: tagLabel,
-            headerText: `${count} - ${noun} ${verb}${tagPart} il giorno ${dateStr}:`,
-            text: `${count} - ${noun} (${namesStr}) ${verb}${tagPart} il giorno ${dateStr}`
+          inMap.forEach(({ dateStr, tagLabel, pallets: pList }) => {
+            const count = pList.length;
+            const noun = count === 1 ? 'Paletta' : 'Palette';
+            const verb = count === 1 ? 'entrata' : 'entrate';
+            const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
+            const namesStr = pList.map(p => p.humanLabel).join('; ');
+            lines.push({
+              type: 'IN',
+              count,
+              pallets: pList,
+              date: dateStr,
+              tags: tagLabel,
+              headerText: `${count} - ${noun} ${verb}${tagPart} il giorno ${dateStr}:`,
+              text: `${count} - ${noun} (${namesStr}) ${verb}${tagPart} il giorno ${dateStr}`
+            });
           });
-        });
-
-        depositByTag.forEach(({ tagLabel, pallets: pList }) => {
-          const count = pList.length;
-          const noun = count === 1 ? 'Paletta' : 'Palette';
-          const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
-          const namesStr = pList.map(p => p.humanLabel).join('; ');
-          descriptiveLines.push({
-            type: 'DEPOSIT',
-            count,
-            pallets: pList,
-            tags: tagLabel,
-            headerText: `${count} - ${noun}${tagPart} in deposito:`,
-            text: `${count} - ${noun} (${namesStr})${tagPart} in deposito`
+          depMap.forEach(({ tagLabel, pallets: pList }) => {
+            const count = pList.length;
+            const noun = count === 1 ? 'Paletta' : 'Palette';
+            const tagPart = tagLabel ? ` con tag ${tagLabel}` : '';
+            const namesStr = pList.map(p => p.humanLabel).join('; ');
+            lines.push({
+              type: 'DEPOSIT',
+              count,
+              pallets: pList,
+              tags: tagLabel,
+              headerText: `${count} - ${noun}${tagPart} in deposito:`,
+              text: `${count} - ${noun} (${namesStr})${tagPart} in deposito`
+            });
           });
-        });
+          if (dailySum.palletCount > 0) {
+            lines.push({
+              type: 'DAILY_STORAGE',
+              count: dailySum.palletCount,
+              totalDays: dailySum.totalDays,
+              pallets: dailySum.pallets,
+              headerText: `${dailySum.palletCount} ${dailySum.palletCount === 1 ? 'Paletta' : 'Palette'} per ${dailySum.totalDays} giorni totali di sosta nel mese (€${activeRate.toFixed(2)}/gg):`,
+              text: `${dailySum.palletCount} palette × ${dailySum.totalDays} gg totali nel mese`
+            });
+          }
+          return lines;
+        };
 
-        if (dailyStorageSummary.palletCount > 0) {
-          const rate = tariffs['SOSTA_GIORNO']?.price ?? 0;
-          descriptiveLines.push({
-            type: 'DAILY_STORAGE',
-            count: dailyStorageSummary.palletCount,
-            totalDays: dailyStorageSummary.totalDays,
-            pallets: dailyStorageSummary.pallets,
-            headerText: `${dailyStorageSummary.palletCount} ${dailyStorageSummary.palletCount === 1 ? 'Paletta' : 'Palette'} per ${dailyStorageSummary.totalDays} giorni totali di sosta nel mese (€${rate.toFixed(2)}/gg):`,
-            text: `${dailyStorageSummary.palletCount} palette × ${dailyStorageSummary.totalDays} gg totali nel mese`
-          });
-        }
+        const descriptiveLines = buildDescriptiveLines(
+          { inboundByDayAndTag, outboundByDayAndTag, depositByTag, dailyStorageSummary },
+          tariffs['SOSTA_GIORNO']?.price ?? 0
+        );
+
+        const planGroups = Array.from(planGroupsMap.values()).map(pg => ({
+          planKey: pg.planKey,
+          planId: pg.planId,
+          planName: pg.planName,
+          invoiceLabel: pg.invoiceLabel,
+          isFlatRate: pg.isFlatRate,
+          tariffsSummary: pg.tariffsSummary,
+          descriptiveLines: buildDescriptiveLines(pg, pg.tariffsSummary.sostaGiorno || 0),
+          pallets: pg.pallets,
+          items: sectionItems.filter(it => (it.tariffPlanId ? String(it.tariffPlanId) : 'LEGACY') === pg.planKey),
+          palletsCount: pg.pallets.length,
+          subtotal: pg.subtotal
+        }));
 
         if (!hasFragments || entity.parent_id || sectionPallets.length > 0 || sectionItems.length > 0) {
           sections.push({
@@ -766,6 +1384,7 @@ async function billingRoutes(fastify, options) {
               sosta15: tariffs['SOSTA_15']?.price || 0,
               sostaGiorno: tariffs['SOSTA_GIORNO']?.price || 0
             },
+            planGroups,
             descriptiveLines,
             pallets: sectionPallets,
             items: sectionItems,

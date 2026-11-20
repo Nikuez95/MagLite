@@ -300,7 +300,7 @@ function App() {
             <Route
               path="billing-tariffs"
               element={
-                <ProtectedSection perm={['view_billing', 'finance_manage']} sectionName="Tariffe Clienti" user={user}>
+                <ProtectedSection perm={['view_billing', 'finance_manage', 'tariff_plans_manage', 'client_tariffs_manage']} sectionName="Tariffe Clienti" user={user}>
                   <ClientTariffManager />
                 </ProtectedSection>
               }
@@ -316,7 +316,7 @@ function App() {
             <Route
               path="billing-rules"
               element={
-                <ProtectedSection perm={['view_billing', 'finance_manage']} sectionName="Regole Base Fatturazione" user={user}>
+                <ProtectedSection perm={['view_billing', 'finance_manage', 'tariff_plans_manage']} sectionName="Regole Base Fatturazione" user={user}>
                   <BillingRulesManager />
                 </ProtectedSection>
               }
@@ -332,7 +332,7 @@ function App() {
             <Route
               path="invoices-history"
               element={
-                <ProtectedSection perm={['view_finances', 'finance_manage']} sectionName="Archivio Proforme" user={user}>
+                <ProtectedSection perm={['view_finances', 'finance_manage', 'view_billing']} sectionName="Archivio Proforme" user={user}>
                   <InvoicesHistory />
                 </ProtectedSection>
               }

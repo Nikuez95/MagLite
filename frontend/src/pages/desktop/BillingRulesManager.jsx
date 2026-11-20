@@ -6,6 +6,7 @@ import { hasPerm } from '../../utils/permissions';
 import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
 import { io } from 'socket.io-client';
+import FinanceAdminNav from '../../components/FinanceAdminNav';
 
 const BillingRulesManager = () => {
   const [rules, setRules] = useState([]);
@@ -14,7 +15,7 @@ const BillingRulesManager = () => {
   const [existingFlags, setExistingFlags] = useState([]);
 
   const getToken = () => localStorage.getItem('maglite_token');
-  const canManageFinance = hasPerm('finance_manage');
+  const canManageFinance = hasPerm(['finance_manage', 'tariff_plans_manage']);
 
   const fetchRules = async () => {
     setIsLoading(true);
@@ -112,8 +113,9 @@ const BillingRulesManager = () => {
   };
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
-      <div className="max-w-6xl mx-auto animate-fade-in-up">
+    <div className="flex-1 p-6 md:p-8 overflow-y-auto bg-brand-black min-h-screen">
+      <div className="max-w-7xl mx-auto animate-fade-in-up">
+        <FinanceAdminNav />
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-brand-white mb-2 flex items-center gap-3">
             <Settings2 className="text-brand-blue" size={32} />

@@ -722,7 +722,9 @@ const ProductsManagement = () => {
         notes: editModal.notes,
         client_pallet_number: editModal.client_pallet_number,
         client_article_number: editModal.client_article_number,
-        expiration_date: editModal.expiration_date
+        expiration_date: editModal.expiration_date,
+        net_weight_kg: editModal.net_weight_kg !== '' && editModal.net_weight_kg !== undefined ? editModal.net_weight_kg : null,
+        gross_weight_kg: editModal.gross_weight_kg !== '' && editModal.gross_weight_kg !== undefined ? editModal.gross_weight_kg : null
       }, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
@@ -914,9 +916,11 @@ const ProductsManagement = () => {
     const map = new Map();
     pallets.forEach(pal => {
       if (pal.status === 'SHIPPED') return;
-      const prev = map.get(pal.product_id) || { totalQty: 0, palletCount: 0 };
+      const prev = map.get(pal.product_id) || { totalQty: 0, palletCount: 0, totalNetKg: 0, totalGrossKg: 0 };
       prev.totalQty += parseFloat(pal.quantity || 0);
       prev.palletCount += 1;
+      prev.totalNetKg += parseFloat(pal.net_weight_kg || 0);
+      prev.totalGrossKg += parseFloat(pal.gross_weight_kg || 0);
       map.set(pal.product_id, prev);
     });
     return map;
@@ -1596,6 +1600,20 @@ const ProductsManagement = () => {
                           ) : (
                             <span className="font-bold text-brand-blue">{formatQuantity(p.quantity, p.uom)} <span className="text-[10px] text-slate-500 uppercase">({formatUOM(p.uom || 'Pezzi')})</span></span>
                           )}
+                          {(Number(p.net_weight_kg) > 0 || Number(p.gross_weight_kg) > 0) && (
+                            <div className="mt-1 flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-mono">
+                              {Number(p.net_weight_kg) > 0 && (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-sky-300">
+                                  Netti: {Number(p.net_weight_kg)} kg
+                                </span>
+                              )}
+                              {Number(p.gross_weight_kg) > 0 && (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-amber-300">
+                                  Lordi: {Number(p.gross_weight_kg)} kg
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-3 text-slate-300 text-sm font-medium">
                           {new Date(p.created_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -1721,7 +1739,7 @@ const ProductsManagement = () => {
                                 </button>
                                 <button
                                   disabled={isQuarantined || !customerAllowed}
-                                  onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
+                                  onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', net_weight_kg: p.net_weight_kg ?? '', gross_weight_kg: p.gross_weight_kg ?? '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
                                   className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                   title={isQuarantined ? "Paletta in QUARANTENA: sbloccala prima di modificarla o spostarla" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Modifica"}
                                 >
@@ -1804,6 +1822,13 @@ const ProductsManagement = () => {
                                 {st.palletCount} {st.palletCount === 1 ? 'paletta' : 'palette'}
                                 {upb > 1 && !(p.uom || '').toLowerCase().includes('scatol') ? ` • ${Math.floor(totalStock / upb)} Scat.` : ''}
                               </span>
+                              {(st.totalNetKg > 0 || st.totalGrossKg > 0) && (
+                                <span className="text-[10px] font-mono text-sky-300/90 mt-0.5">
+                                  {st.totalNetKg > 0 ? `Netti: ${Number(st.totalNetKg.toFixed(2))} kg` : ''}
+                                  {st.totalNetKg > 0 && st.totalGrossKg > 0 ? ' • ' : ''}
+                                  {st.totalGrossKg > 0 ? `Lordi: ${Number(st.totalGrossKg.toFixed(2))} kg` : ''}
+                                </span>
+                              )}
                             </button>
                           ) : (
                             <span className="inline-block px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-500 text-xs font-bold">
@@ -2307,6 +2332,16 @@ const ProductsManagement = () => {
                 <div>
                   <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Articolo Cliente</label>
                   <input value={editModal.client_article_number} onChange={e => setEditModal({...editModal, client_article_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">KG Netti</label>
+                  <input type="number" step="0.001" min="0" value={editModal.net_weight_kg ?? ''} onChange={e => setEditModal({...editModal, net_weight_kg: e.target.value})} placeholder="Opzionale" className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">KG Lordi</label>
+                  <input type="number" step="0.001" min="0" value={editModal.gross_weight_kg ?? ''} onChange={e => setEditModal({...editModal, gross_weight_kg: e.target.value})} placeholder="Opzionale" className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue" />
                 </div>
               </div>
               <div>

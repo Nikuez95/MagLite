@@ -194,6 +194,152 @@ async function runMigrations() {
       }
     }
 
+    // 2b. Note cliente, piani tariffari globali e associazioni
+    const customerAndTariffQueries = [
+      "ALTER TABLE CUSTOMERS ADD COLUMN notes TEXT DEFAULT NULL",
+      "ALTER TABLE CUSTOMERS ADD COLUMN tariff_plan_id INT DEFAULT NULL",
+      `CREATE TABLE IF NOT EXISTS tariff_plans (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(120) NOT NULL UNIQUE,
+        description TEXT DEFAULT NULL,
+        is_default BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS tariff_plan_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        plan_id INT NOT NULL,
+        rule_code VARCHAR(50) NOT NULL,
+        price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        UNIQUE KEY unique_plan_rule (plan_id, rule_code),
+        FOREIGN KEY (plan_id) REFERENCES tariff_plans(id) ON DELETE CASCADE
+      )`,
+      `CREATE TABLE IF NOT EXISTS CUSTOMER_NOTES (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_id INT NOT NULL,
+        content TEXT NOT NULL,
+        username VARCHAR(100) DEFAULT 'Sistema',
+        is_pinned BOOLEAN DEFAULT FALSE,
+        pinned_at DATETIME DEFAULT NULL,
+        pinned_by VARCHAR(100) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_customer_notes_cust_pin_date (customer_id, is_pinned, created_at),
+        FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+      )`
+    ];
+    for (const q of customerAndTariffQueries) {
+      try {
+        await connection.query(q);
+      } catch (err) {
+        if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_CANT_DROP_FIELD_OR_KEY') {
+          console.warn('[MIGRATE CUSTOMERS/TARIFFS WARNING]', err.message);
+        }
+      }
+    }
+
+    // Migra eventuali vecchie note singole in CUSTOMERS.notes dentro CUSTOMER_NOTES (solo se il cliente non ha ancora note)
+    try {
+      await connection.query(`
+        INSERT INTO CUSTOMER_NOTES (customer_id, content, username, is_pinned)
+        SELECT c.id, TRIM(c.notes), 'Sistema', FALSE
+        FROM CUSTOMERS c
+        WHERE c.notes IS NOT NULL AND TRIM(c.notes) != ''
+          AND NOT EXISTS (SELECT 1 FROM CUSTOMER_NOTES cn WHERE cn.customer_id = c.id)
+      `);
+    } catch (notesMigErr) {
+      console.warn('[MIGRATE CUSTOMER_NOTES WARNING]', notesMigErr.message);
+    }
+
+    // 2c. Listini globali per cliente/paletta, pesi netti/lordi, frammentazione carrello e listino default Fisso Mensile
+    const palletAndPlanQueries = [
+      "ALTER TABLE tariff_plans ADD COLUMN is_flat_rate BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE tariff_plans ADD COLUMN invoice_label VARCHAR(255) DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN tariff_plan_id INT DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN net_weight_kg DECIMAL(10,2) DEFAULT NULL",
+      "ALTER TABLE PALLETS ADD COLUMN gross_weight_kg DECIMAL(10,2) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN tariff_plan_id INT DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN net_weight_kg DECIMAL(10,2) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN gross_weight_kg DECIMAL(10,2) DEFAULT NULL",
+      "ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN pallet_group VARCHAR(50) DEFAULT NULL",
+      `CREATE TABLE IF NOT EXISTS customer_plan_tariffs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_id INT NOT NULL,
+        plan_id INT NOT NULL,
+        rule_code VARCHAR(50) NOT NULL,
+        custom_price DECIMAL(10,2) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_cust_plan_rule (customer_id, plan_id, rule_code),
+        FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_id) REFERENCES tariff_plans(id) ON DELETE CASCADE
+      )`,
+      "INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_type) VALUES ('CANONE_FISSO_MENSILE', 'Fisso Mensile (Nessun calcolo automatico)', 0.00, 'MANUAL')"
+    ];
+    for (const q of palletAndPlanQueries) {
+      try {
+        await connection.query(q);
+      } catch (err) {
+        if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_CANT_DROP_FIELD_OR_KEY') {
+          console.warn('[MIGRATE PALLET/PLAN WARNING]', err.message);
+        }
+      }
+    }
+
+    // Crea il listino globale di default "Fisso Mensile" (con una sola voce che non calcola nulla) se non esiste ancora
+    try {
+      const [flatRows] = await connection.query('SELECT id FROM tariff_plans WHERE is_flat_rate = TRUE LIMIT 1');
+      if (flatRows.length === 0) {
+        const [defRows] = await connection.query('SELECT id FROM tariff_plans WHERE is_default = TRUE LIMIT 1');
+        const shouldBeDefault = defRows.length === 0;
+        const [insPlan] = await connection.query(
+          `INSERT IGNORE INTO tariff_plans (name, description, is_default, is_flat_rate)
+           VALUES (?, ?, ?, TRUE)`,
+          [
+            'Fisso Mensile',
+            'Listino di default per clienti a canone fisso mensile: non calcola movimentazioni IN/OUT, soste, deposito o flag sulle palette.',
+            shouldBeDefault
+          ]
+        );
+        let flatPlanId = insPlan.insertId;
+        if (!flatPlanId) {
+          const [[existingByName]] = await connection.query('SELECT id FROM tariff_plans WHERE name = ?', ['Fisso Mensile']);
+          if (existingByName) {
+            flatPlanId = existingByName.id;
+            await connection.query('UPDATE tariff_plans SET is_flat_rate = TRUE WHERE id = ?', [flatPlanId]);
+          }
+        }
+        if (flatPlanId) {
+          await connection.query(
+            'UPDATE tariff_plans SET invoice_label = COALESCE(invoice_label, ?) WHERE id = ?',
+            ['Fisso Mensile (Nessun addebito a consumo)', flatPlanId]
+          );
+          await connection.query(
+            'INSERT IGNORE INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, ?, 0.00)',
+            [flatPlanId, 'CANONE_FISSO_MENSILE']
+          );
+        }
+      } else if (flatRows[0]?.id) {
+        await connection.query(
+          'UPDATE tariff_plans SET invoice_label = COALESCE(invoice_label, ?) WHERE id = ?',
+          ['Fisso Mensile (Nessun addebito a consumo)', flatRows[0].id]
+        );
+      }
+    } catch (flatErr) {
+      console.warn('[MIGRATE FLAT PLAN WARNING]', flatErr.message);
+    }
+
+    // Consente archiviazione cronologica di più proforme per lo stesso cliente/mese (rimuove eventuale unique_proforma)
+    try {
+      const [uniqIdx] = await connection.query("SHOW INDEX FROM invoices WHERE Key_name = 'unique_proforma'");
+      if (uniqIdx.length > 0) {
+        try {
+          await connection.query('ALTER TABLE invoices ADD INDEX idx_invoices_cust_period (customer_id, period_month, period_year)');
+        } catch (_) {}
+        await connection.query('ALTER TABLE invoices DROP INDEX unique_proforma');
+      }
+    } catch (invIdxErr) {
+      console.warn('[MIGRATE INVOICES INDEX WARNING]', invIdxErr.message);
+    }
+
     // Allinea OUTBOUND_ITEMS esistenti senza pallet_id o batch per evitare duplicazioni su lotti multipli
     try {
       await connection.query(`
@@ -528,6 +674,69 @@ async function runMigrations() {
       console.warn('[MIGRATE TMS/BILLING WARNING]', tmsBilErr.message);
     }
 
+    // 5c. Bolla di Uscita Automatica & Indirizzi di Consegna Multipli per Cliente
+    try {
+      const [custCols] = await connection.query(`SHOW COLUMNS FROM CUSTOMERS`);
+      const custColNames = new Set(custCols.map(c => c.Field));
+      if (!custColNames.has('generate_exit_ddt')) {
+        await connection.query(`ALTER TABLE CUSTOMERS ADD COLUMN generate_exit_ddt BOOLEAN DEFAULT TRUE`);
+        await connection.query(`UPDATE CUSTOMERS SET generate_exit_ddt = 1 WHERE generate_exit_ddt IS NULL`);
+      }
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS CUSTOMER_DELIVERY_ADDRESSES (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          customer_id INT NOT NULL,
+          label VARCHAR(120) NOT NULL,
+          address_line VARCHAR(255) NOT NULL,
+          city VARCHAR(120) DEFAULT NULL,
+          cap VARCHAR(20) DEFAULT NULL,
+          province VARCHAR(20) DEFAULT NULL,
+          country VARCHAR(80) DEFAULT 'Italia',
+          contact_name VARCHAR(120) DEFAULT NULL,
+          contact_phone VARCHAR(60) DEFAULT NULL,
+          notes VARCHAR(255) DEFAULT NULL,
+          is_default BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_cust_deliv_addr_cust (customer_id, is_default),
+          FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+        )
+      `);
+
+      const [outCols] = await connection.query(`SHOW COLUMNS FROM OUTBOUND_ORDERS`);
+      const outColNames = new Set(outCols.map(c => c.Field));
+      if (!outColNames.has('generate_exit_ddt')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN generate_exit_ddt BOOLEAN DEFAULT TRUE`);
+      }
+      if (!outColNames.has('bolla_number')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN bolla_number VARCHAR(60) DEFAULT NULL`);
+      }
+      if (!outColNames.has('bolla_generated_at')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN bolla_generated_at DATETIME DEFAULT NULL`);
+      }
+      if (!outColNames.has('delivery_address_id')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN delivery_address_id INT DEFAULT NULL`);
+      }
+      if (!outColNames.has('delivery_label')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN delivery_label VARCHAR(120) DEFAULT NULL`);
+      }
+      if (!outColNames.has('delivery_address_text')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN delivery_address_text TEXT DEFAULT NULL`);
+      }
+      if (!outColNames.has('bolla_options')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN bolla_options JSON DEFAULT NULL`);
+      }
+
+      const [ddtItemCols] = await connection.query(`SHOW COLUMNS FROM INBOUND_DDT_ITEMS`);
+      const ddtItemColNames = new Set(ddtItemCols.map(c => c.Field));
+      if (!ddtItemColNames.has('flags')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN flags JSON DEFAULT NULL`);
+      }
+      console.log('✅ Schema Bolla di Uscita e Indirizzi Consegna verificato.');
+    } catch (bollaMigErr) {
+      console.warn('[MIGRATE BOLLA WARNING]', bollaMigErr.message);
+    }
+
     // 6. Consolidamento automatico posizioni e merce identica (stessa posizione + stesso prodotto + stesso lotto)
     try {
       const { consolidateLocationPallets } = require('../utils/palletConsolidation');
@@ -564,6 +773,7 @@ async function runMigrations() {
         ['OUTBOUND_ORDERS', 'idx_outbound_customer_status', 'customer_id, status'],
         ['OUTBOUND_ORDERS', 'idx_outbound_shipped', 'shipped_at'],
         ['OUTBOUND_ORDERS', 'idx_outbound_exit_date', 'exit_date'],
+        ['OUTBOUND_ORDERS', 'idx_outbound_bolla_number', 'bolla_number'],
         ['OUTBOUND_ITEMS', 'idx_out_items_order_status', 'order_id, status'],
         ['OUTBOUND_ITEMS', 'idx_out_items_pallet_id', 'pallet_id'],
         ['OUTBOUND_ITEMS', 'idx_out_items_pallet_code', 'pallet_code'],

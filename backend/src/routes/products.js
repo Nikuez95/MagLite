@@ -34,6 +34,25 @@ async function productRoutes(fastify, options) {
     }
   });
 
+  // GET /api/products/tariff-plans (accessibile a tutti gli operatori autenticati, es. Nuova Merce In)
+  fastify.get('/tariff-plans', async (request, reply) => {
+    try {
+      const [rows] = await db.query(
+        `SELECT id, name, description, is_default, is_flat_rate
+         FROM tariff_plans
+         ORDER BY is_flat_rate DESC, is_default DESC, name ASC`
+      );
+      return rows.map(r => ({
+        ...r,
+        is_default: Boolean(r.is_default),
+        is_flat_rate: Boolean(r.is_flat_rate)
+      }));
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore recupero listini globali' });
+    }
+  });
+
   // GET /api/products/flags
   fastify.get('/flags', async (request, reply) => {
     try {

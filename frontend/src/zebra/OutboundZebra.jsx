@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   PackageMinus,
   MapPin,
@@ -19,7 +19,12 @@ import {
   Sparkles,
   Minus,
   Plus,
-  Users
+  Users,
+  FileText,
+  ShieldAlert,
+  Thermometer,
+  Truck,
+  Scale
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
@@ -174,16 +179,26 @@ const formatLocationLabel = (item) => {
 
 const OutboundZebra = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const token = localStorage.getItem('maglite_token');
 
   const [order, setOrder] = useState(null);
   const [allOrderItems, setAllOrderItems] = useState([]);
   const [items, setItems] = useState([]);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
-  // Steps: SCAN_ORDER, SCAN_PIN, SCAN_PALLET, SELECT_MIXED_ITEM, INPUT_QTY, PICK_CONFIRMED, FINISHED
+  // Steps: SCAN_ORDER, SCAN_PIN, SCAN_PALLET, SELECT_MIXED_ITEM, INPUT_QTY, PICK_CONFIRMED, READY_DISPATCH, DISPATCH_CONFIRMED, FINISHED
   const [step, setStep] = useState('SCAN_ORDER');
 
   const [pendingOrders, setPendingOrders] = useState([]);
+  const [readyOrders, setReadyOrders] = useState([]);
+  const [orderListTab, setOrderListTab] = useState(location.state?.defaultTab === 'READY' ? 'READY' : 'PICKING');
+
+  // Verifica & Carico Bolla (READY_DISPATCH)
+  const [recheckMode, setRecheckMode] = useState(false);
+  const [recheckedItemIds, setRecheckedItemIds] = useState([]);
+  const [dispatchPlate, setDispatchPlate] = useState('');
+  const [dispatchConfirmedInfo, setDispatchConfirmedInfo] = useState(null);
+  const [lastBollaGenerated, setLastBollaGenerated] = useState(null);
   const [scannedOrder, setScannedOrder] = useState('');
   const [scannedPin, setScannedPin] = useState('');
   const [scannedPallet, setScannedPallet] = useState('');
@@ -214,17 +229,24 @@ const OutboundZebra = () => {
   const currentItem = items[currentItemIndex];
 
   const fetchPendingOrders = useCallback(() => {
-    axios
-      .get(`http://${window.location.hostname}:3000/api/outbound?active_only=true`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      .then((res) => {
-        const active = (res.data || []).filter(
-          (o) => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'RETURNED'
-        );
-        setPendingOrders(active);
-      })
-      .catch(() => {});
+    Promise.all([
+      axios
+        .get(`http://${window.location.hostname}:3000/api/outbound?active_only=true`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        .catch(() => ({ data: [] })),
+      axios
+        .get(`http://${window.location.hostname}:3000/api/outbound?ready_only=true`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        .catch(() => ({ data: [] }))
+    ]).then(([actRes, readyRes]) => {
+      const active = (actRes.data || []).filter(
+        (o) => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'RETURNED'
+      );
+      setPendingOrders(active);
+      setReadyOrders(readyRes.data || []);
+    });
   }, [token]);
 
   // Carica lista ordini attivi (PENDING / PICKING) per avvio rapido con 1 tap + aggiornamento real-time
@@ -428,7 +450,26 @@ const OutboundZebra = () => {
       return;
     }
 
-    if (step === 'INPUT_QTY' || step === 'SELECT_MIXED_ITEM') return;
+    if (step === 'INPUT_QTY' || step === 'SELECT_MIXED_ITEM' || step === 'DISPATCH_CONFIRMED') return;
+
+    if (step === 'READY_DISPATCH') {
+      if (!recheckMode) return;
+      const cleanScan = barcode.toUpperCase();
+      const matchingItems = allOrderItems.filter((it) => {
+        const pCode = String(it.pallet_code || '').trim().toUpperCase();
+        const cCode = String(it.client_pallet_number || '').trim().toUpperCase();
+        return pCode === cleanScan || (cCode && cCode === cleanScan);
+      });
+      if (matchingItems.length === 0) {
+        setError(`Paletta "${barcode}" NON appartiene a questa bolla di uscita (${order?.bolla_number || order?.order_code})!`);
+        return;
+      }
+      const nextUnchecked = matchingItems.find((it) => !recheckedItemIds.includes(it.id)) || matchingItems[0];
+      setRecheckedItemIds((prev) => (prev.includes(nextUnchecked.id) ? prev : [...prev, nextUnchecked.id]));
+      setError(null);
+      try { navigator.vibrate?.(120); } catch (_) {}
+      return;
+    }
 
     setError(null);
     if (step === 'SCAN_ORDER') {
@@ -460,9 +501,14 @@ const OutboundZebra = () => {
       setItems(remaining);
       setPreviousLocationKey(null);
       setLastPickedSummary(null);
+      setLastBollaGenerated(data.order?.bolla_number || null);
 
-      if (remaining.length === 0) {
-        setStep('FINISHED');
+      if (data.order?.status === 'READY' || remaining.length === 0) {
+        setRecheckMode(false);
+        setRecheckedItemIds([]);
+        setDispatchPlate(data.order?.bolla_options_parsed?.vehicle_plate || '');
+        setDispatchConfirmedInfo(null);
+        setStep('READY_DISPATCH');
       } else {
         setCurrentItemIndex(0);
         checkAndSkipPin(remaining[0]);
@@ -470,6 +516,16 @@ const OutboundZebra = () => {
     },
     [checkAndSkipPin]
   );
+
+  // Avvio automatico se arriviamo dalla Home Zebra con scansione OUT- / BOL- o tab specifica
+  useEffect(() => {
+    if (location.state?.initialCode) {
+      const initCode = String(location.state.initialCode).trim().toUpperCase();
+      setScannedOrder(initCode);
+      fetchOrder(initCode);
+      navigate('/zebra/outbound', { replace: true, state: {} });
+    }
+  }, [location.state]);
 
   const fetchOrder = async (code, forceJoin = false) => {
     const cleanCode = String(code || '').trim().toUpperCase();
@@ -551,6 +607,10 @@ const OutboundZebra = () => {
       );
 
       if (res.data.all_picked) {
+        if (res.data.bolla_number) {
+          setLastBollaGenerated(res.data.bolla_number);
+          setOrder((prev) => (prev ? { ...prev, bolla_number: res.data.bolla_number, status: 'READY' } : prev));
+        }
         setStep('FINISHED');
       } else {
         const nextItems = currentItemsList.filter((i) => i.id !== targetItem.id);
@@ -649,8 +709,41 @@ const OutboundZebra = () => {
 
   // ============================================================================
   // STEP 1: SCANSIONE O SELEZIONE ORDINE (DDT)
+  const confirmDispatchShipment = async () => {
+    if (!order?.order_code || isProcessing) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const res = await axios.post(
+        `http://${window.location.hostname}:3000/api/outbound/${order.order_code}/confirm`,
+        {
+          source: 'ZEBRA',
+          recheck_completed: recheckMode || recheckedItemIds.length > 0,
+          rechecked_items: recheckedItemIds.length,
+          vehicle_plate: dispatchPlate.trim()
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      try { navigator.vibrate?.([120, 60, 180]); } catch (_) {}
+      setDispatchConfirmedInfo({
+        order_code: res.data?.order_code || order.order_code,
+        bolla_number: res.data?.bolla_number || order.bolla_number || lastBollaGenerated,
+        customer_name: order.customer_name,
+        rechecked: recheckedItemIds.length
+      });
+      setStep('DISPATCH_CONFIRMED');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Errore nella conferma spedizione');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // ============================================================================
+  // STEP 1: SCANSIONE ORDINE / BOLLA
   // ============================================================================
   if (step === 'SCAN_ORDER') {
+    const displayedOrders = orderListTab === 'READY' ? readyOrders : pendingOrders;
     return (
       <div className="flex-1 p-4 flex flex-col max-w-md mx-auto w-full">
         <ZebraErrorModal message={error} onClose={() => setError(null)} />
@@ -724,8 +817,10 @@ const OutboundZebra = () => {
             <ChevronLeft size={24} />
           </button>
           <div>
-            <h2 className="text-2xl font-black text-brand-white leading-tight">Picking Guidato</h2>
-            <p className="text-slate-400 text-xs font-semibold">Scansiona il DDT o tocca un ordine pronto</p>
+            <h2 className="text-2xl font-black text-brand-white leading-tight">
+              {orderListTab === 'READY' ? 'Carico & Bolle Pronte' : 'Picking & Carico'}
+            </h2>
+            <p className="text-slate-400 text-xs font-semibold">Scansiona Ordine (OUT) o Bolla (BOL)</p>
           </div>
         </div>
 
@@ -736,11 +831,11 @@ const OutboundZebra = () => {
           </div>
         )}
 
-        {/* Box Scansione Laser DDT senza apertura automatica tastiera */}
+        {/* Box Scansione Laser DDT / Bolla senza apertura automatica tastiera */}
         <div className="bg-slate-900 border-2 border-brand-blue/40 rounded-3xl p-4 mb-4 shadow-lg">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black uppercase tracking-wider text-brand-blue flex items-center gap-1.5">
-              <ScanBarcode size={16} /> Laser attivo — Spara codice DDT
+              <ScanBarcode size={16} /> Laser attivo — Spara Ordine o Bolla
             </span>
             <button
               type="button"
@@ -762,7 +857,7 @@ const OutboundZebra = () => {
               type="text"
               inputMode={keyboardOpen ? 'text' : 'none'}
               disabled={isProcessing || Boolean(joinConfirmData)}
-              placeholder={keyboardOpen ? 'Digita OUT-...' : 'In attesa di scansione laser...'}
+              placeholder={keyboardOpen ? 'Digita OUT-... o BOL-...' : 'In attesa di scansione laser...'}
               className="bg-slate-950 border-2 border-slate-700 p-3.5 rounded-2xl text-lg font-mono font-bold w-full uppercase focus:border-brand-blue focus:outline-none text-brand-white"
               value={scannedOrder}
               onBlur={() => setKeyboardOpen(false)}
@@ -770,7 +865,7 @@ const OutboundZebra = () => {
                 if (joinConfirmData) return;
                 const val = e.target.value.toUpperCase();
                 setScannedOrder(val);
-                if (val.length >= 17 && val.startsWith('OUT-')) fetchOrder(val);
+                if (val.length >= 15 && (val.startsWith('OUT-') || val.startsWith('BOL-'))) fetchOrder(val);
               }}
               onKeyDown={(e) => e.key === 'Enter' && scannedOrder && !joinConfirmData && fetchOrder(scannedOrder)}
             />
@@ -784,51 +879,93 @@ const OutboundZebra = () => {
           </div>
         </div>
 
-        {/* Lista Ordini Attivi da Prelevare (1-Tap Start) */}
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex items-center justify-between mb-2 px-1">
-            <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-              Ordini da Prelevare ({pendingOrders.length})
-            </span>
-          </div>
+        {/* Switcher Tab: Da Prelevare vs Bolle Pronte Carico */}
+        <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-900 border border-slate-800 rounded-2xl mb-3">
+          <button
+            type="button"
+            onClick={() => setOrderListTab('PICKING')}
+            className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 ${
+              orderListTab === 'PICKING'
+                ? 'bg-emerald-500 text-emerald-950 shadow'
+                : 'text-slate-400 active:text-white'
+            }`}
+          >
+            <PackageMinus size={14} /> Da Prelevare ({pendingOrders.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrderListTab('READY')}
+            className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 ${
+              orderListTab === 'READY'
+                ? 'bg-sky-400 text-brand-black shadow'
+                : 'text-slate-400 active:text-white'
+            }`}
+          >
+            <FileText size={14} /> Bolle Pronte ({readyOrders.length})
+          </button>
+        </div>
 
+        {/* Lista Ordini */}
+        <div className="flex-1 flex flex-col min-h-0">
           <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
-            {pendingOrders.length === 0 ? (
+            {displayedOrders.length === 0 ? (
               <div className="bg-slate-900/50 border border-slate-800 border-dashed rounded-2xl p-6 text-center text-slate-500 text-sm font-semibold">
-                Nessun ordine in attesa. Scansiona un codice DDT per iniziare.
+                {orderListTab === 'READY'
+                  ? 'Nessuna bolla pronta in attesa di carico. Scansiona BOL-... per verificare o spedire.'
+                  : 'Nessun ordine in attesa. Scansiona un codice DDT per iniziare.'}
               </div>
             ) : (
-              pendingOrders.map((ord) => (
+              displayedOrders.map((ord) => (
                 <button
                   key={ord.id}
                   onClick={() => {
-                    setScannedOrder(ord.order_code);
+                    const target = ord.bolla_number || ord.order_code;
+                    setScannedOrder(target);
                     fetchOrder(ord.order_code);
                   }}
                   disabled={isProcessing || Boolean(joinConfirmData)}
-                  className="w-full text-left bg-slate-900 hover:bg-slate-800/90 active:scale-[0.99] border-2 border-slate-800 hover:border-brand-blue/60 p-4 rounded-2xl transition-all flex items-center justify-between gap-3"
+                  className={`w-full text-left bg-slate-900 hover:bg-slate-800/90 active:scale-[0.99] border-2 p-4 rounded-2xl transition-all flex items-center justify-between gap-3 ${
+                    ord.status === 'READY'
+                      ? 'border-sky-500/40 hover:border-sky-400'
+                      : 'border-slate-800 hover:border-brand-blue/60'
+                  }`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="font-mono font-black text-brand-blue text-base">{ord.order_code}</span>
-                      <span
-                        className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
-                          ord.status === 'PICKING'
-                            ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                            : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
-                        }`}
-                      >
-                        {ord.status === 'PICKING'
-                          ? `In Corso${ord.picking_operator ? ` · ${ord.picking_operator}` : ''}`
-                          : 'Da Iniziare'}
+                      <span className="font-mono font-black text-brand-blue text-base">
+                        {ord.status === 'READY' && ord.bolla_number ? ord.bolla_number : ord.order_code}
                       </span>
+                      {ord.status === 'READY' ? (
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Pronta al Carico
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                            ord.status === 'PICKING'
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
+                          }`}
+                        >
+                          {ord.status === 'PICKING'
+                            ? `In Corso${ord.picking_operator ? ` · ${ord.picking_operator}` : ''}`
+                            : 'Da Iniziare'}
+                        </span>
+                      )}
                     </div>
                     <p className="text-brand-white font-bold text-base truncate">{ord.customer_name}</p>
+                    {ord.status === 'READY' && ord.delivery_address_text && (
+                      <p className="text-sky-300 text-xs truncate mt-0.5 flex items-center gap-1">
+                        <MapPin size={11} className="shrink-0" /> {ord.delivery_address_text}
+                      </p>
+                    )}
                     {ord.products && (
                       <p className="text-slate-400 text-xs truncate mt-0.5">{ord.products}</p>
                     )}
                   </div>
-                  <div className="w-10 h-10 rounded-xl bg-brand-blue/15 text-brand-blue flex items-center justify-center shrink-0">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                    ord.status === 'READY' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-brand-blue/15 text-brand-blue'
+                  }`}>
                     <ArrowRight size={20} />
                   </div>
                 </button>
@@ -841,33 +978,293 @@ const OutboundZebra = () => {
   }
 
   // ============================================================================
-  // STEP FINALE: ORDINE COMPLETATO
+  // STEP VERIFICA & CARICO BOLLA (ORDINE PRONTO -> SEGNA SPEDITO O RICONTROLLA)
   // ============================================================================
-  if (step === 'FINISHED') {
+  if (step === 'READY_DISPATCH') {
+    const bollaOpts = order?.bolla_options_parsed || {};
+    const totalPallets = new Set(allOrderItems.map(i => i.pallet_code).filter(Boolean)).size || allOrderItems.length;
+    const totalNet = allOrderItems.reduce((acc, it) => acc + (parseFloat(it.net_weight_kg) || 0), 0);
+    const totalGross = allOrderItems.reduce((acc, it) => acc + (parseFloat(it.gross_weight_kg) || 0), 0);
+    const recheckedCount = recheckedItemIds.length;
+    const allRechecked = allOrderItems.length > 0 && recheckedCount >= allOrderItems.length;
+
+    return (
+      <div className="flex-1 p-4 flex flex-col max-w-md mx-auto w-full">
+        <ZebraErrorModal message={error} onClose={() => setError(null)} />
+
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <button
+            onClick={() => {
+              setOrder(null);
+              setScannedOrder('');
+              setRecheckMode(false);
+              setStep('SCAN_ORDER');
+            }}
+            className="p-2.5 bg-slate-800 active:bg-slate-700 rounded-2xl text-brand-white shrink-0"
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono font-black text-sky-400 text-base">
+                {order?.bolla_number || lastBollaGenerated || order?.order_code}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black uppercase">
+                Pronta per Carico
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 font-bold truncate">
+              Ordine: {order?.order_code} • {order?.customer_name}
+            </p>
+          </div>
+        </div>
+
+        {/* Allerte ADR / Temperatura se attive */}
+        {(bollaOpts.is_adr || bollaOpts.temp_6_8 || bollaOpts.temp_15_25) && (
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {bollaOpts.is_adr && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-rose-500/20 border border-rose-500/50 text-rose-300 text-xs font-black">
+                <ShieldAlert size={13} /> ADR {bollaOpts.adr_note ? `(${bollaOpts.adr_note})` : ''}
+              </span>
+            )}
+            {bollaOpts.temp_6_8 && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-xs font-black">
+                <Thermometer size={13} /> TEMP. +6/+8°C
+              </span>
+            )}
+            {bollaOpts.temp_15_25 && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs font-black">
+                <Thermometer size={13} /> TEMP. +15/+25°C
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Destinazione + Pesi / Bancali */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 mb-3 space-y-2">
+          <div className="flex items-start gap-2 text-xs">
+            <MapPin size={15} className="text-sky-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="text-[10px] font-black uppercase text-slate-500">
+                Consegna: {order?.delivery_label || 'Destinatario'}
+              </div>
+              <div className="text-white font-semibold leading-snug">
+                {order?.delivery_address_text || order?.customer_address || 'Sede cliente'}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-center">
+            <div className="bg-slate-950 rounded-xl p-2">
+              <div className="text-[10px] font-bold text-slate-500">BANCALI</div>
+              <div className="text-base font-black text-white">{totalPallets}</div>
+            </div>
+            <div className="bg-slate-950 rounded-xl p-2">
+              <div className="text-[10px] font-bold text-slate-500">KG NETTI</div>
+              <div className="text-sm font-black text-emerald-400">{totalNet > 0 ? totalNet.toFixed(1) : 'N.D.'}</div>
+            </div>
+            <div className="bg-slate-950 rounded-xl p-2">
+              <div className="text-[10px] font-bold text-slate-500">KG LORDI</div>
+              <div className="text-sm font-black text-sky-400">{totalGross > 0 ? totalGross.toFixed(1) : 'N.D.'}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Toggle Modalità Ricontrollo Merce prima del carico */}
+        <button
+          type="button"
+          onClick={() => setRecheckMode((v) => !v)}
+          className={`w-full mb-3 p-3.5 rounded-2xl border-2 font-black text-sm flex items-center justify-between transition-all ${
+            recheckMode
+              ? 'bg-sky-500/15 border-sky-400 text-sky-300'
+              : 'bg-slate-900 border-slate-700 text-slate-200 active:border-brand-blue'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <ScanBarcode size={18} />
+            {recheckMode ? 'Ricontrollo Attivo — Spara Palette' : 'Ricontrolla Merce Prima di Caricare'}
+          </span>
+          <span className="px-2.5 py-0.5 rounded-full bg-slate-950 text-xs font-mono">
+            {recheckMode ? `${recheckedCount}/${allOrderItems.length}` : 'Opzionale'}
+          </span>
+        </button>
+
+        {/* Elenco Palette / Articoli della Bolla (clic o scan per verificare se recheckMode attivo) */}
+        <div className="flex-1 overflow-y-auto space-y-2 mb-3 pr-0.5">
+          {allOrderItems.map((it) => {
+            const isVerified = recheckedItemIds.includes(it.id);
+            const qInfo = getPickQuantityInfo(it);
+            return (
+              <div
+                key={it.id}
+                onClick={() => {
+                  if (!recheckMode) return;
+                  setRecheckedItemIds((prev) =>
+                    prev.includes(it.id) ? prev.filter((id) => id !== it.id) : [...prev, it.id]
+                  );
+                }}
+                className={`p-3 rounded-2xl border-2 transition-all flex items-center justify-between gap-2.5 ${
+                  recheckMode ? 'cursor-pointer active:scale-[0.99]' : ''
+                } ${
+                  isVerified
+                    ? 'bg-emerald-950/30 border-emerald-500'
+                    : 'bg-slate-900 border-slate-800'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono font-black text-xs text-brand-blue">
+                      {(it.pallet_code || '').startsWith('NOBAR-') ? 'Senza Bar.' : it.pallet_code}
+                    </span>
+                    {it.batch && (
+                      <span className="text-[11px] font-mono text-amber-300">Lotto: {it.batch}</span>
+                    )}
+                  </div>
+                  <p className="text-sm font-bold text-white truncate">{it.product_name}</p>
+                  {(it.net_weight_kg || it.gross_weight_kg) && (
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      Netto: {it.net_weight_kg ?? '-'} kg • Lordo: {it.gross_weight_kg ?? '-'} kg
+                    </p>
+                  )}
+                </div>
+                <div className="text-right shrink-0 flex items-center gap-2">
+                  <div>
+                    <div className="text-xs font-black text-emerald-400">{qInfo.primaryText}</div>
+                    {qInfo.hasBoxConversion && (
+                      <div className="text-[10px] text-slate-400">({qInfo.qty} pz)</div>
+                    )}
+                  </div>
+                  {recheckMode && (
+                    <div className={`w-7 h-7 rounded-xl flex items-center justify-center border ${
+                      isVerified
+                        ? 'bg-emerald-500 border-emerald-400 text-emerald-950'
+                        : 'bg-slate-950 border-slate-700 text-slate-600'
+                    }`}>
+                      <Check size={16} strokeWidth={3} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Targa Mezzo opzionale + Bottone Segna Spedito */}
+        <div className="space-y-2.5 pt-1">
+          <input
+            type="text"
+            value={dispatchPlate}
+            onChange={(e) => setDispatchPlate(e.target.value.toUpperCase())}
+            placeholder="Targa Camion (opzionale, es. AB123CD)"
+            className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3.5 py-2.5 text-sm font-mono uppercase focus:border-brand-blue outline-none"
+          />
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={confirmDispatchShipment}
+            className="w-full bg-emerald-500 active:bg-emerald-400 text-emerald-950 p-4 rounded-2xl font-black text-lg flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(16,185,129,0.3)] disabled:opacity-50"
+          >
+            <Truck size={22} />
+            <span>
+              {isProcessing
+                ? 'Conferma in corso...'
+                : recheckMode && !allRechecked
+                ? `SEGNA SPEDITO (${recheckedCount}/${allOrderItems.length} verificati)`
+                : 'SEGNA COME SPEDITO'}
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // STEP SPEDIZIONE CONFERMATA (DA ZEBRA)
+  // ============================================================================
+  if (step === 'DISPATCH_CONFIRMED') {
     return (
       <div className="flex-1 p-6 flex flex-col items-center justify-center text-center max-w-md mx-auto w-full">
-        <div className="w-24 h-24 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(16,185,129,0.3)]">
-          <CheckCircle size={56} className="text-emerald-400" />
+        <div className="w-24 h-24 rounded-full bg-sky-500/20 border-2 border-sky-400 flex items-center justify-center mb-5 shadow-[0_0_40px_rgba(56,189,248,0.3)]">
+          <Truck size={50} className="text-sky-400" />
         </div>
-        <h2 className="text-3xl font-black text-brand-white mb-2">Picking Completato!</h2>
-        <p className="text-emerald-400 font-mono font-bold text-lg mb-2">{order?.order_code}</p>
-        <p className="text-slate-400 text-base mb-8">
-          Tutti i {allOrderItems.length} prelievi sono stati validati. Porta la merce in area di carico.
+        <h2 className="text-3xl font-black text-white mb-2">Merce Spedita!</h2>
+        <p className="text-sky-400 font-mono font-bold text-lg">
+          {dispatchConfirmedInfo?.bolla_number || dispatchConfirmedInfo?.order_code}
+        </p>
+        <p className="text-slate-300 text-sm font-semibold mt-1">
+          {dispatchConfirmedInfo?.customer_name}
+        </p>
+        <p className="text-slate-400 text-xs mt-2 mb-7">
+          Giacenze scaricate dal magazzino definitivamente.
+          {dispatchConfirmedInfo?.rechecked > 0 && ` Ricontrollo completato su ${dispatchConfirmedInfo.rechecked} righe.`}
         </p>
 
         <button
           onClick={() => {
             setOrder(null);
             setScannedOrder('');
+            setOrderListTab('READY');
             setStep('SCAN_ORDER');
           }}
-          className="w-full bg-emerald-500 active:bg-emerald-400 text-emerald-950 p-4 rounded-2xl font-black text-xl mb-3 transition-all"
+          className="w-full bg-sky-400 active:bg-sky-300 text-brand-black p-4 rounded-2xl font-black text-lg mb-3 transition-all"
+        >
+          Carica / Scansiona Altra Bolla
+        </button>
+        <button
+          onClick={() => navigate('/zebra')}
+          className="w-full bg-slate-800 hover:bg-slate-700 text-brand-white p-4 rounded-2xl font-bold text-base transition-colors"
+        >
+          Torna alla Home
+        </button>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // STEP FINALE: PICKING COMPLETATO (CON ACCESSO RAPIDO A CARICO BOLLA)
+  // ============================================================================
+  if (step === 'FINISHED') {
+    const bollaCode = order?.bolla_number || lastBollaGenerated;
+    return (
+      <div className="flex-1 p-6 flex flex-col items-center justify-center text-center max-w-md mx-auto w-full">
+        <div className="w-24 h-24 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(16,185,129,0.3)]">
+          <CheckCircle size={56} className="text-emerald-400" />
+        </div>
+        <h2 className="text-3xl font-black text-brand-white mb-2">Picking Completato!</h2>
+        <p className="text-emerald-400 font-mono font-bold text-lg mb-1">{order?.order_code}</p>
+        {bollaCode && (
+          <div className="px-3.5 py-1.5 rounded-xl bg-sky-500/15 border border-sky-400/40 text-sky-300 font-mono font-black text-sm mb-3">
+            Bolla Generata: {bollaCode}
+          </div>
+        )}
+        <p className="text-slate-400 text-sm mb-7">
+          Tutti i {allOrderItems.length} prelievi sono stati validati. Porta la merce in area di carico.
+        </p>
+
+        <button
+          onClick={() => {
+            setRecheckMode(false);
+            setRecheckedItemIds([]);
+            setStep('READY_DISPATCH');
+          }}
+          className="w-full bg-sky-400 active:bg-sky-300 text-brand-black p-4 rounded-2xl font-black text-lg mb-3 transition-all flex items-center justify-center gap-2"
+        >
+          <Truck size={22} /> Verifica &amp; Segna Spedito Ora
+        </button>
+        <button
+          onClick={() => {
+            setOrder(null);
+            setScannedOrder('');
+            setStep('SCAN_ORDER');
+          }}
+          className="w-full bg-emerald-500 active:bg-emerald-400 text-emerald-950 p-4 rounded-2xl font-black text-lg mb-3 transition-all"
         >
           Preleva Altro Ordine
         </button>
         <button
           onClick={() => navigate('/zebra')}
-          className="w-full bg-slate-800 hover:bg-slate-700 text-brand-white p-4 rounded-2xl font-bold text-lg transition-colors"
+          className="w-full bg-slate-800 hover:bg-slate-700 text-brand-white p-4 rounded-2xl font-bold text-base transition-colors"
         >
           Torna alla Home
         </button>

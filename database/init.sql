@@ -20,7 +20,42 @@ CREATE TABLE IF NOT EXISTS CUSTOMERS (
     address TEXT,
     phone VARCHAR(50),
     email VARCHAR(100),
-    parent_id INT DEFAULT NULL
+    parent_id INT DEFAULT NULL,
+    notes TEXT DEFAULT NULL,
+    tariff_plan_id INT DEFAULT NULL,
+    generate_exit_ddt BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS CUSTOMER_DELIVERY_ADDRESSES (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    label VARCHAR(120) NOT NULL,
+    address_line VARCHAR(255) NOT NULL,
+    city VARCHAR(120) DEFAULT NULL,
+    cap VARCHAR(20) DEFAULT NULL,
+    province VARCHAR(20) DEFAULT NULL,
+    country VARCHAR(80) DEFAULT 'Italia',
+    contact_name VARCHAR(120) DEFAULT NULL,
+    contact_phone VARCHAR(60) DEFAULT NULL,
+    notes VARCHAR(255) DEFAULT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_cust_deliv_addr_cust (customer_id, is_default),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS CUSTOMER_NOTES (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    content TEXT NOT NULL,
+    username VARCHAR(100) DEFAULT 'Sistema',
+    is_pinned BOOLEAN DEFAULT FALSE,
+    pinned_at DATETIME DEFAULT NULL,
+    pinned_by VARCHAR(100) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_customer_notes_cust_pin_date (customer_id, is_pinned, created_at),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS PRODUCTS (
@@ -79,6 +114,9 @@ CREATE TABLE IF NOT EXISTS PALLETS (
     quarantined_at DATETIME DEFAULT NULL,
     quarantined_by VARCHAR(100) DEFAULT NULL,
     quarantine_notes TEXT DEFAULT NULL,
+    tariff_plan_id INT DEFAULT NULL,
+    net_weight_kg DECIMAL(10,2) DEFAULT NULL,
+    gross_weight_kg DECIMAL(10,2) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_pallets_status_qty (status, quantity),
     INDEX idx_pallets_code (pallet_code),
@@ -110,12 +148,20 @@ CREATE TABLE IF NOT EXISTS OUTBOUND_ORDERS (
   last_returned_at DATETIME DEFAULT NULL,
   last_returned_by VARCHAR(100) DEFAULT NULL,
   last_return_reason VARCHAR(255) DEFAULT NULL,
+  generate_exit_ddt BOOLEAN DEFAULT TRUE,
+  bolla_number VARCHAR(60) DEFAULT NULL,
+  bolla_generated_at DATETIME DEFAULT NULL,
+  delivery_address_id INT DEFAULT NULL,
+  delivery_label VARCHAR(120) DEFAULT NULL,
+  delivery_address_text TEXT DEFAULT NULL,
+  bolla_options JSON DEFAULT NULL,
   created_by VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_outbound_status_created (status, created_at),
   INDEX idx_outbound_customer_status (customer_id, status),
   INDEX idx_outbound_shipped (shipped_at),
   INDEX idx_outbound_exit_date (exit_date),
+  INDEX idx_outbound_bolla_number (bolla_number),
   FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id)
 );
 
@@ -167,7 +213,8 @@ INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_ty
 ('SOSTA_15', 'Sosta (Ingresso <= 15)', 4.00, 'STORAGE'),
 ('SOSTA_MAGGIORE_15', 'Sosta (Ingresso > 15)', 8.00, 'STORAGE'),
 ('DEPOSITO_PALLET', 'Deposito Paletta (Giacenza Rimasta)', 10.00, 'STORAGE'),
-('SOSTA_GIORNO', 'Sosta Giornaliera (Prezzo al Giorno per Paletta)', 0.50, 'STORAGE');
+('SOSTA_GIORNO', 'Sosta Giornaliera (Prezzo al Giorno per Paletta)', 0.50, 'STORAGE'),
+('CANONE_FISSO_MENSILE', 'Fisso Mensile (Nessun calcolo automatico)', 0.00, 'MANUAL');
 
 CREATE TABLE IF NOT EXISTS client_tariffs (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -176,6 +223,37 @@ CREATE TABLE IF NOT EXISTS client_tariffs (
     custom_price DECIMAL(10,2) NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY(customer_id, rule_code)
+);
+
+CREATE TABLE IF NOT EXISTS tariff_plans (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    description TEXT DEFAULT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    is_flat_rate BOOLEAN DEFAULT FALSE,
+    invoice_label VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tariff_plan_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    plan_id INT NOT NULL,
+    rule_code VARCHAR(50) NOT NULL,
+    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    UNIQUE KEY unique_plan_rule (plan_id, rule_code),
+    FOREIGN KEY (plan_id) REFERENCES tariff_plans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS customer_plan_tariffs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    plan_id INT NOT NULL,
+    rule_code VARCHAR(50) NOT NULL,
+    custom_price DECIMAL(10,2) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_cust_plan_rule (customer_id, plan_id, rule_code),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES tariff_plans(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -194,7 +272,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     invoice_data JSON DEFAULT NULL,
     is_paid BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_proforma (customer_id, period_month, period_year)
+    INDEX idx_invoices_cust_period (customer_id, period_month, period_year)
 );
 
 CREATE TABLE IF NOT EXISTS expenses (
@@ -260,6 +338,11 @@ CREATE TABLE IF NOT EXISTS INBOUND_DDT_ITEMS (
     client_article_number VARCHAR(100),
     expiration_date DATE,
     location VARCHAR(50) DEFAULT NULL,
+    tariff_plan_id INT DEFAULT NULL,
+    net_weight_kg DECIMAL(10,2) DEFAULT NULL,
+    gross_weight_kg DECIMAL(10,2) DEFAULT NULL,
+    pallet_group VARCHAR(50) DEFAULT NULL,
+    flags JSON DEFAULT NULL,
     notes TEXT,
     FOREIGN KEY (inbound_ddt_id) REFERENCES INBOUND_DDTS(id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES PRODUCTS(id)

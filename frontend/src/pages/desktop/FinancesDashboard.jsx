@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Loader2, TrendingUp, TrendingDown, DollarSign, Activity, Users } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
+import { Loader2, TrendingUp, TrendingDown, DollarSign, Activity, Users, Archive, Calculator } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useNavigate } from 'react-router-dom';
+import FinanceAdminNav from '../../components/FinanceAdminNav';
 
 const FinancesDashboard = () => {
+  const navigate = useNavigate();
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -40,38 +43,57 @@ const FinancesDashboard = () => {
   const totalUnpaid = timeline.reduce((acc, curr) => acc + (curr.unpaid || 0), 0);
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-brand-black min-h-screen">
-      <div className="max-w-7xl mx-auto animate-fade-in-up space-y-8">
-        
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2 flex items-center gap-3">
-            <Activity className="text-brand-blue" size={32} />
-            Dashboard Finanziaria & Statistiche
-          </h1>
-          <p className="text-slate-400">Analisi entrate, uscite, utile netto e previsioni di spesa dei clienti.</p>
+    <div className="flex-1 p-6 md:p-8 overflow-y-auto bg-brand-black min-h-screen">
+      <div className="max-w-7xl mx-auto animate-fade-in-up space-y-6">
+        <FinanceAdminNav />
+
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-black text-white mb-1 flex items-center gap-3">
+              <Activity className="text-brand-blue" size={32} />
+              Dashboard Finanziaria &amp; Statistiche
+            </h1>
+            <p className="text-slate-400 text-sm">Analisi entrate incassate, crediti da riscuotere, spese e previsioni mensili per cliente.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/desktop/billing-dashboard')}
+              className="px-4 py-2.5 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl text-xs font-black flex items-center gap-1.5 shadow-[0_0_20px_rgba(14,165,233,0.25)] transition-all"
+            >
+              <Calculator size={15} /> Nuova Pre-Fattura
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/desktop/invoices-history')}
+              className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+            >
+              <Archive size={15} className="text-emerald-400" /> Archivio Proforme
+            </button>
+          </div>
         </div>
 
         {/* KPIs */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
-          <div className="absolute -right-6 -top-6 text-brand-blue/10 group-hover:text-brand-blue/20 transition-colors"><TrendingUp size={120} /></div>
-          <h3 className="text-slate-400 font-bold mb-1">Fatturato (Entrate)</h3>
-          <div className="text-3xl font-black text-brand-blue">EUR {totalIncome.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
-        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
-            <div className="absolute -right-6 -top-6 text-amber-500/10 group-hover:text-amber-500/20 transition-colors"><TrendingUp size={120} /></div>
-            <h3 className="text-slate-400 font-bold mb-1">Da Incassare (Sospesi)</h3>
-            <div className="text-3xl font-black text-amber-500">EUR {totalUnpaid.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
+            <div className="absolute -right-6 -top-6 text-brand-blue/10 group-hover:text-brand-blue/20 transition-colors"><TrendingUp size={110} /></div>
+            <h3 className="text-slate-400 font-bold text-xs uppercase tracking-wider mb-1">Fatturato Incassato</h3>
+            <div className="text-3xl font-black text-brand-blue">€ {totalIncome.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
-            <div className="absolute -right-6 -top-6 text-rose-500/10 group-hover:text-rose-500/20 transition-colors"><TrendingDown size={120} /></div>
-            <h3 className="text-slate-400 font-bold mb-1">Totale Uscite (Spese)</h3>
-            <div className="text-3xl font-black text-rose-500">EUR {totalExpense.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
+          <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
+            <div className="absolute -right-6 -top-6 text-amber-500/10 group-hover:text-amber-500/20 transition-colors"><TrendingUp size={110} /></div>
+            <h3 className="text-amber-400 font-bold text-xs uppercase tracking-wider mb-1">Da Incassare (Sospesi)</h3>
+            <div className="text-3xl font-black text-amber-400">€ {totalUnpaid.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
-            <div className="absolute -right-6 -top-6 text-emerald-500/10 group-hover:text-emerald-500/20 transition-colors"><DollarSign size={120} /></div>
-            <h3 className="text-slate-400 font-bold mb-1">Utile Lordo (Profitto)</h3>
-            <div className={`text-3xl font-black ${totalProfit >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>EUR {totalProfit.toLocaleString('it-IT', {minimumFractionDigits:2})}</div>
+          <div className="bg-slate-900 border border-rose-500/30 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
+            <div className="absolute -right-6 -top-6 text-rose-500/10 group-hover:text-rose-500/20 transition-colors"><TrendingDown size={110} /></div>
+            <h3 className="text-rose-400 font-bold text-xs uppercase tracking-wider mb-1">Totale Uscite (Spese)</h3>
+            <div className="text-3xl font-black text-rose-400">€ {totalExpense.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 shadow-xl relative overflow-hidden group">
+            <div className="absolute -right-6 -top-6 text-emerald-500/10 group-hover:text-emerald-500/20 transition-colors"><DollarSign size={110} /></div>
+            <h3 className="text-emerald-400 font-bold text-xs uppercase tracking-wider mb-1">Utile Lordo</h3>
+            <div className={`text-3xl font-black ${totalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>€ {totalProfit.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
         </div>
 

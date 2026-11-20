@@ -1,6 +1,6 @@
 const bcrypt = require('bcrypt');
 const db = require('../config/db');
-const { resolveUserAccess } = require('../utils/permissions');
+const { resolveUserAccess, clearUserAccessCache, parseJsonSafe } = require('../utils/permissions');
 
 async function authRoutes(fastify, options) {
   
@@ -120,9 +120,15 @@ async function authRoutes(fastify, options) {
 
   fastify.put('/preferences', { preValidation: [fastify.authenticate] }, async (request, reply) => {
     try {
-      const preferences = JSON.stringify(request.body.preferences);
-      await db.query('UPDATE USERS SET preferences = ? WHERE id = ?', [preferences, request.user.id]);
-      return { success: true };
+      const incoming = (request.body && typeof request.body.preferences === 'object' && request.body.preferences !== null)
+        ? request.body.preferences
+        : {};
+      const [[userRow]] = await db.query('SELECT preferences FROM USERS WHERE id = ?', [request.user.id]);
+      const current = parseJsonSafe(userRow?.preferences, {});
+      const merged = { ...(current && typeof current === 'object' ? current : {}), ...incoming };
+      await db.query('UPDATE USERS SET preferences = ? WHERE id = ?', [JSON.stringify(merged), request.user.id]);
+      clearUserAccessCache(request.user.id);
+      return { success: true, preferences: merged };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante il salvataggio delle preferenze' });

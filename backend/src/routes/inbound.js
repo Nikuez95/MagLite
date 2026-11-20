@@ -69,14 +69,24 @@ async function inboundRoutes(fastify, options) {
           );
           const ddtId = resDdt.insertId;
 
+          const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
+          const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
+
           for (const item of cart) {
             const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
             const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
             const itemName = prodRow?.name || item.product_name || item.name;
             const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
+            const itemPlanId = parseOptInt(item.tariff_plan_id);
+            const itemNetKg = parseOptNum(item.net_weight_kg);
+            const itemGrossKg = parseOptNum(item.gross_weight_kg);
+            const itemGroup = item.pallet_group ? String(item.pallet_group).trim() : null;
+            const itemFlagsJson = Array.isArray(item.flags) && item.flags.length > 0
+              ? JSON.stringify(item.flags)
+              : (typeof item.flags === 'string' && item.flags.trim() ? item.flags : null);
             await connection.query(
-              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemLocation]
+              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemLocation]
             );
           }
 
@@ -325,12 +335,27 @@ async function inboundRoutes(fastify, options) {
             await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
           }
 
-          // Generate or use existing pallet code based on location
+          // Generate or use existing pallet code based on location or pallet_group
           let palletCode = null;
           let locStr = null;
           if (location) {
             locStr = location.toUpperCase().trim();
             palletCode = await findExistingLocationBarcode(connection, locStr, false);
+          }
+          if (!palletCode && item.pallet_group) {
+            const [sibRows] = await connection.query(
+              `SELECT p.pallet_code
+               FROM PALLETS p
+               JOIN INBOUND_DDT_ITEMS di ON di.inbound_ddt_id = p.inbound_ddt_id
+                 AND di.product_id = p.product_id
+                 AND COALESCE(di.batch, '') = COALESCE(p.batch, '')
+               WHERE p.inbound_ddt_id = ? AND di.pallet_group = ? AND di.actual_quantity > 0
+               ORDER BY p.id ASC LIMIT 1`,
+              [ddt_id, item.pallet_group]
+            );
+            if (sibRows.length > 0) {
+              palletCode = sibRows[0].pallet_code;
+            }
           }
           
           if (!palletCode) {
@@ -351,16 +376,20 @@ async function inboundRoutes(fastify, options) {
             palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
           }
 
-          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata)
+          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata, oltre a listino, flag e pesi)
+          const itemFlagsVal = item.flags
+            ? (typeof item.flags === 'string' ? item.flags : JSON.stringify(item.flags))
+            : null;
           await connection.query(`
             INSERT INTO PALLETS 
-            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `, [
             palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
             warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
-            sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom, ddt_id,
-            ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
+            sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom,
+            item.net_weight_kg ?? null, item.gross_weight_kg ?? null, item.tariff_plan_id ?? null, itemFlagsVal,
+            ddt_id, ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
           ]);
 
           if (locStr) {

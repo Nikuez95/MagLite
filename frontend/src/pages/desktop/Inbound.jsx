@@ -33,6 +33,8 @@ const Inbound = () => {
   const [customers, setCustomers] = useState([]);
   const [products, setProducts] = useState([]);
   const [serverFlags, setServerFlags] = useState([]);
+  const [tariffPlans, setTariffPlans] = useState([]);
+  const [selectedCartIds, setSelectedCartIds] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -68,11 +70,15 @@ const Inbound = () => {
     newProductName: '',
     quantity: '',
     entry_uom: 'Base',
+    net_weight_kg: '',
+    gross_weight_kg: '',
     units_per_box: '',
     boxes_per_pallet: '',
     batch: '',
     client_pallet_number: '',
     client_article_number: '',
+    tariff_plan_id: '',
+    pallet_group: '',
     flags: [],
     warehouse: 'Settala',
     num_pallets: 1,
@@ -91,21 +97,36 @@ const Inbound = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [custRes, prodRes, freeRes, locRes, flagsRes] = await Promise.all([
+      const [custRes, prodRes, freeRes, locRes, flagsRes, plansRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/products/tariff-plans`, { headers }).catch(() => ({ data: [] }))
       ]);
       setCustomers(custRes.data.filter(c => canTouchCustomer(c.id)).map(c => ({ value: c.id, label: c.business_name, raw: c })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
       setFreeLocations(freeRes.data.map(fl => ({ value: fl.name, label: fl.name })));
       setMappedLocations(locRes.data || []);
       setServerFlags(flagsRes.data);
+      setTariffPlans(plansRes.data || []);
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const resolveDefaultPlanId = (custId, plansList = tariffPlans, custList = customers) => {
+    if (custId) {
+      const custObj = custList.find(c => c.value === custId)?.raw;
+      if (custObj?.tariff_plan_id) return String(custObj.tariff_plan_id);
+      if (custObj?.parent_id) {
+        const parentObj = custList.find(c => c.value === custObj.parent_id)?.raw;
+        if (parentObj?.tariff_plan_id) return String(parentObj.tariff_plan_id);
+      }
+    }
+    const def = (plansList || []).find(p => p.is_default && !p.is_flat_rate) || (plansList || []).find(p => p.is_default) || (plansList || [])[0];
+    return def ? String(def.id) : '';
   };
 
   useEffect(() => {
@@ -281,6 +302,7 @@ const Inbound = () => {
   const handleFragmentChange = (fragId) => {
     const effectiveCustomerId = fragId || formData.parent_customer_id;
     const effectiveCustomerName = customers.find(c => c.value === effectiveCustomerId)?.label || '';
+    const defaultPlanId = resolveDefaultPlanId(effectiveCustomerId);
     const familyIds = new Set([
       formData.parent_customer_id,
       ...availableFragments.map(f => f.value)
@@ -289,7 +311,8 @@ const Inbound = () => {
     setFormData(prev => ({
       ...prev,
       fragment_id: fragId || null,
-      customer_id: effectiveCustomerId
+      customer_id: effectiveCustomerId,
+      tariff_plan_id: defaultPlanId
     }));
 
     // Se nel carrello ci sono già righe appartenenti a questo stesso gruppo Cliente Madre, aggiorniamo la destinazione
@@ -297,7 +320,12 @@ const Inbound = () => {
       setCart(prev =>
         prev.map(item =>
           familyIds.has(item.customer_id)
-            ? { ...item, customer_id: effectiveCustomerId, customer_name: effectiveCustomerName }
+            ? {
+                ...item,
+                customer_id: effectiveCustomerId,
+                customer_name: effectiveCustomerName,
+                tariff_plan_id: item.tariff_plan_id || (defaultPlanId ? Number(defaultPlanId) : null)
+              }
             : item
         )
       );
@@ -315,8 +343,13 @@ const Inbound = () => {
 
   const fileInputRef = useRef(null);
 
-  const handleDownloadTemplate = async () => {
+  const handleDownloadTemplate = async (format = 'xlsx') => {
     const XLSX = await import('xlsx');
+    const examplePlanA = tariffPlans.find(p => !p.is_flat_rate)?.name || tariffPlans[0]?.name || 'Listino Standard';
+    const examplePlanB = tariffPlans.find(p => p.name !== examplePlanA)?.name || examplePlanA;
+    const exampleFlagA = serverFlags[0] || 'FLAG_ADR';
+    const exampleFlagB = serverFlags.length > 1 ? `${serverFlags[0]}, ${serverFlags[1]}` : exampleFlagA;
+
     const templateRows = [
       {
         "Codice Articolo": "ART-ACQ-15",
@@ -325,13 +358,18 @@ const Inbound = () => {
         "Unità di Misura": "Bancali",
         "Pezzi per Scatola": 6,
         "Scatole per Bancale": 84,
+        "KG Netti": 756,
+        "KG Lordi": 785,
         "Lotto": "L-2026-01",
         "Scadenza": "2027-12-31",
         "Posizione": "A-01-01",
         "Moltiplicatore Palette": 1,
+        "Gruppo Frammentazione": "",
+        "Flag": exampleFlagA,
+        "Nome Listino": examplePlanA,
         "Magazzino": "Settala",
         "Paletta Cliente": "PAL-001",
-        "Note": "Bancale intero assegnato in A-01-01"
+        "Note": "Paletta intera con pesi, flag e listino specifico"
       },
       {
         "Codice Articolo": "BISC-FROL-500",
@@ -340,28 +378,38 @@ const Inbound = () => {
         "Unità di Misura": "Scatole",
         "Pezzi per Scatola": 12,
         "Scatole per Bancale": 60,
+        "KG Netti": 180,
+        "KG Lordi": 198,
         "Lotto": "L-999A",
         "Scadenza": "2027-06-30",
-        "Posizione": "A-02-01",
+        "Posizione": "",
         "Moltiplicatore Palette": 1,
+        "Gruppo Frammentazione": "MIX-1",
+        "Flag": exampleFlagB,
+        "Nome Listino": examplePlanB,
         "Magazzino": "Settala",
         "Paletta Cliente": "PAL-002",
-        "Note": "Stessa posizione A-02-01 (verrà frammentata automaticamente)"
+        "Note": "Frammentata gruppo MIX-1 (stesso codice = 1 sola paletta fisica)"
       },
       {
         "Codice Articolo": "BISC-FROL-500",
-        "Prodotto": "Biscotti Frollini 500g",
+        "Prodotto": "Biscotti Integrali 500g",
         "Quantità": 20,
         "Unità di Misura": "Scatole",
         "Pezzi per Scatola": 12,
         "Scatole per Bancale": 60,
+        "KG Netti": 120,
+        "KG Lordi": 132,
         "Lotto": "L-999B",
         "Scadenza": "2027-08-15",
-        "Posizione": "A-02-01",
+        "Posizione": "",
         "Moltiplicatore Palette": 1,
+        "Gruppo Frammentazione": "MIX-1",
+        "Flag": "",
+        "Nome Listino": examplePlanB,
         "Magazzino": "Settala",
         "Paletta Cliente": "PAL-002",
-        "Note": "Lotto diverso nella stessa posizione A-02-01 (frammentata)"
+        "Note": "2° articolo unito nella stessa paletta MIX-1 (1 IN / 1 OUT)"
       },
       {
         "Codice Articolo": "FAR-00-1KG",
@@ -370,35 +418,73 @@ const Inbound = () => {
         "Unità di Misura": "Pezzi",
         "Pezzi per Scatola": 10,
         "Scatole per Bancale": 50,
+        "KG Netti": 200,
+        "KG Lordi": 215,
         "Lotto": "L-FAR-10",
         "Scadenza": "2027-03-15",
         "Posizione": "",
         "Moltiplicatore Palette": 1,
+        "Gruppo Frammentazione": "",
+        "Flag": "",
+        "Nome Listino": "",
         "Magazzino": "Settala",
         "Paletta Cliente": "",
-        "Note": "Senza posizione (in attesa di stivaggio)"
+        "Note": "Vuoto su Nome Listino = usa listino predefinito del cliente"
       }
     ];
 
     const worksheet = XLSX.utils.json_to_sheet(templateRows);
     worksheet['!cols'] = [
-      { wch: 18 },
-      { wch: 28 },
-      { wch: 12 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 20 },
-      { wch: 15 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 22 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 48 }
+      { wch: 18 }, // Codice Articolo
+      { wch: 26 }, // Prodotto
+      { wch: 11 }, // Quantità
+      { wch: 17 }, // Unità di Misura
+      { wch: 17 }, // Pezzi per Scatola
+      { wch: 19 }, // Scatole per Bancale
+      { wch: 11 }, // KG Netti
+      { wch: 11 }, // KG Lordi
+      { wch: 14 }, // Lotto
+      { wch: 13 }, // Scadenza
+      { wch: 12 }, // Posizione
+      { wch: 20 }, // Moltiplicatore Palette
+      { wch: 22 }, // Gruppo Frammentazione
+      { wch: 22 }, // Flag
+      { wch: 22 }, // Nome Listino
+      { wch: 13 }, // Magazzino
+      { wch: 16 }, // Paletta Cliente
+      { wch: 52 }  // Note
     ];
+
+    if (format === 'csv') {
+      const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'template_inbound.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    const legendRows = [
+      { "Colonna": "KG Netti", "Descrizione": "Peso netto opzionale della riga/paletta in chilogrammi (es. 756 o 120.5)." },
+      { "Colonna": "KG Lordi", "Descrizione": "Peso lordo opzionale della riga/paletta in chilogrammi (es. 785 o 132.5)." },
+      { "Colonna": "Gruppo Frammentazione", "Descrizione": "Inserisci lo stesso codice (es. MIX-1) su 2 o più righe per unirle in 1 sola Paletta Frammentata (1 IN / 1 OUT). Lascia vuoto per palette intere separate (oppure indica la stessa Posizione)." },
+      { "Colonna": "Flag", "Descrizione": "Uno o più codici flag separati da virgola o punto e virgola (es. FLAG_ADR, FLAG_FRIGO). Lascia vuoto se non presenti." },
+      { "Colonna": "Nome Listino", "Descrizione": "Nome esatto del Listino Globale da applicare alla paletta (es. Fisso Mensile). Se vuoto usa automaticamente il listino predefinito del cliente." },
+      { "Colonna": "---", "Descrizione": "--- VALORI ATTUALMENTE CONFIGURATI NEL SISTEMA ---" },
+      { "Colonna": "Listini Globali Disponibili", "Descrizione": tariffPlans.length > 0 ? tariffPlans.map(p => p.name).join(' | ') : 'Nessun listino configurato' },
+      { "Colonna": "Flag Disponibili", "Descrizione": serverFlags.length > 0 ? serverFlags.join(' | ') : 'Nessun flag configurato in Regole Base' }
+    ];
+    const legendSheet = XLSX.utils.json_to_sheet(legendRows);
+    legendSheet['!cols'] = [{ wch: 28 }, { wch: 110 }];
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Template Inbound");
+    XLSX.utils.book_append_sheet(workbook, legendSheet, "Legenda & Valori Attivi");
     XLSX.writeFile(workbook, "template_inbound.xlsx");
   };
 
@@ -453,7 +539,7 @@ const Inbound = () => {
         return 'Bancali';
       }
       if (v === 'kg' || v.includes('chil') || v.includes('kilo')) {
-        return 'KG';
+        return 'Base';
       }
       if (v.includes('metr') || v.includes('cub') || v === 'm3' || v === 'm³' || v === 'mc') {
         return 'Metro Cubo';
@@ -566,7 +652,7 @@ const Inbound = () => {
         const worksheet = workbook.Sheets[firstSheetName];
 
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-        const headerKeywords = ['prodotto', 'descrizione', 'articolo', 'codice', 'sku', 'quantit', 'qta', 'qty', 'lotto', 'scad', 'unita', 'udm', 'um', 'scatol', 'bancal', 'palett', 'magazzin', 'posizion', 'ubicazion', 'scaffal', 'note', 'pezzi'];
+        const headerKeywords = ['prodotto', 'descrizione', 'articolo', 'codice', 'sku', 'quantit', 'qta', 'qty', 'lotto', 'scad', 'unita', 'udm', 'um', 'scatol', 'bancal', 'palett', 'magazzin', 'posizion', 'ubicazion', 'scaffal', 'note', 'pezzi', 'kg', 'peso', 'framment', 'grupp', 'flag', 'listino'];
         let headerRowIndex = 0;
         for (let r = 0; r < Math.min(matrix.length, 10); r++) {
           const rowCells = Array.isArray(matrix[r]) ? matrix[r] : [];
@@ -583,8 +669,17 @@ const Inbound = () => {
         const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '', range: headerRowIndex });
         const newCartItems = [];
         const errorLines = [];
+        const warningLines = [];
         const currentProducts = [...products];
         const customerName = customers.find(c => c.value === formData.customer_id)?.label || '';
+
+        const normStr = (v) =>
+          String(v ?? '')
+            .trim()
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s+/g, ' ');
 
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
@@ -827,8 +922,75 @@ const Inbound = () => {
             actualQty *= upb;
           } else if (entryUom === 'Bancali') {
             actualQty *= (upb * bpp);
-          } else if (entryUom === 'KG' || entryUom === 'Metro Cubo') {
-            pallet_uom = entryUom === 'KG' ? 'KG' : 'Metro Cubo';
+          } else if (entryUom === 'Metro Cubo') {
+            pallet_uom = 'Metro Cubo';
+          }
+
+          const rawKgNetti = getCol(
+            normRow,
+            ['kg_netti', 'kg_netto', 'peso_netto', 'peso_netto_kg', 'net_weight', 'net_weight_kg', 'netto'],
+            k => (k.includes('kg') || k.includes('peso')) && k.includes('nett')
+          );
+          const rawKgLordi = getCol(
+            normRow,
+            ['kg_lordi', 'kg_lordo', 'peso_lordo', 'peso_lordo_kg', 'gross_weight', 'gross_weight_kg', 'lordo'],
+            k => (k.includes('kg') || k.includes('peso')) && k.includes('lord')
+          );
+          const parsedNetKg = rawKgNetti !== '' ? parseNum(rawKgNetti, null) : null;
+          const parsedGrossKg = rawKgLordi !== '' ? parseNum(rawKgLordi, null) : null;
+
+          // Riconoscimento Gruppo Frammentazione per paletta (es. MIX-1)
+          const rawGroup = getCol(
+            normRow,
+            ['gruppo_frammentazione', 'frammentazione', 'frammenta', 'gruppo_paletta', 'paletta_mista', 'pallet_group', 'gruppo', 'mix_group'],
+            k => k.includes('framment') || k.includes('pallet_group') || k.includes('gruppo_pal')
+          );
+          const palletGroupStr = String(rawGroup ?? '').trim().toUpperCase();
+
+          // Riconoscimento Flag (es. "FLAG_ADR, PROVA" o "ADR; FRIGO")
+          const rawFlags = getCol(
+            normRow,
+            ['flag', 'flags', 'tag', 'tags', 'etichette', 'regole_flag'],
+            k => k === 'flag' || k === 'flags' || k.includes('regole_flag')
+          );
+          const parsedFlags = [];
+          if (rawFlags !== '' && rawFlags !== null && rawFlags !== undefined) {
+            String(rawFlags)
+              .split(/[,;|]+/)
+              .map(t => t.trim())
+              .filter(Boolean)
+              .forEach(tok => {
+                const tokUpper = tok.toUpperCase();
+                const matchedFlag =
+                  serverFlags.find(sf => sf.toUpperCase() === tokUpper) ||
+                  serverFlags.find(sf => sf.toUpperCase() === `FLAG_${tokUpper}`) ||
+                  serverFlags.find(sf => sf.toUpperCase().replace(/^FLAG_/, '') === tokUpper) ||
+                  tokUpper;
+                if (matchedFlag && !parsedFlags.includes(matchedFlag)) {
+                  parsedFlags.push(matchedFlag);
+                }
+              });
+          }
+
+          // Riconoscimento Nome Listino per paletta
+          const rawPlanName = getCol(
+            normRow,
+            ['nome_listino', 'listino', 'listino_prezzi', 'listino_globale', 'piano_tariffario', 'tariff_plan', 'tariffa'],
+            k => k.includes('listin') || k.includes('tariff_plan')
+          );
+          const defaultPlanForCust = formData.tariff_plan_id || resolveDefaultPlanId(formData.customer_id);
+          let resolvedPlanId = defaultPlanForCust ? Number(defaultPlanForCust) : null;
+          if (rawPlanName !== '' && rawPlanName !== null && rawPlanName !== undefined) {
+            const targetNorm = normStr(rawPlanName);
+            const foundPlan =
+              tariffPlans.find(p => normStr(p.name) === targetNorm) ||
+              tariffPlans.find(p => String(p.id) === String(rawPlanName).trim()) ||
+              tariffPlans.find(p => normStr(p.name).includes(targetNorm) || targetNorm.includes(normStr(p.name)));
+            if (foundPlan) {
+              resolvedPlanId = Number(foundPlan.id);
+            } else {
+              warningLines.push(`Riga ${lineNum}: Listino "${String(rawPlanName).trim()}" non trovato (usato listino predefinito cliente)`);
+            }
           }
 
           newCartItems.push({
@@ -843,6 +1005,11 @@ const Inbound = () => {
             boxes_per_pallet: bpp,
             pallet_uom: pallet_uom,
             uom: entryUom === 'Base' ? 'Pezzi' : (entryUom || 'Pezzi'),
+            net_weight_kg: parsedNetKg,
+            gross_weight_kg: parsedGrossKg,
+            tariff_plan_id: resolvedPlanId,
+            pallet_group: palletGroupStr,
+            flags: parsedFlags,
             batch: lotto,
             warehouse: magazzino,
             num_pallets: palletsCount,
@@ -868,11 +1035,16 @@ const Inbound = () => {
         setIsProcessing(false);
         e.target.value = null; 
         
-        if (errorLines.length > 0) {
-          const maxErrorsToShow = 10;
-          const errorList = errorLines.slice(0, maxErrorsToShow).join('\n');
-          const moreErrors = errorLines.length > maxErrorsToShow ? `\n... e altre ${errorLines.length - maxErrorsToShow} righe.` : '';
-          appAlert(`Caricamento completato con ${errorLines.length} righe saltate.\nElementi aggiunti: ${newCartItems.length}\n\nDettaglio:\n${errorList}${moreErrors}`);
+        if (errorLines.length > 0 || warningLines.length > 0) {
+          const allNotes = [...errorLines, ...warningLines];
+          const maxShow = 12;
+          const noteList = allNotes.slice(0, maxShow).join('\n');
+          const more = allNotes.length > maxShow ? `\n... e altre ${allNotes.length - maxShow} segnalazioni.` : '';
+          appAlert(
+            `Caricamento completato (${newCartItems.length} righe aggiunte${errorLines.length > 0 ? `, ${errorLines.length} saltate` : ''}).\n\nDettagli:\n${noteList}${more}`,
+            errorLines.length > 0 ? 'Attenzione' : 'Caricamento con Avvisi',
+            errorLines.length > 0 ? 'warning' : 'info'
+          );
         } else {
           appAlert(`Caricamento completato! Aggiunti ${newCartItems.length} elementi alla lista.`, 'Successo', 'success');
         }
@@ -988,11 +1160,19 @@ const Inbound = () => {
       actualQty *= upb;
     } else if (formData.entry_uom === 'Bancali') {
       actualQty *= (upb * bpp);
-    } else if (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') {
-      pallet_uom = formData.entry_uom === 'KG' ? 'KG' : 'Metro Cubo';
+    } else if (formData.entry_uom === 'Metro Cubo') {
+      pallet_uom = 'Metro Cubo';
     }
 
     const cleanLocation = (formData.location || '').trim().toUpperCase();
+    const effectivePlanId = formData.tariff_plan_id || resolveDefaultPlanId(formData.customer_id);
+    const cleanGroup = !cleanLocation ? (formData.pallet_group || '').trim() : '';
+
+    const parseOptNum = (v) => {
+      if (v === '' || v === null || v === undefined) return null;
+      const n = parseFloat(v);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
 
     const newItem = {
       id: Date.now(),
@@ -1006,9 +1186,13 @@ const Inbound = () => {
       boxes_per_pallet: bpp,
       pallet_uom: pallet_uom,
       uom: formData.entry_uom === 'Base' ? 'Pezzi' : (formData.entry_uom || 'Pezzi'),
+      net_weight_kg: parseOptNum(formData.net_weight_kg),
+      gross_weight_kg: parseOptNum(formData.gross_weight_kg),
+      tariff_plan_id: effectivePlanId ? Number(effectivePlanId) : null,
+      pallet_group: cleanGroup,
       batch: formData.batch,
       warehouse: formData.warehouse,
-      num_pallets: formData.num_pallets,
+      num_pallets: cleanGroup ? 1 : formData.num_pallets,
       notes: formData.notes,
       client_pallet_number: formData.client_pallet_number,
       client_article_number: articleCode || finalSku,
@@ -1029,6 +1213,8 @@ const Inbound = () => {
       ...prev, 
       quantity: '', 
       entry_uom: 'Base', 
+      net_weight_kg: '',
+      gross_weight_kg: '',
       batch: '', 
       num_pallets: 1, 
       notes: '', 
@@ -1045,12 +1231,14 @@ const Inbound = () => {
 
   const removeFromCart = (id) => {
     setCart(prev => prev.filter(item => item.id !== id));
+    setSelectedCartIds(prev => prev.filter(sid => sid !== id));
   };
 
   const handleClearCart = async () => {
     if (cart.length === 0) return;
     if (await appConfirm(`Vuoi svuotare completamente il carrello (${cart.length} righe)?`)) {
       setCart([]);
+      setSelectedCartIds([]);
       setCartSearch('');
     }
   };
@@ -1083,10 +1271,11 @@ const Inbound = () => {
         window.open(`http://${window.location.hostname}:3000/api/inbound/ddt/${res.data.ddt_id}/pdf?token=${getToken()}`, '_blank');
         
         setCart([]);
+        setSelectedCartIds([]);
         setCartSearch('');
         setClientDdt('');
         setMatchedCheckin(null);
-        setFormData({...formData, parent_customer_id: null, fragment_id: null, customer_id: null, product_id: null, isNewProduct: false, newProductName: ''});
+        setFormData({...formData, parent_customer_id: null, fragment_id: null, customer_id: null, product_id: null, isNewProduct: false, newProductName: '', tariff_plan_id: '', pallet_group: ''});
         setPrintOptions({ paper_format: 'A4', print_mode: 'GRID', isMixed: false, noBarcode: false, freeLocation: '' });
       } catch (err) {
         appAlert('Errore durante la creazione del DDT Inbound.');
@@ -1124,6 +1313,7 @@ const Inbound = () => {
       }
 
       setCart([]);
+      setSelectedCartIds([]);
       setCartSearch('');
       setClientDdt('');
       setMatchedCheckin(null);
@@ -1165,9 +1355,9 @@ const Inbound = () => {
 
     const productObj = products.find(p => p.value === formData.product_id);
     const baseProdUom = productObj?.raw?.uom || 'Pezzi';
-    const prodUom = (formData.entry_uom === 'KG' || formData.entry_uom === 'Metro Cubo') ? formData.entry_uom : baseProdUom;
+    const prodUom = formData.entry_uom === 'Metro Cubo' ? 'Metro Cubo' : baseProdUom;
 
-    if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali' && prodUom !== 'KG' && prodUom !== 'Metro Cubo') {
+    if (upb > 1 && prodUom !== 'Scatole' && prodUom !== 'Bancali' && prodUom !== 'Metro Cubo') {
       const scatole = Math.floor(actualQtyForHint / upb);
       const sfusi = actualQtyForHint % upb;
       return (
@@ -1220,18 +1410,67 @@ const Inbound = () => {
     return opts;
   }, [mappedLocations, freeLocations]);
 
+  const getNextMixGroupName = (itemsList = cart) => {
+    const usedNums = new Set();
+    [...itemsList.map(i => i.pallet_group), formData.pallet_group].forEach(g => {
+      const m = String(g || '').match(/^MIX-(\d+)$/i);
+      if (m) usedNums.add(parseInt(m[1], 10));
+    });
+    let idx = 1;
+    while (usedNums.has(idx)) idx++;
+    return `MIX-${idx}`;
+  };
+
+  const existingMixGroups = React.useMemo(() => {
+    const set = new Set();
+    cart.forEach(i => { if (i.pallet_group) set.add(i.pallet_group); });
+    if (formData.pallet_group) set.add(formData.pallet_group);
+    return Array.from(set).sort();
+  }, [cart, formData.pallet_group]);
+
+  const handleToggleCartSelect = (id) => {
+    setSelectedCartIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleFragmentSelected = () => {
+    if (selectedCartIds.length < 2) {
+      appAlert('Seleziona almeno 2 righe nel carrello da frammentare insieme in una singola paletta.');
+      return;
+    }
+    const groupName = getNextMixGroupName();
+    setCart(prev => prev.map(item =>
+      selectedCartIds.includes(item.id)
+        ? { ...item, pallet_group: groupName, num_pallets: 1 }
+        : item
+    ));
+    setSelectedCartIds([]);
+  };
+
+  const handleUnfragmentSelected = () => {
+    if (selectedCartIds.length === 0) return;
+    setCart(prev => prev.map(item =>
+      selectedCartIds.includes(item.id)
+        ? { ...item, pallet_group: '' }
+        : item
+    ));
+    setSelectedCartIds([]);
+  };
+
   const totalPalletsToGenerate = React.useMemo(() => {
     if (printOptions.isMixed && cart.length > 0) return 1;
     const uniqueLocations = new Set();
+    const uniqueGroups = new Set();
     let unlocatedCount = 0;
     cart.forEach(item => {
       if (item.location) {
         uniqueLocations.add(item.location.toUpperCase());
+      } else if (item.pallet_group) {
+        uniqueGroups.add(item.pallet_group);
       } else {
         unlocatedCount += (parseInt(item.num_pallets, 10) || 1);
       }
     });
-    return uniqueLocations.size + unlocatedCount;
+    return uniqueLocations.size + uniqueGroups.size + unlocatedCount;
   }, [cart, printOptions.isMixed]);
 
   const filteredCart = React.useMemo(() => {
@@ -1297,11 +1536,20 @@ const Inbound = () => {
             </button>
             <button 
               type="button"
-              onClick={handleDownloadTemplate}
+              onClick={() => handleDownloadTemplate('xlsx')}
               className="px-4 py-2.5 bg-slate-900 text-slate-300 border border-slate-700 rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center gap-2 text-sm"
             >
               <Download size={17} />
-              Scarica Template
+              Template Excel
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDownloadTemplate('csv')}
+              className="px-3.5 py-2.5 bg-slate-900 text-slate-300 border border-slate-700 rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center gap-1.5 text-sm"
+              title="Scarica il template in formato CSV UTF-8"
+            >
+              <Download size={16} />
+              CSV
             </button>
           </div>
         </div>
@@ -1534,7 +1782,8 @@ const Inbound = () => {
                         parent_customer_id: parentId,
                         fragment_id: null,
                         customer_id: parentId,
-                        product_id: null
+                        product_id: null,
+                        tariff_plan_id: resolveDefaultPlanId(parentId)
                       });
                     }}
                   />
@@ -1665,7 +1914,6 @@ const Inbound = () => {
                         <option value="Base">{products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi'}</option>
                         <option value="Scatole">Scatole</option>
                         <option value="Bancali">Bancali</option>
-                        <option value="KG">KG</option>
                         <option value="Metro Cubo">m³</option>
                       </select>
                     </div>
@@ -1675,6 +1923,36 @@ const Inbound = () => {
                     </div>
                   </div>
                   {renderQuantityHint()}
+
+                  {/* Pesi Opzionali (KG Netti & KG Lordi indipendenti da UDM) */}
+                  <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-800/60">
+                    <div>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">KG Netti (Opz.)</label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        onWheel={(e) => e.target.blur()}
+                        value={formData.net_weight_kg}
+                        onChange={e => setFormData({...formData, net_weight_kg: e.target.value})}
+                        className="w-full bg-slate-900 border border-slate-800 text-brand-white rounded-xl px-3 py-1.5 text-sm focus:ring-brand-blue"
+                        placeholder="Es. 450.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">KG Lordi (Opz.)</label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        onWheel={(e) => e.target.blur()}
+                        value={formData.gross_weight_kg}
+                        onChange={e => setFormData({...formData, gross_weight_kg: e.target.value})}
+                        className="w-full bg-slate-900 border border-slate-800 text-brand-white rounded-xl px-3 py-1.5 text-sm focus:ring-brand-blue"
+                        placeholder="Es. 475.0"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Scadenza e Posizione Scaffale */}
@@ -1713,34 +1991,127 @@ const Inbound = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Data di Arrivo *</label>
                     <input type="datetime-local" required value={formData.arrival_date} onChange={e => setFormData({...formData, arrival_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-2.5 py-2 text-xs focus:ring-brand-blue [color-scheme:dark]" />
                   </div>
                   <div>
-                    <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Flag (es. ADR)</label>
-                    <Select
-                      isMulti
-                      styles={selectStyles}
-                      placeholder="Seleziona flag..."
-                      noOptionsMessage={() => "Nessun flag disponibile (creali in Amministrazione → Regole Base)"}
-                      filterOption={(option, inputValue) => {
-                        const q = (inputValue || '').trim().toLowerCase();
-                        if (!q) return true;
-                        const val = option.value.toLowerCase();
-                        return val.includes(q) || `flag_${val}`.includes(q);
-                      }}
-                      value={formData.flags}
-                      options={availableFlagsOptions}
-                      onChange={val => setFormData({...formData, flags: val || []})}
-                    />
+                    <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                      <Layers size={11} className="text-brand-blue" /> Listino Globale Paletta
+                    </label>
+                    <select
+                      value={formData.tariff_plan_id || ''}
+                      onChange={e => setFormData({ ...formData, tariff_plan_id: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-xs font-bold focus:border-brand-blue outline-none"
+                    >
+                      <option value="">-- Listino Predefinito Cliente --</option>
+                      {tariffPlans.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{p.is_flat_rate ? ' (Fisso - No Calcoli)' : ''}{p.is_default ? ' ★' : ''}
+                        </option>
+                      ))}
+                    </select>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Flag (es. ADR)</label>
+                  <Select
+                    isMulti
+                    styles={selectStyles}
+                    placeholder="Seleziona flag..."
+                    noOptionsMessage={() => "Nessun flag disponibile (creali in Amministrazione → Regole Base)"}
+                    filterOption={(option, inputValue) => {
+                      const q = (inputValue || '').trim().toLowerCase();
+                      if (!q) return true;
+                      const val = option.value.toLowerCase();
+                      return val.includes(q) || `flag_${val}`.includes(q);
+                    }}
+                    value={formData.flags}
+                    options={availableFlagsOptions}
+                    onChange={val => setFormData({...formData, flags: val || []})}
+                  />
                 </div>
 
                 <div>
                   <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Note Paletta (Opzionale)</label>
                   <input type="text" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. Scatola danneggiata, nome per paletta generica, ecct..." />
+                </div>
+
+                {/* Modalità Paletta: Intera vs Frammentata (Gruppo Misto con 1 solo IN / OUT) */}
+                <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                      Composizione Paletta (IN / OUT)
+                    </span>
+                    <div className="flex bg-slate-900 p-0.5 rounded-xl border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, pallet_group: '' })}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                          !formData.pallet_group
+                            ? 'bg-brand-blue text-brand-black shadow'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Paletta Intera
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, pallet_group: formData.pallet_group || existingMixGroups[0] || getNextMixGroupName(), num_pallets: 1 })}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                          formData.pallet_group
+                            ? 'bg-amber-500 text-brand-black shadow'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Paletta Frammentata (Mista)
+                      </button>
+                    </div>
+                  </div>
+
+                  {formData.pallet_group ? (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <select
+                        value={formData.pallet_group}
+                        onChange={e => setFormData({ ...formData, pallet_group: e.target.value, num_pallets: 1 })}
+                        className="flex-1 min-w-[160px] bg-slate-900 border border-amber-500/40 text-amber-300 rounded-xl px-2.5 py-1.5 text-xs font-bold outline-none"
+                      >
+                        {Array.from(new Set([...existingMixGroups, formData.pallet_group])).map(g => {
+                          const membersCount = cart.filter(i => i.pallet_group === g).length;
+                          return (
+                            <option key={g} value={g}>
+                              {g} ({membersCount} {membersCount === 1 ? 'riga' : 'righe'} nel carrello)
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, pallet_group: getNextMixGroupName(), num_pallets: 1 })}
+                        className="px-2.5 py-1.5 bg-amber-500/15 hover:bg-amber-500 text-amber-300 hover:text-brand-black border border-amber-500/30 rounded-xl text-[11px] font-bold transition-all"
+                      >
+                        + Nuovo Gruppo
+                      </button>
+                      <p className="w-full text-[10px] text-amber-300/80">
+                        Tutte le righe con gruppo <b>{formData.pallet_group}</b> condivideranno <b>1 solo Barcode</b> (1 IN e 1 OUT).
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3 pt-0.5">
+                      <span className="text-[11px] text-slate-500">N° Palette identiche da generare (1 barcode ciascuna)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        onWheel={(e) => e.target.blur()}
+                        value={formData.num_pallets}
+                        onChange={e => setFormData({ ...formData, num_pallets: Math.max(1, parseInt(e.target.value, 10) || 1) })}
+                        className="w-20 bg-slate-900 border border-slate-800 text-brand-white rounded-xl px-2.5 py-1 text-center text-xs font-bold focus:border-brand-blue"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <button type="submit" disabled={isProcessing} className="w-full py-3.5 bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-brand-black border border-brand-blue/40 rounded-2xl font-black transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg">
@@ -1824,6 +2195,47 @@ const Inbound = () => {
               </div>
             </div>
 
+            {/* Barra Frammentazione Selettiva nel Carrello */}
+            {cart.length >= 2 && (
+              <div className="mt-3 px-3.5 py-2.5 rounded-2xl bg-slate-950/90 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                  <GitBranch size={14} className="text-amber-400 shrink-0" />
+                  {selectedCartIds.length === 0 ? (
+                    <span>Seleziona 2+ righe per frammentarle in un&apos;unica paletta (1 IN / 1 OUT) lasciando le altre intere.</span>
+                  ) : (
+                    <span className="text-amber-300 font-bold">{selectedCartIds.length} righe selezionate</span>
+                  )}
+                </div>
+                {selectedCartIds.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selectedCartIds.length >= 2 && (
+                      <button
+                        type="button"
+                        onClick={handleFragmentSelected}
+                        className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-brand-black rounded-lg text-[11px] font-black transition-all flex items-center gap-1"
+                      >
+                        <GitBranch size={12} /> Frammenta in 1 Paletta (1 IN / 1 OUT)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleUnfragmentSelected}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold transition-all"
+                    >
+                      Rendi Intere
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCartIds([])}
+                      className="px-2 py-1 text-slate-400 hover:text-white text-[11px]"
+                    >
+                      Deseleziona
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Lista Scorrevole Ampia delle Righe del Carrello con Editing Inline */}
             <div className="flex-1 min-h-[460px] max-h-[65vh] overflow-y-auto py-4 pr-1 space-y-2.5">
               {cart.length === 0 ? (
@@ -1843,23 +2255,40 @@ const Inbound = () => {
                   const isSharedLocation =
                     item.location &&
                     cart.filter(c => c.location && c.location.toUpperCase() === item.location.toUpperCase()).length > 1;
+                  const isGroupedMix = Boolean(item.pallet_group && !item.location);
+                  const isChecked = selectedCartIds.includes(item.id);
                   const upb = parseFloat(item.units_per_box) || 1;
                   const qtyNum = parseFloat(item.quantity) || 0;
 
                   return (
                     <div
                       key={item.id}
-                      className="bg-slate-950/90 border border-slate-800 hover:border-slate-700 rounded-2xl p-3.5 transition-all relative overflow-hidden"
+                      className={`bg-slate-950/90 border rounded-2xl p-3.5 transition-all relative overflow-hidden ${
+                        isChecked
+                          ? 'border-amber-500/70 ring-1 ring-amber-500/30'
+                          : isGroupedMix
+                            ? 'border-amber-500/35 hover:border-amber-500/60'
+                            : 'border-slate-800 hover:border-slate-700'
+                      }`}
                     >
-                      <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${item.warehouse === 'Settala' ? 'bg-brand-blue' : 'bg-amber-500'}`} />
+                      <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${
+                        isGroupedMix ? 'bg-amber-400' : (item.warehouse === 'Settala' ? 'bg-brand-blue' : 'bg-amber-500')
+                      }`} />
 
-                      {/* Riga Superiore: Numero progressivo, Nome Prodotto, Magazzino, Elimina */}
-                      <div className="flex items-center justify-between gap-2 pl-2 mb-2.5">
-                        <div className="flex items-center gap-2 min-w-0">
+                      {/* Riga Superiore: Checkbox, Numero, Nome Prodotto, Badges, Magazzino, Elimina */}
+                      <div className="flex items-center justify-between gap-2 pl-2 mb-2.5 flex-wrap">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => handleToggleCartSelect(item.id)}
+                            title="Seleziona per frammentare con altre righe"
+                            className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 cursor-pointer shrink-0"
+                          />
                           <span className="text-[11px] font-mono font-black px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-800 text-brand-blue shrink-0">
                             #{originalIndex + 1}
                           </span>
-                          <span className="font-bold text-brand-white text-sm truncate" title={item.product_name}>
+                          <span className="font-bold text-brand-white text-sm truncate max-w-[260px]" title={item.product_name}>
                             {item.product_name}
                           </span>
                           {item.customer_name && (
@@ -1875,9 +2304,31 @@ const Inbound = () => {
                           )}
                           {isSharedLocation && (
                             <span className="text-[10px] font-extrabold bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-md shrink-0">
-                              Paletta Frammentata ({item.location})
+                              Frammentata in {item.location}
                             </span>
                           )}
+                          {isGroupedMix ? (
+                            <span className="text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-md flex items-center gap-1 shrink-0">
+                              <GitBranch size={10} /> Frammentata: {item.pallet_group} (1 IN/OUT)
+                              <button
+                                type="button"
+                                onClick={() => updateCartItem(item.id, { pallet_group: '' })}
+                                title="Separa da paletta frammentata e rendi intera"
+                                className="ml-1 text-amber-200 hover:text-white underline"
+                              >
+                                Separa
+                              </button>
+                            </span>
+                          ) : !isSharedLocation && (
+                            <span className="text-[10px] font-bold bg-brand-blue/10 text-brand-blue border border-brand-blue/25 px-2 py-0.5 rounded-md shrink-0">
+                              Paletta Intera{Number(item.num_pallets) > 1 ? ` ×${item.num_pallets}` : ''}
+                            </span>
+                          )}
+                          {Array.isArray(item.flags) && item.flags.map((flg) => (
+                            <span key={flg} className="text-[10px] font-extrabold bg-purple-500/20 text-purple-300 border border-purple-500/35 px-2 py-0.5 rounded-md shrink-0">
+                              {flg}
+                            </span>
+                          ))}
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
@@ -1924,7 +2375,40 @@ const Inbound = () => {
                           />
                         </div>
 
-                        {/* 2. Lotto Inline */}
+                        {/* 2. KG Netti & KG Lordi Inline */}
+                        <div className="sm:col-span-3">
+                          <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
+                            KG Netti
+                          </label>
+                          <input
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            placeholder="-"
+                            onWheel={(e) => e.target.blur()}
+                            value={item.net_weight_kg ?? ''}
+                            onChange={(e) => updateCartItem(item.id, { net_weight_kg: e.target.value === '' ? null : (parseFloat(e.target.value) ?? null) })}
+                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none placeholder-slate-600"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
+                            KG Lordi
+                          </label>
+                          <input
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            placeholder="-"
+                            onWheel={(e) => e.target.blur()}
+                            value={item.gross_weight_kg ?? ''}
+                            onChange={(e) => updateCartItem(item.id, { gross_weight_kg: e.target.value === '' ? null : (parseFloat(e.target.value) ?? null) })}
+                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none placeholder-slate-600"
+                          />
+                        </div>
+
+                        {/* 3. Lotto Inline */}
                         <div className="sm:col-span-3">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             Lotto
@@ -1938,8 +2422,27 @@ const Inbound = () => {
                           />
                         </div>
 
-                        {/* 3. Posizione Inline */}
-                        <div className="sm:col-span-3">
+                        {/* 4. Listino Globale Inline */}
+                        <div className="sm:col-span-5">
+                          <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
+                            Listino Globale Paletta
+                          </label>
+                          <select
+                            value={item.tariff_plan_id || ''}
+                            onChange={(e) => updateCartItem(item.id, { tariff_plan_id: e.target.value ? Number(e.target.value) : null })}
+                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-brand-blue font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none"
+                          >
+                            <option value="">Listino Predefinito Cliente</option>
+                            {tariffPlans.map(p => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}{p.is_flat_rate ? ' (Fisso - No Calcoli)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 5. Posizione Inline */}
+                        <div className="sm:col-span-4">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             Posizione Scaffale
                           </label>
@@ -1959,7 +2462,7 @@ const Inbound = () => {
                           />
                         </div>
 
-                        {/* 4. Scadenza Inline */}
+                        {/* 6. Scadenza Inline */}
                         <div className="sm:col-span-3">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             Scadenza

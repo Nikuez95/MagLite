@@ -2,7 +2,7 @@ import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers } from 'lucide-react';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers, FileText } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
 
@@ -184,7 +184,7 @@ const iconComponentMap = {
 
 const Dashboard = ({ user }) => {
   const navigate = useNavigate();
-  const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0, optimizeTasks: 0 });
+  const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0, outboundReady: 0, optimizeTasks: 0 });
   const [customForms, setCustomForms] = useState([]);
   const [showFormsModal, setShowFormsModal] = useState(false);
 
@@ -206,15 +206,19 @@ const Dashboard = ({ user }) => {
           canPicking
             ? axios.get(`http://${window.location.hostname}:3000/api/outbound?active_only=true`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
             : Promise.resolve({ data: [] }),
+          canPicking
+            ? axios.get(`http://${window.location.hostname}:3000/api/outbound?ready_only=true`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
+            : Promise.resolve({ data: [] }),
           canOptimize
             ? axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: { summary: { totalTasks: 0 } } }))
             : Promise.resolve({ data: { summary: { totalTasks: 0 } } })
         ];
-        const [inRes, outRes, optRes] = await Promise.all(reqs);
+        const [inRes, outRes, readyRes, optRes] = await Promise.all(reqs);
         const inboundPending = (inRes.data || []).filter(d => d.status === 'PENDING' || d.status === 'IN_PROGRESS').length;
         const outboundActive = (outRes.data || []).filter(o => o.status === 'PENDING' || o.status === 'PICKING' || o.status === 'PARTIAL').length;
+        const outboundReady = (readyRes.data || []).length;
         const optimizeTasks = optRes.data?.summary?.totalTasks || 0;
-        setCounts({ inboundPending, outboundActive, optimizeTasks });
+        setCounts({ inboundPending, outboundActive, outboundReady, optimizeTasks });
 
         // Recupera moduli attivi per Zebra
         try {
@@ -240,8 +244,8 @@ const Dashboard = ({ user }) => {
       navigate('/zebra/verify');
     } else if (code.startsWith('IN-') && canInbound) {
       navigate('/zebra/inbound');
-    } else if (code.startsWith('OUT-') && canPicking) {
-      navigate('/zebra/outbound');
+    } else if ((code.startsWith('OUT-') || code.startsWith('BOL-')) && canPicking) {
+      navigate('/zebra/outbound', { state: { initialCode: code } });
     }
   });
 
@@ -317,7 +321,16 @@ const Dashboard = ({ user }) => {
                 badge={counts.outboundActive}
                 accent="emerald"
                 disabled={!canPicking}
-                onClick={() => canPicking && navigate('/zebra/outbound')} 
+                onClick={() => canPicking && navigate('/zebra/outbound', { state: { defaultTab: 'PICKING' } })} 
+              />
+              <TouchCard
+                icon={FileText}
+                label="BOLLA & CARICO CAMION"
+                subtitle="Scansiona bolla di uscita, ricontrolla e segna Spedito"
+                badge={counts.outboundReady}
+                accent="cyan"
+                disabled={!canPicking}
+                onClick={() => canPicking && navigate('/zebra/outbound', { state: { defaultTab: 'READY' } })}
               />
 
               {canOptimize && (

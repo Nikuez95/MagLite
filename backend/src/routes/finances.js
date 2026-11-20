@@ -7,29 +7,39 @@ async function financesRoutes(fastify, options) {
   // --- INVOICES (PROFORME SALVATE) ---
   
   fastify.post('/invoices', async (request, reply) => {
-    if (!hasPermission(request.user, 'finance_manage') && !hasPermission(request.user, 'view_billing')) {
+    if (
+      !hasPermission(request.user, 'finance_manage') &&
+      !hasPermission(request.user, 'view_billing') &&
+      !hasPermission(request.user, 'view_finances')
+    ) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di emettere o salvare proforme.' });
     }
 
-    const { customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data } = request.body;
-    if (customer_id && !canAccessCustomer(request.user, customer_id)) {
+    const { customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data } = request.body || {};
+    const custIdNum = parseInt(customer_id, 10);
+    const monthNum = parseInt(period_month, 10);
+    const yearNum = parseInt(period_year, 10);
+
+    if (!custIdNum || !monthNum || !yearNum) {
+      return reply.code(400).send({ error: 'Cliente, mese e anno sono obbligatori per salvare la proforma.' });
+    }
+    if (!canAccessCustomer(request.user, custIdNum)) {
       return reply.code(403).send({ error: 'Accesso negato: cliente limitato per il tuo profilo.' });
     }
 
+    const baseVal = Number.isFinite(Number(base_total)) ? Number(base_total) : 0;
+    const vatVal = Number.isFinite(Number(vat_amount)) ? Number(vat_amount) : 0;
+    const grandVal = Number.isFinite(Number(grand_total)) ? Number(grand_total) : 0;
+
     try {
-      await db.query(`
+      const [res] = await db.query(`
         INSERT INTO invoices (customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          base_total = VALUES(base_total),
-          vat_amount = VALUES(vat_amount),
-          grand_total = VALUES(grand_total),
-          invoice_data = VALUES(invoice_data)
-      `, [customer_id, period_month, period_year, base_total, vat_amount, grand_total, invoice_data ? JSON.stringify(invoice_data) : null]);
+      `, [custIdNum, monthNum, yearNum, baseVal, vatVal, grandVal, invoice_data ? JSON.stringify(invoice_data) : null]);
       
       await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
-        ['SAVE_INVOICE', `Salvata proforma per cliente ID: ${customer_id}, Periodo: ${period_month}/${period_year}`, 'Gestionale Finanza', request.user.username]
+        ['SAVE_INVOICE', `Salvata proforma #${res.insertId} per cliente ID: ${custIdNum}, Periodo: ${monthNum}/${yearNum}`, 'Gestionale Finanza', request.user.username]
       );
 
       if (fastify.io) {
@@ -37,7 +47,7 @@ async function financesRoutes(fastify, options) {
         fastify.io.emit('dashboard_update');
       }
 
-      return { success: true };
+      return { success: true, id: res.insertId };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore salvataggio fattura' });
@@ -45,23 +55,60 @@ async function financesRoutes(fastify, options) {
   });
 
   fastify.get('/invoices', async (request, reply) => {
-    if (!hasPermission(request.user, 'view_finances') && !hasPermission(request.user, 'finance_manage')) {
+    if (
+      !hasPermission(request.user, 'view_finances') &&
+      !hasPermission(request.user, 'finance_manage') &&
+      !hasPermission(request.user, 'view_billing')
+    ) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare le proforme.' });
     }
 
     try {
       const [rows] = await db.query(`
         SELECT i.id, i.customer_id, i.period_month, i.period_year, i.base_total, i.vat_amount, i.grand_total,
-               i.invoice_data, i.is_paid, i.created_at,
-               c.business_name, c.address, c.vat_number, c.unique_id
+               IF(i.invoice_data IS NOT NULL, 1, 0) AS has_invoice_data, i.is_paid, i.created_at,
+               c.business_name, c.address, c.vat_number, c.unique_id, c.parent_id,
+               p.business_name AS parent_business_name
         FROM invoices i
         JOIN CUSTOMERS c ON i.customer_id = c.id
-        ORDER BY i.period_year DESC, i.period_month DESC, i.created_at DESC
+        LEFT JOIN CUSTOMERS p ON c.parent_id = p.id
+        ORDER BY i.created_at DESC, i.period_year DESC, i.period_month DESC, i.id DESC
       `);
       return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore fetch fatture' });
+    }
+  });
+
+  fastify.get('/invoices/:id', async (request, reply) => {
+    if (
+      !hasPermission(request.user, 'view_finances') &&
+      !hasPermission(request.user, 'finance_manage') &&
+      !hasPermission(request.user, 'view_billing')
+    ) {
+      return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di visualizzare la proforma.' });
+    }
+
+    try {
+      const [rows] = await db.query(`
+        SELECT i.id, i.customer_id, i.period_month, i.period_year, i.base_total, i.vat_amount, i.grand_total,
+               i.invoice_data, i.is_paid, i.created_at,
+               c.business_name, c.address, c.vat_number, c.unique_id, c.parent_id,
+               p.business_name AS parent_business_name
+        FROM invoices i
+        JOIN CUSTOMERS c ON i.customer_id = c.id
+        LEFT JOIN CUSTOMERS p ON c.parent_id = p.id
+        WHERE i.id = ?
+      `, [request.params.id]);
+      if (rows.length === 0) return reply.code(404).send({ error: 'Proforma non trovata' });
+      if (!canAccessCustomer(request.user, rows[0].customer_id)) {
+        return reply.code(403).send({ error: 'Accesso negato per questo cliente.' });
+      }
+      return rows[0];
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore caricamento dettaglio proforma' });
     }
   });
 

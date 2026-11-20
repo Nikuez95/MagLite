@@ -16,6 +16,8 @@ const defaultColumns = [
   { key: 'customer', label: 'Cliente', visible: true },
   { key: 'product', label: 'Prodotto', visible: true },
   { key: 'quantity', label: 'Q.tà', visible: true },
+  { key: 'netWeight', label: 'KG Netti', visible: true },
+  { key: 'grossWeight', label: 'KG Lordi', visible: true },
   { key: 'location', label: 'Posizione', visible: true },
   { key: 'arrival', label: 'Arrivo', visible: true },
   { key: 'batch', label: 'Lotto', visible: true },
@@ -224,6 +226,14 @@ const Inventory = () => {
     }
     if (!cols.find(c => c.key === 'flags')) {
       cols.splice(8, 0, { key: 'flags', label: 'Flag', visible: true });
+    }
+    if (!cols.find(c => c.key === 'netWeight')) {
+      const qtyIdx = cols.findIndex(c => c.key === 'quantity');
+      cols.splice(qtyIdx >= 0 ? qtyIdx + 1 : cols.length, 0, { key: 'netWeight', label: 'KG Netti', visible: true });
+    }
+    if (!cols.find(c => c.key === 'grossWeight')) {
+      const nwIdx = cols.findIndex(c => c.key === 'netWeight');
+      cols.splice(nwIdx >= 0 ? nwIdx + 1 : cols.length, 0, { key: 'grossWeight', label: 'KG Lordi', visible: true });
     }
     return cols;
   });
@@ -444,6 +454,8 @@ const Inventory = () => {
             palletIds: [p.id],
             clientPalletList: p.client_pallet_number ? [String(p.client_pallet_number).trim()] : [],
             quantity: parseFloat(p.quantity) || 0,
+            net_weight_kg: parseFloat(p.net_weight_kg) || 0,
+            gross_weight_kg: parseFloat(p.gross_weight_kg) || 0,
             palletCount: 1,
             location: '',
             zone: '',
@@ -460,6 +472,8 @@ const Inventory = () => {
             }
           }
           groups[key].quantity += (parseFloat(p.quantity) || 0);
+          groups[key].net_weight_kg += (parseFloat(p.net_weight_kg) || 0);
+          groups[key].gross_weight_kg += (parseFloat(p.gross_weight_kg) || 0);
           groups[key].palletCount += 1;
           if (p.expiration_date) {
             if (!groups[key].expiration_date || new Date(p.expiration_date) < new Date(groups[key].expiration_date)) {
@@ -605,6 +619,8 @@ const Inventory = () => {
       case 'customer': return row.customer_name;
       case 'product': return row.product_name;
       case 'quantity': return `${formatQuantity(row.quantity, row.uom)} ${formatUOM(row.uom)}`;
+      case 'netWeight': return Number(row.net_weight_kg) > 0 ? `${Number(row.net_weight_kg)} kg` : '-';
+      case 'grossWeight': return Number(row.gross_weight_kg) > 0 ? `${Number(row.gross_weight_kg)} kg` : '-';
       case 'location': return groupByBatch ? '-' : (row.location ? (row.zone ? `${row.zone} ${row.col} ${row.pos}` : row.location) : 'IN ATTESA');
       case 'arrival': return new Date(row.created_at).toLocaleDateString('it-IT');
       case 'batch': return row.batch || '-';
@@ -664,6 +680,16 @@ const Inventory = () => {
           </div>
         );
       }
+      case 'netWeight': return Number(row.net_weight_kg) > 0 ? (
+        <span className="font-mono font-bold text-xs text-sky-300">{Number(row.net_weight_kg)} kg</span>
+      ) : (
+        <span className="text-xs text-slate-600">-</span>
+      );
+      case 'grossWeight': return Number(row.gross_weight_kg) > 0 ? (
+        <span className="font-mono font-bold text-xs text-amber-300">{Number(row.gross_weight_kg)} kg</span>
+      ) : (
+        <span className="text-xs text-slate-600">-</span>
+      );
       case 'location': return (
         <div className="text-center flex flex-col items-center gap-1">
           {Boolean(row.is_quarantined) && (

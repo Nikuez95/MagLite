@@ -7,10 +7,44 @@ import { io } from 'socket.io-client';
 import {
   Truck, Search, Plus, Trash2, Printer, CheckCircle, Clock, Eye, XCircle,
   PackageSearch, X, History, User, Package, RotateCcw, Calendar, ArrowUpDown,
-  AlertTriangle, Edit3, Zap, Layers
+  AlertTriangle, Edit3, Zap, Layers, FileText, MapPin, ShieldAlert, Thermometer, SlidersHorizontal
 } from 'lucide-react';
 import { jwtDecode } from 'jwt-decode';
 import { useNavigate } from 'react-router-dom';
+
+const DEFAULT_BOLLA_OPTIONS = {
+  is_adr: false,
+  adr_note: '',
+  temp_6_8: false,
+  temp_15_25: false,
+  legal_intact_goods: true,
+  legal_driver_check: true,
+  legal_transport_norm: true,
+  causale: 'Trasporto / Consegna Merce',
+  porto: 'Franco',
+  aspetto_beni: 'Bancali / Colli Imballati',
+  carrier_name: '',
+  vehicle_plate: '',
+  transport_notes: ''
+};
+
+const parseBollaOpts = (raw) => {
+  if (!raw) return { ...DEFAULT_BOLLA_OPTIONS };
+  try {
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return { ...DEFAULT_BOLLA_OPTIONS, ...(obj || {}) };
+  } catch (_) {
+    return { ...DEFAULT_BOLLA_OPTIONS };
+  }
+};
+
+const formatDeliveryAddrOption = (a) => {
+  if (!a) return '';
+  const city = [a.cap, a.city, a.province ? `(${a.province})` : ''].filter(Boolean).join(' ');
+  const main = [a.address_line, city].filter(Boolean).join(' - ');
+  const contact = [a.contact_name ? `Ref: ${a.contact_name}` : '', a.contact_phone ? `Tel: ${a.contact_phone}` : ''].filter(Boolean).join(' • ');
+  return contact ? `${main} | ${contact}` : main;
+};
 
 function TimelineModal({ order, onClose, token, onOpenReturn }) {
   const [details, setDetails] = useState(null);
@@ -176,12 +210,38 @@ const Outbound = () => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [customerRecords, setCustomerRecords] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   
   // Modale nuova spedizione
   const [showModal, setShowModal] = useState(false);
-  const [newOrder, setNewOrder] = useState({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
+  const [newOrder, setNewOrder] = useState({
+    customer_id: '',
+    exit_date: new Date().toISOString().split('T')[0],
+    client_ddt: '',
+    notes: '',
+    generate_exit_ddt: true,
+    delivery_address_id: '',
+    delivery_label: '',
+    delivery_address_text: '',
+    bolla_options: { ...DEFAULT_BOLLA_OPTIONS }
+  });
+  const [orderDeliveryAddresses, setOrderDeliveryAddresses] = useState([]);
+  const [showAdvancedBollaCreate, setShowAdvancedBollaCreate] = useState(false);
   const [cart, setCart] = useState([]);
+
+  // Modale Configura & Stampa Bolla di Uscita
+  const [bollaModal, setBollaModal] = useState({
+    show: false,
+    order: null,
+    addresses: [],
+    saving: false,
+    generate_exit_ddt: true,
+    delivery_address_id: '',
+    delivery_label: '',
+    delivery_address_text: '',
+    bolla_options: { ...DEFAULT_BOLLA_OPTIONS }
+  });
 
   // Modale selezione paletta/lotto
   const [availablePallets, setAvailablePallets] = useState([]);
@@ -327,11 +387,37 @@ const Outbound = () => {
     }
   };
 
+  const fetchCustomerDeliveryAddresses = async (customerId) => {
+    if (!customerId) return [];
+    try {
+      const res = await axios.get(
+        `http://${window.location.hostname}:3000/api/customers/${customerId}/delivery-addresses`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return res.data || [];
+    } catch (_) {
+      return [];
+    }
+  };
+
   const editOrder = async (orderId) => {
     try {
       const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/${orderId}/details`, { headers: { Authorization: `Bearer ${token}` }});
       const { order, items } = res.data;
-      setNewOrder({ id: order.id, customer_id: order.customer_id, exit_date: order.exit_date.split('T')[0], client_ddt: order.client_ddt || '', notes: order.notes || '' });
+      const addrs = await fetchCustomerDeliveryAddresses(order.customer_id);
+      setOrderDeliveryAddresses(addrs);
+      setNewOrder({
+        id: order.id,
+        customer_id: order.customer_id,
+        exit_date: order.exit_date.split('T')[0],
+        client_ddt: order.client_ddt || '',
+        notes: order.notes || '',
+        generate_exit_ddt: order.generate_exit_ddt !== undefined && order.generate_exit_ddt !== null ? Boolean(order.generate_exit_ddt) : true,
+        delivery_address_id: order.delivery_address_id ? String(order.delivery_address_id) : '',
+        delivery_label: order.delivery_label || '',
+        delivery_address_text: order.delivery_address_text || '',
+        bolla_options: parseBollaOpts(order.bolla_options)
+      });
       setCart(items.map(i => ({
         pallet_id: i.pallet_id || null,
         pallet_code: i.pallet_code || null,
@@ -353,7 +439,8 @@ const Outbound = () => {
   const fetchBaseData = async () => {
     try {
       const resC = await axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers: { Authorization: `Bearer ${token}` }});
-      setCustomers(resC.data.map(c => ({ value: c.id, label: c.business_name })));
+      setCustomerRecords(resC.data || []);
+      setCustomers((resC.data || []).map(c => ({ value: c.id, label: c.business_name })));
     } catch (err) {
       console.error(err);
     }
@@ -377,12 +464,37 @@ const Outbound = () => {
     }
   };
 
-  const handleCustomerChange = (val) => {
-    setNewOrder({...newOrder, customer_id: val ? val.value : ''}); 
+  const handleCustomerChange = async (val) => {
+    const custId = val ? val.value : '';
+    const custObj = customerRecords.find(c => Number(c.id) === Number(custId));
+    const defaultGenDdt = custObj && custObj.generate_exit_ddt !== undefined && custObj.generate_exit_ddt !== null
+      ? Boolean(custObj.generate_exit_ddt)
+      : true;
+
     setPalletSearchTerm('');
-    if (val) {
-      searchPalletsByCustomer(val.value, newOrder.id, includePending);
+    if (custId) {
+      const addrs = await fetchCustomerDeliveryAddresses(custId);
+      setOrderDeliveryAddresses(addrs);
+      const defAddr = addrs.find(a => a.is_default) || addrs[0];
+      setNewOrder(prev => ({
+        ...prev,
+        customer_id: custId,
+        generate_exit_ddt: defaultGenDdt,
+        delivery_address_id: defAddr ? String(defAddr.id) : '',
+        delivery_label: defAddr ? defAddr.label : (custObj?.address ? 'Sede Cliente' : ''),
+        delivery_address_text: defAddr ? formatDeliveryAddrOption(defAddr) : (custObj?.address || '')
+      }));
+      searchPalletsByCustomer(custId, newOrder.id, includePending);
     } else {
+      setOrderDeliveryAddresses([]);
+      setNewOrder(prev => ({
+        ...prev,
+        customer_id: '',
+        generate_exit_ddt: true,
+        delivery_address_id: '',
+        delivery_label: '',
+        delivery_address_text: ''
+      }));
       setAvailablePallets([]);
     }
   };
@@ -426,6 +538,11 @@ const Outbound = () => {
         exit_date: newOrder.exit_date,
         client_ddt: newOrder.client_ddt || null,
         notes: newOrder.notes ? newOrder.notes.trim() : null,
+        generate_exit_ddt: newOrder.generate_exit_ddt !== false,
+        delivery_address_id: newOrder.delivery_address_id ? Number(newOrder.delivery_address_id) : null,
+        delivery_label: newOrder.delivery_label || null,
+        delivery_address_text: newOrder.delivery_address_text || null,
+        bolla_options: newOrder.bolla_options || DEFAULT_BOLLA_OPTIONS,
         items: cart.map(c => ({
           pallet_id: c.pallet_id || null,
           pallet_code: c.pallet_code || null,
@@ -444,8 +561,20 @@ const Outbound = () => {
       }
       
       setShowModal(false);
+      setShowAdvancedBollaCreate(false);
       setCart([]);
-      setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
+      setNewOrder({
+        customer_id: '',
+        exit_date: new Date().toISOString().split('T')[0],
+        client_ddt: '',
+        notes: '',
+        generate_exit_ddt: true,
+        delivery_address_id: '',
+        delivery_label: '',
+        delivery_address_text: '',
+        bolla_options: { ...DEFAULT_BOLLA_OPTIONS }
+      });
+      setOrderDeliveryAddresses([]);
       setAvailablePallets([]);
       setPalletSearchTerm('');
       fetchOrders();
@@ -453,6 +582,50 @@ const Outbound = () => {
       appAlert(err.response?.data?.error || 'Errore durante il salvataggio');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const openBollaModal = async (order) => {
+    const addrs = await fetchCustomerDeliveryAddresses(order.customer_id);
+    const custObj = customerRecords.find(c => Number(c.id) === Number(order.customer_id));
+    setBollaModal({
+      show: true,
+      order,
+      addresses: addrs,
+      saving: false,
+      generate_exit_ddt: order.generate_exit_ddt !== undefined && order.generate_exit_ddt !== null ? Boolean(order.generate_exit_ddt) : true,
+      delivery_address_id: order.delivery_address_id ? String(order.delivery_address_id) : '',
+      delivery_label: order.delivery_label || (custObj?.address ? 'Sede Cliente' : ''),
+      delivery_address_text: order.delivery_address_text || custObj?.address || '',
+      bolla_options: parseBollaOpts(order.bolla_options)
+    });
+  };
+
+  const handleSaveBollaModal = async (openPdfAfter = false) => {
+    if (!bollaModal.order || bollaModal.saving) return;
+    setBollaModal(prev => ({ ...prev, saving: true }));
+    try {
+      const res = await axios.put(
+        `http://${window.location.hostname}:3000/api/outbound/${bollaModal.order.id}/bolla-settings`,
+        {
+          generate_exit_ddt: bollaModal.generate_exit_ddt,
+          delivery_address_id: bollaModal.delivery_address_id ? Number(bollaModal.delivery_address_id) : null,
+          delivery_label: bollaModal.delivery_label || null,
+          delivery_address_text: bollaModal.delivery_address_text || null,
+          bolla_options: bollaModal.bolla_options,
+          generate_now: openPdfAfter
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      await fetchOrders();
+      if (openPdfAfter) {
+        const targetCode = res.data?.bolla_number || bollaModal.order.order_code;
+        window.open(`http://${window.location.hostname}:3000/api/outbound/${targetCode}/bolla-pdf?token=${token}`, '_blank');
+      }
+      setBollaModal(prev => ({ ...prev, show: false, saving: false }));
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Errore salvataggio opzioni Bolla');
+      setBollaModal(prev => ({ ...prev, saving: false }));
     }
   };
 
@@ -777,7 +950,19 @@ const Outbound = () => {
           </button>
           {canCreateOutbound && (<button
             onClick={() => {
-              setNewOrder({ customer_id: '', exit_date: new Date().toISOString().split('T')[0], client_ddt: '', notes: '' });
+              setNewOrder({
+                customer_id: '',
+                exit_date: new Date().toISOString().split('T')[0],
+                client_ddt: '',
+                notes: '',
+                generate_exit_ddt: true,
+                delivery_address_id: '',
+                delivery_label: '',
+                delivery_address_text: '',
+                bolla_options: { ...DEFAULT_BOLLA_OPTIONS }
+              });
+              setOrderDeliveryAddresses([]);
+              setShowAdvancedBollaCreate(false);
               setCart([]);
               setAvailablePallets([]);
               setPalletSearchTerm('');
@@ -974,9 +1159,19 @@ const Outbound = () => {
                   <td className="px-4 py-3.5 font-mono font-bold text-brand-white">
                     <div className="flex flex-col">
                       <span className="text-sm">{o.order_code}</span>
+                      {o.bolla_number && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-mono font-bold mt-0.5">
+                          <FileText size={11} /> Bolla: {o.bolla_number}
+                        </span>
+                      )}
                       {o.client_ddt && (
                         <span className="text-[11px] text-brand-blue font-sans font-bold uppercase mt-0.5">
                           DDT Rif: {o.client_ddt}
+                        </span>
+                      )}
+                      {o.delivery_label && (
+                        <span className="text-[10px] text-sky-300 font-sans font-semibold mt-0.5 truncate max-w-[190px]" title={o.delivery_address_text || o.delivery_label}>
+                          Dest: {o.delivery_label}
                         </span>
                       )}
                       {o.notes && (
@@ -1117,9 +1312,21 @@ const Outbound = () => {
                       <button 
                         onClick={() => window.open(`http://${window.location.hostname}:3000/api/outbound/${o.order_code}/pdf?token=${token}`, '_blank')}
                         className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl transition-colors"
-                        title="Stampa DDT (Picking List)"
+                        title="Stampa Picking List Interna"
                       >
                         <Printer size={17} />
+                      </button>
+                      <button
+                        onClick={() => openBollaModal(o)}
+                        className={`px-2.5 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 border ${
+                          o.bolla_number
+                            ? 'bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-brand-black border-sky-500/40'
+                            : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
+                        }`}
+                        title={o.bolla_number ? `Configura / Stampa Bolla ${o.bolla_number}` : 'Configura & Genera Bolla di Uscita / DDT Autotrasporto'}
+                      >
+                        <FileText size={15} />
+                        <span className="hidden xl:inline">{o.bolla_number ? 'Bolla DDT' : 'Bolla'}</span>
                       </button>
                       {o.status === 'SHIPPED' && (
                         <button 
@@ -1258,6 +1465,160 @@ const Outbound = () => {
                   <span className="text-xs font-bold text-slate-300 truncate">Includi "In Attesa"</span>
                 </label>
               </div>
+            </div>
+
+            {/* Riga Compatta Destinazione & Bolla di Uscita */}
+            <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 mb-4 space-y-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex-1 min-w-[230px]">
+                  <label className="block text-sky-400 font-bold mb-1 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                    <MapPin size={11} /> Indirizzo di Consegna (Destinazione Bolla)
+                  </label>
+                  <div className="flex gap-2">
+                    {orderDeliveryAddresses.length > 0 && (
+                      <select
+                        value={newOrder.delivery_address_id || ''}
+                        onChange={e => {
+                          const selectedId = e.target.value;
+                          if (!selectedId) {
+                            setNewOrder(prev => ({ ...prev, delivery_address_id: '' }));
+                            return;
+                          }
+                          const found = orderDeliveryAddresses.find(a => String(a.id) === String(selectedId));
+                          if (found) {
+                            setNewOrder(prev => ({
+                              ...prev,
+                              delivery_address_id: String(found.id),
+                              delivery_label: found.label,
+                              delivery_address_text: formatDeliveryAddrOption(found)
+                            }));
+                          }
+                        }}
+                        className="bg-slate-900 border border-slate-700 text-white rounded-xl px-2.5 py-1.5 text-xs font-bold max-w-[220px] focus:border-brand-blue outline-none"
+                      >
+                        <option value="">Indirizzo personalizzato / sede</option>
+                        {orderDeliveryAddresses.map(a => (
+                          <option key={a.id} value={a.id}>
+                            {a.label}{a.is_default ? ' ★' : ''}{a.is_inherited ? ' (Madre)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <input
+                      type="text"
+                      value={newOrder.delivery_address_text || ''}
+                      onChange={e => setNewOrder(prev => ({ ...prev, delivery_address_id: '', delivery_address_text: e.target.value }))}
+                      placeholder="Indirizzo completo di consegna (es. Via Roma 10, Milano)"
+                      className="flex-1 bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 text-xs focus:border-brand-blue outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-3.5">
+                  <button
+                    type="button"
+                    onClick={() => setNewOrder(prev => ({ ...prev, generate_exit_ddt: !prev.generate_exit_ddt }))}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                      newOrder.generate_exit_ddt
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-slate-900 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    <FileText size={12} /> Bolla: {newOrder.generate_exit_ddt ? 'SÌ' : 'NO'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewOrder(prev => ({
+                      ...prev,
+                      bolla_options: { ...prev.bolla_options, is_adr: !prev.bolla_options?.is_adr }
+                    }))}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                      newOrder.bolla_options?.is_adr
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <ShieldAlert size={12} /> ADR
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewOrder(prev => ({
+                      ...prev,
+                      bolla_options: { ...prev.bolla_options, temp_6_8: !prev.bolla_options?.temp_6_8 }
+                    }))}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                      newOrder.bolla_options?.temp_6_8
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <Thermometer size={12} /> 6-8°C
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewOrder(prev => ({
+                      ...prev,
+                      bolla_options: { ...prev.bolla_options, temp_15_25: !prev.bolla_options?.temp_15_25 }
+                    }))}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                      newOrder.bolla_options?.temp_15_25
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    <Thermometer size={12} /> 15-25°C
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedBollaCreate(v => !v)}
+                    className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1"
+                  >
+                    <SlidersHorizontal size={12} /> {showAdvancedBollaCreate ? 'Chiudi Legali' : 'Dettagli Legali'}
+                  </button>
+                </div>
+              </div>
+
+              {showAdvancedBollaCreate && (
+                <div className="pt-2.5 border-t border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+                  {newOrder.bolla_options?.is_adr && (
+                    <input
+                      type="text"
+                      value={newOrder.bolla_options?.adr_note || ''}
+                      onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, adr_note: e.target.value } }))}
+                      placeholder="Classe / UN / Dettagli ADR..."
+                      className="bg-slate-900 border border-rose-500/40 text-rose-200 rounded-xl px-3 py-1.5 outline-none"
+                    />
+                  )}
+                  <input
+                    type="text"
+                    value={newOrder.bolla_options?.carrier_name || ''}
+                    onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, carrier_name: e.target.value } }))}
+                    placeholder="Vettore / Trasportatore (opz.)"
+                    className="bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={newOrder.bolla_options?.vehicle_plate || ''}
+                    onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, vehicle_plate: e.target.value.toUpperCase() } }))}
+                    placeholder="Targa Mezzo (opz.)"
+                    className="bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 outline-none font-mono uppercase"
+                  />
+                  <div className="md:col-span-3 flex flex-wrap gap-4 pt-1 text-[11px] text-slate-300">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox" checked={Boolean(newOrder.bolla_options?.legal_intact_goods)} onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_intact_goods: e.target.checked } }))} />
+                      Integrità colli e imballaggio
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox" checked={Boolean(newOrder.bolla_options?.legal_driver_check)} onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_driver_check: e.target.checked } }))} />
+                      Dichiarazione controllo conducente
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox" checked={Boolean(newOrder.bolla_options?.legal_transport_norm)} onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_transport_norm: e.target.checked } }))} />
+                      Clausola D.P.R. 472/96 &amp; D.Lgs. 286/2005
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Area Centrale Split-Screen: Catalogo Giacenze (7/12) + Carrello Prelievo Inline (5/12) */}
@@ -2043,6 +2404,256 @@ const Outbound = () => {
               >
                 <RotateCcw size={16} />
                 {returnModal.loading ? 'Salvataggio in corso...' : 'Conferma Rientro Merce'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Configura & Stampa Bolla di Uscita */}
+      {bollaModal.show && bollaModal.order && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl my-8 animate-fade-in-up space-y-5">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-xl font-black text-white flex items-center gap-2.5">
+                  <FileText className="text-sky-400" size={24} />
+                  Bolla di Uscita / D.D.T. Autotrasporto
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Ordine <b className="text-white font-mono">{bollaModal.order.order_code}</b> • {bollaModal.order.customer_name}
+                  {bollaModal.order.bolla_number && (
+                    <span className="ml-2 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+                      {bollaModal.order.bolla_number}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBollaModal(prev => ({ ...prev, show: false }))}
+                className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Destinazione / Indirizzo di Consegna */}
+              <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-2.5">
+                <label className="block text-xs font-black uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                  <MapPin size={14} /> Indirizzo di Consegna (Destinazione Merce)
+                </label>
+                {bollaModal.addresses.length > 0 && (
+                  <select
+                    value={bollaModal.delivery_address_id || ''}
+                    onChange={e => {
+                      const selId = e.target.value;
+                      if (!selId) {
+                        setBollaModal(prev => ({ ...prev, delivery_address_id: '' }));
+                        return;
+                      }
+                      const found = bollaModal.addresses.find(a => String(a.id) === String(selId));
+                      if (found) {
+                        setBollaModal(prev => ({
+                          ...prev,
+                          delivery_address_id: String(found.id),
+                          delivery_label: found.label,
+                          delivery_address_text: formatDeliveryAddrOption(found)
+                        }));
+                      }
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-brand-blue outline-none"
+                  >
+                    <option value="">-- Seleziona indirizzo salvato oppure personalizza sotto --</option>
+                    {bollaModal.addresses.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.label}{a.is_default ? ' (Predefinito)' : ''}{a.is_inherited ? ' [Sede Madre]' : ''} — {a.address_line} {a.city || ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={bollaModal.delivery_label || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, delivery_address_id: '', delivery_label: e.target.value }))}
+                    placeholder="Etichetta Sede (es. Deposito Nord)"
+                    className="bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-2 text-xs focus:border-brand-blue outline-none"
+                  />
+                  <input
+                    type="text"
+                    value={bollaModal.delivery_address_text || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, delivery_address_id: '', delivery_address_text: e.target.value }))}
+                    placeholder="Indirizzo completo di consegna..."
+                    className="sm:col-span-2 bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-2 text-xs focus:border-brand-blue outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Spunta Normative ADR & Temperatura Controllata */}
+              <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+                <div className="text-xs font-black uppercase tracking-wider text-amber-400">
+                  Note Legali Spuntabili &amp; Condizioni Trasporto
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
+                    bollaModal.bolla_options?.is_adr
+                      ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                      : 'bg-slate-900 border-slate-800 text-slate-300'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.is_adr)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, is_adr: e.target.checked } }))}
+                    />
+                    <ShieldAlert size={14} /> Merce ADR
+                  </label>
+
+                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
+                    bollaModal.bolla_options?.temp_6_8
+                      ? 'bg-cyan-500/15 border-cyan-500/50 text-cyan-300'
+                      : 'bg-slate-900 border-slate-800 text-slate-300'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.temp_6_8)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, temp_6_8: e.target.checked } }))}
+                    />
+                    <Thermometer size={14} /> Temp. 6–8 °C
+                  </label>
+
+                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
+                    bollaModal.bolla_options?.temp_15_25
+                      ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
+                      : 'bg-slate-900 border-slate-800 text-slate-300'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.temp_15_25)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, temp_15_25: e.target.checked } }))}
+                    />
+                    <Thermometer size={14} /> Temp. 15–25 °C
+                  </label>
+                </div>
+
+                {bollaModal.bolla_options?.is_adr && (
+                  <input
+                    type="text"
+                    value={bollaModal.bolla_options?.adr_note || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, adr_note: e.target.value } }))}
+                    placeholder="Specifiche ADR (es. UN1993 Classe 3 Gruppo II, esenzione 1.1.3.6...)"
+                    className="w-full bg-slate-900 border border-rose-500/40 text-rose-200 rounded-xl px-3 py-2 text-xs outline-none"
+                  />
+                )}
+
+                <div className="space-y-1.5 pt-1 text-xs text-slate-300">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.legal_intact_goods)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_intact_goods: e.target.checked } }))}
+                    />
+                    Integrità colli, pallettizzazione e imballaggi conformi all&apos;uscita
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.legal_driver_check)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_driver_check: e.target.checked } }))}
+                    />
+                    Dichiarazione di verifica numero bancali/colli alla presa in carico del conducente
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bollaModal.bolla_options?.legal_transport_norm)}
+                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_transport_norm: e.target.checked } }))}
+                    />
+                    Validità documento di trasporto D.P.R. 472/96 &amp; normativa autotrasporto D.Lgs. 286/2005
+                  </label>
+                </div>
+              </div>
+
+              {/* Dati Vettore, Causale e Note */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Vettore / Trasportatore</label>
+                  <input
+                    type="text"
+                    value={bollaModal.bolla_options?.carrier_name || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, carrier_name: e.target.value } }))}
+                    placeholder="Es. Bartolini / Vettore Proprio"
+                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3 py-2 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Targa Mezzo</label>
+                  <input
+                    type="text"
+                    value={bollaModal.bolla_options?.vehicle_plate || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, vehicle_plate: e.target.value.toUpperCase() } }))}
+                    placeholder="Es. AB123CD"
+                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3 py-2 outline-none font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Causale Trasporto</label>
+                  <input
+                    type="text"
+                    value={bollaModal.bolla_options?.causale || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, causale: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3 py-2 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Porto</label>
+                  <select
+                    value={bollaModal.bolla_options?.porto || 'Franco'}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, porto: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3 py-2 outline-none"
+                  >
+                    <option value="Franco">Franco</option>
+                    <option value="Assegnato">Assegnato</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Note per Autista / Trasporto</label>
+                  <input
+                    type="text"
+                    value={bollaModal.bolla_options?.transport_notes || ''}
+                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, transport_notes: e.target.value } }))}
+                    placeholder="Istruzioni scarico, orari, sponda idraulica..."
+                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-3 py-2 outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setBollaModal(prev => ({ ...prev, show: false }))}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs transition-colors"
+              >
+                Chiudi
+              </button>
+              <button
+                type="button"
+                disabled={bollaModal.saving}
+                onClick={() => handleSaveBollaModal(false)}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 rounded-xl font-bold text-xs transition-colors"
+              >
+                Salva Opzioni
+              </button>
+              <button
+                type="button"
+                disabled={bollaModal.saving}
+                onClick={() => handleSaveBollaModal(true)}
+                className="flex-1 px-5 py-2.5 bg-sky-400 hover:bg-sky-300 text-brand-black rounded-xl font-black text-xs transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(56,189,248,0.3)] disabled:opacity-50"
+              >
+                <Printer size={16} />
+                {bollaModal.saving ? 'Generazione...' : 'Salva & Stampa Bolla PDF'}
               </button>
             </div>
           </div>

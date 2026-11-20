@@ -77,6 +77,8 @@ const PERMISSION_CATALOG = [
     description: 'Permessi amministrativi, gestionali e di configurazione del team.',
     items: [
       { key: 'customer_manage', label: 'Gestire Anagrafica Clienti', desc: 'Permette di creare, modificare ed eliminare clienti e reparti.' },
+      { key: 'tariff_plans_manage', label: 'Gestire Listini Globali', desc: 'Permette di aggiungere, modificare ed eliminare i Listini Prezzi Globali e le diciture in fattura.' },
+      { key: 'client_tariffs_manage', label: 'Modificare Listini Singoli Clienti', desc: 'Permette di personalizzare e salvare le tariffe per singolo cliente e frammentazione.' },
       { key: 'tms_manage', label: 'Gestire Viaggi e Autisti (TMS)', desc: 'Permette di creare e modificare viaggi, tratte e autisti.' },
       { key: 'finance_manage', label: 'Gestire Finanza, Spese e Fatturazione', desc: 'Permette di modificare tariffe, emettere proforme e registrare uscite.' },
       { key: 'users_manage', label: 'Gestire Utenti e Ruoli Sottostanti', desc: 'Permette di creare/modificare utenti e ruoli di livello inferiore nella piramide.' },
@@ -144,6 +146,16 @@ const OPERATOR_PERMISSIONS = buildPermMap([
   'outbound_pick'
 ]);
 
+const TARIFF_ADMIN_PERMISSIONS = buildPermMap([
+  'access_desktop',
+  'view_dashboard',
+  'view_customers',
+  'customer_manage',
+  'view_billing',
+  'tariff_plans_manage',
+  'client_tariffs_manage'
+]);
+
 const DEFAULT_ROLES = [
   {
     code: 'developer',
@@ -153,6 +165,15 @@ const DEFAULT_ROLES = [
     hierarchy_level: 10000,
     is_system: true,
     permissions: { ...FULL_PERMISSIONS, restricted_customers: [] }
+  },
+  {
+    code: 'tariff_admin',
+    name: 'Gestore Listini & Clienti',
+    description: 'Può creare e modificare Listini Globali e personalizzare i prezzi e le schede di ogni singolo cliente o frammentazione.',
+    color: '#0ea5e9',
+    hierarchy_level: 500,
+    is_system: false,
+    permissions: { ...TARIFF_ADMIN_PERMISSIONS, restricted_customers: [] }
   },
   {
     code: 'operator',

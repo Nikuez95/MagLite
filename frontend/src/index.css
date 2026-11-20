@@ -19,6 +19,14 @@
     background: #334155; 
   }
 
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Impedisci la selezione del testo per evitare tocchi involontari nei palmari */
   body {
     -webkit-user-select: none;
