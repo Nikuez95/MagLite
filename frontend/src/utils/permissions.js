@@ -74,6 +74,8 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/quarantine', perm: 'view_quarantine', label: 'Quarantena & Qualità' },
   { path: '/desktop/customers', perm: 'view_customers', label: 'Anagrafica Clienti' },
   { path: '/desktop/locations', perm: 'view_locations', label: 'Mappa Magazzino' },
+  { path: '/desktop/warehouse-signs', perm: ['view_locations', 'locations_manage', 'inbound_create'], label: 'Cartelli Magazzino' },
+  { path: '/desktop/container-simulator', perm: ['view_outbound', 'tms_manage', 'view_tms', 'view_locations'], label: 'Simulatore Container' },
   { path: '/desktop/tms', perm: ['view_tms', 'tms_manage'], label: 'TMS (Trasporti)' },
   { path: '/desktop/finances', perm: ['view_finances', 'finance_manage'], label: 'Dashboard Finanza' },
   { path: '/desktop/expenses', perm: ['view_finances', 'finance_manage'], label: 'Gestione Uscite' },
@@ -86,6 +88,50 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/settings', perm: ['view_settings', 'settings_manage'], label: 'Impostazioni Aziendali' },
   { path: '/desktop/settings/routing', perm: ['view_settings', 'settings_manage', 'pallet_move'], label: 'Regole di Prelievo' }
 ];
+
+export const LOCKABLE_SECTIONS = [
+  { key: 'dashboard', path: '/desktop', label: 'Dashboard', group: 'Generale' },
+  { key: 'inbound', path: '/desktop/inbound', label: 'Nuova Merce (In)', group: 'Merce' },
+  { key: 'custom_forms', path: '/desktop/custom-forms', label: 'Moduli & Check-in', group: 'Merce' },
+  { key: 'outbound', path: '/desktop/outbound', label: 'Spedizioni (Out)', group: 'Merce' },
+  { key: 'outbound_history', path: '/desktop/outbound/history', label: 'Storico Articoli Usciti', group: 'Merce' },
+  { key: 'outbound_returns', path: '/desktop/outbound/returns', label: 'Storico Resi', group: 'Merce' },
+  { key: 'products', path: '/desktop/products', label: 'Prodotti & Stock', group: 'Merce' },
+  { key: 'quarantine', path: '/desktop/quarantine', label: 'Quarantena & Qualità', group: 'Merce' },
+  { key: 'inventory', path: '/desktop/inventory', label: 'Inventario Globale', group: 'Merce' },
+  { key: 'customers', path: '/desktop/customers', label: 'Cartelle Clienti', group: 'Operativo' },
+  { key: 'locations', path: '/desktop/locations', label: 'Mappa Magazzino', group: 'Operativo' },
+  { key: 'warehouse_signs', path: '/desktop/warehouse-signs', label: 'Cartelli Magazzino', group: 'Operativo' },
+  { key: 'container_simulator', path: '/desktop/container-simulator', label: 'Simulatore Container', group: 'Operativo' },
+  { key: 'documents', path: '/desktop/documents', label: 'DDT Entrata (Spunta)', group: 'Operativo' },
+  { key: 'tms', path: '/desktop/tms', label: 'TMS (Trasporti)', group: 'Operativo' },
+  { key: 'finances', path: '/desktop/finances', label: 'Dashboard Finanza', group: 'Finanza' },
+  { key: 'expenses', path: '/desktop/expenses', label: 'Gestione Uscite', group: 'Finanza' },
+  { key: 'invoices_history', path: '/desktop/invoices-history', label: 'Archivio Proforme', group: 'Finanza' },
+  { key: 'billing_rules', path: '/desktop/billing-rules', label: 'Regole Base Fatturazione', group: 'Amministrazione' },
+  { key: 'billing_tariffs', path: '/desktop/billing-tariffs', label: 'Tariffe Clienti', group: 'Amministrazione' },
+  { key: 'billing_dashboard', path: '/desktop/billing-dashboard', label: 'Pre-Fatturazione', group: 'Amministrazione' },
+  { key: 'users', path: '/desktop/users', label: 'Utenti & Ruoli (Team)', group: 'Sistema' },
+  { key: 'audit', path: '/desktop/audit', label: 'Audit Logs', group: 'Sistema' },
+  { key: 'tickets', path: '/desktop/tickets', label: 'Supporto & Ticket', group: 'Sistema' },
+  { key: 'changelogs', path: '/desktop/changelogs', label: 'Changelog & Novità', group: 'Sistema' },
+  { key: 'settings', path: '/desktop/settings', label: 'Impostazioni Aziendali', group: 'Configurazione' },
+  { key: 'routing', path: '/desktop/settings/routing', label: 'Regole di Prelievo', group: 'Configurazione' }
+];
+
+export function isSoftwareEngineer(customUser = null) {
+  const user = customUser || getCurrentUser();
+  if (!user) return false;
+  const rCode = String(user.role || '').trim().toLowerCase();
+  const rName = String(user.role_name || '').trim().toLowerCase();
+  return rCode === 'developer' || rName === 'software engineer';
+}
+
+export function getSectionKeyForPath(pathname) {
+  const clean = String(pathname || '').replace(/\/+$/, '') || '/desktop';
+  const hit = LOCKABLE_SECTIONS.find(s => s.path === clean);
+  return hit ? hit.key : null;
+}
 
 export function getFirstAllowedDesktopRoute(customUser = null) {
   const user = customUser || getCurrentUser();

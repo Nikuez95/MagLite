@@ -32,6 +32,7 @@ import {
   TrendingDown,
   Archive,
   Truck,
+  Container as ContainerIcon,
   Smartphone,
   MapPin,
   ArrowUpRight,
@@ -41,9 +42,20 @@ import {
   Star,
   GripVertical,
   SlidersHorizontal,
-  Check
+  Check,
+  Signpost,
+  Lock,
+  Unlock,
+  Wrench,
+  ShieldOff
 } from 'lucide-react';
-import { hasPerm, refreshUserProfile } from '../../utils/permissions';
+import {
+  hasPerm,
+  refreshUserProfile,
+  isSoftwareEngineer,
+  LOCKABLE_SECTIONS,
+  getSectionKeyForPath
+} from '../../utils/permissions';
 import NotificationCenter from '../../components/NotificationCenter';
 
 const DEFAULT_SIDEBAR_PREFS = {
@@ -89,6 +101,11 @@ const DesktopLayout = () => {
   const [socketConnected, setSocketConnected] = useState(true);
   const [socketInstance, setSocketInstance] = useState(null);
   const [openTicketsCount, setOpenTicketsCount] = useState(0);
+  const [sectionLocks, setSectionLocks] = useState({});
+  const [showLockModal, setShowLockModal] = useState(false);
+  const [lockDraftNote, setLockDraftNote] = useState('');
+  const [lockReasonSelect, setLockReasonSelect] = useState('MAINTENANCE');
+  const [savingLocks, setSavingLocks] = useState(false);
 
   const [user, setUser] = useState(() => {
     try {
@@ -145,6 +162,8 @@ const DesktopLayout = () => {
     },
     { id: 'customers', name: 'Cartelle Clienti', path: '/desktop/customers', icon: Users, perm: 'view_customers' },
     { id: 'locations', name: 'Magazzino', path: '/desktop/locations', icon: MapIcon, perm: 'view_locations' },
+    { id: 'warehouse_signs', name: 'Cartelli Magazzino', path: '/desktop/warehouse-signs', icon: Signpost, perm: ['view_locations', 'locations_manage', 'inbound_create'] },
+    { id: 'container_simulator', name: 'Simulatore Container', path: '/desktop/container-simulator', icon: ContainerIcon, perm: ['view_outbound', 'tms_manage', 'view_tms', 'view_locations'] },
     { id: 'documents', name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, perm: 'view_documents' },
     { id: 'tms', name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, perm: ['view_tms', 'tms_manage'] },
     {
@@ -236,18 +255,38 @@ const DesktopLayout = () => {
     };
 
     fetchOpenTicketsCount();
+    const fetchLocks = () => {
+      const tk = localStorage.getItem('maglite_token');
+      if (!tk) return;
+      axios.get(`http://${window.location.hostname}:3000/api/settings/section-locks`, {
+        headers: { Authorization: `Bearer ${tk}` }
+      }).then(res => setSectionLocks(res.data || {})).catch(() => {});
+    };
+    fetchLocks();
+
+    const onWindowLocks = (e) => {
+      if (e?.detail && typeof e.detail === 'object') setSectionLocks(e.detail);
+      else fetchLocks();
+    };
+    window.addEventListener('maglite_section_locks_updated', onWindowLocks);
+
     const socket = io(`http://${window.location.hostname}:3000`);
     setSocketInstance(socket);
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
     socket.on('connect_error', () => setSocketConnected(false));
     socket.on('ticket_updated', fetchOpenTicketsCount);
+    socket.on('section_locks_updated', (locks) => {
+      if (locks && typeof locks === 'object') setSectionLocks(locks);
+      else fetchLocks();
+    });
     socket.on('permissions_updated', () => {
       refreshUserProfile().then(u => {
         if (u) setUser(u);
       });
     });
     return () => {
+      window.removeEventListener('maglite_section_locks_updated', onWindowLocks);
       setSocketInstance(null);
       socket.disconnect();
     };
@@ -483,6 +522,8 @@ const DesktopLayout = () => {
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },
     { name: 'Cartelle Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
     { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: MapIcon, group: 'Magazzino', perm: 'view_locations' },
+    { name: 'Cartelli & Etichette Magazzino', path: '/desktop/warehouse-signs', icon: Signpost, group: 'Magazzino', perm: ['view_locations', 'locations_manage', 'inbound_create'] },
+    { name: 'Simulatore Carico Container', path: '/desktop/container-simulator', icon: ContainerIcon, group: 'Logistica', perm: ['view_outbound', 'tms_manage', 'view_tms', 'view_locations'] },
     { name: 'DDT Entrata (Spunta)', path: '/desktop/documents', icon: FileText, group: 'Merce', perm: 'view_documents' },
     { name: 'TMS (Trasporti)', path: '/desktop/tms', icon: Truck, group: 'Logistica', perm: ['view_tms', 'tms_manage'] },
     { name: 'Dashboard Finanza', path: '/desktop/finances', icon: Activity, group: 'Finanza', perm: ['view_finances', 'finance_manage'] },
@@ -514,6 +555,41 @@ const DesktopLayout = () => {
     searchResults.products.length > 0 ||
     searchResults.orders.length > 0 ||
     searchResults.customers.length > 0;
+
+  const canManageSectionLocks = isSoftwareEngineer(user);
+  const lockedCount = Object.keys(sectionLocks || {}).length;
+  const currentSectionKey = getSectionKeyForPath(location.pathname);
+
+  const handleToggleLockSection = async (secKey, reasonOverride = null) => {
+    if (!canManageSectionLocks || savingLocks || !secKey) return;
+    setSavingLocks(true);
+    try {
+      const tk = localStorage.getItem('maglite_token');
+      const next = { ...sectionLocks };
+      if (next[secKey] && (!reasonOverride || next[secKey].reason === reasonOverride)) {
+        delete next[secKey];
+      } else {
+        next[secKey] = {
+          reason: reasonOverride || lockReasonSelect || 'MAINTENANCE',
+          note: lockDraftNote.trim(),
+          lockedBy: user?.username || 'Software Engineer',
+          lockedAt: new Date().toISOString()
+        };
+      }
+      const res = await axios.put(
+        `http://${window.location.hostname}:3000/api/settings/section-locks`,
+        { locks: next },
+        { headers: { Authorization: `Bearer ${tk}` } }
+      );
+      const updated = res.data?.locks || next;
+      setSectionLocks(updated);
+      window.dispatchEvent(new CustomEvent('maglite_section_locks_updated', { detail: updated }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingLocks(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-brand-black flex flex-col md:flex-row text-brand-white font-sans selection:bg-brand-blue selection:text-brand-black">
@@ -977,6 +1053,9 @@ const DesktopLayout = () => {
                               >
                                 <SubIcon size={15} className={isSubActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
                                 <span className="text-xs truncate">{subItem.name}</span>
+                                {sectionLocks[getSectionKeyForPath(subItem.path)] && (
+                                  <Lock size={11} className={sectionLocks[getSectionKeyForPath(subItem.path)]?.reason === 'INVALID_LICENSE' ? 'text-rose-400 shrink-0 ml-auto' : 'text-amber-400 shrink-0 ml-auto'} />
+                                )}
                               </button>
                               <button
                                 type="button"
@@ -1053,13 +1132,18 @@ const DesktopLayout = () => {
                       <Icon size={18} className={isActive ? 'text-brand-black shrink-0' : 'text-slate-400 shrink-0'} />
                       <span className="text-sm truncate">{item.name}</span>
                     </div>
-                    {item.badge > 0 && (
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
-                        isActive ? 'bg-brand-black text-brand-blue' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      }`}>
-                        {item.badge}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {sectionLocks[getSectionKeyForPath(item.path)] && (
+                        <Lock size={12} className={sectionLocks[getSectionKeyForPath(item.path)]?.reason === 'INVALID_LICENSE' ? 'text-rose-400' : 'text-amber-400'} />
+                      )}
+                      {item.badge > 0 && (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                          isActive ? 'bg-brand-black text-brand-blue' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        }`}>
+                          {item.badge}
+                        </span>
+                      )}
+                    </div>
                   </button>
                   <button
                     type="button"
@@ -1081,8 +1165,30 @@ const DesktopLayout = () => {
           </div>
         </nav>
 
-        {/* Footer Sidebar: Profilo Utente & Logout */}
-        <div className="p-3 border-t border-slate-800/80 bg-slate-950/70 shrink-0">
+        {/* Footer Sidebar: Controllo Blocchi SE + Profilo Utente & Logout */}
+        <div className="p-3 border-t border-slate-800/80 bg-slate-950/70 shrink-0 space-y-2">
+          {canManageSectionLocks && (
+            <button
+              type="button"
+              onClick={() => setShowLockModal(true)}
+              className={`w-full px-3 py-2 rounded-xl border text-xs font-black flex items-center justify-between transition-all ${
+                lockedCount > 0
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-brand-blue/50 hover:text-white'
+              }`}
+              title="Blocca o sblocca pagine/sezioni per tutti gli utenti"
+            >
+              <span className="flex items-center gap-2">
+                {lockedCount > 0 ? <Lock size={14} /> : <Unlock size={14} className="text-brand-blue" />}
+                Blocca / Sblocca Sezioni
+              </span>
+              {lockedCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[10px] font-black">
+                  {lockedCount}
+                </span>
+              )}
+            </button>
+          )}
           <div className="flex items-center justify-between gap-2 px-2 py-1">
             <div className="flex items-center gap-2.5 min-w-0">
               <div
@@ -1122,19 +1228,19 @@ const DesktopLayout = () => {
 
       {/* Main Content Area + Top Context Bar */}
       <div className="flex-1 flex flex-col min-w-0 bg-brand-black">
-        <header className="hidden md:flex items-center justify-between px-8 py-3.5 bg-slate-900/50 border-b border-slate-800/80 backdrop-blur-md sticky top-0 z-30">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-500 font-semibold">{currentPageMeta.group}</span>
-            <ChevronRight size={14} className="text-slate-600" />
-            <span className="text-brand-white font-bold">{currentPageMeta.name}</span>
+        <header className="hidden md:flex flex-wrap items-center justify-between gap-2 px-5 lg:px-8 py-3.5 bg-slate-900/50 border-b border-slate-800/80 backdrop-blur-md sticky top-0 z-30">
+          <div className="flex items-center gap-2 text-xs min-w-0">
+            <span className="text-slate-500 font-semibold truncate">{currentPageMeta.group}</span>
+            <ChevronRight size={14} className="text-slate-600 shrink-0" />
+            <span className="text-brand-white font-bold truncate">{currentPageMeta.name}</span>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             {hasPerm('view_inbound', user) && (
               <button
                 type="button"
                 onClick={() => navigate('/desktop/inbound')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                className={`hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   location.pathname === '/desktop/inbound'
                     ? 'bg-brand-blue text-brand-black border-brand-blue'
                     : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
@@ -1148,7 +1254,7 @@ const DesktopLayout = () => {
               <button
                 type="button"
                 onClick={() => navigate('/desktop/outbound')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                className={`hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   location.pathname === '/desktop/outbound'
                     ? 'bg-brand-blue text-brand-black border-brand-blue'
                     : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
@@ -1162,7 +1268,7 @@ const DesktopLayout = () => {
               <button
                 type="button"
                 onClick={() => navigate('/desktop/products')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                className={`hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   location.pathname === '/desktop/products'
                     ? 'bg-brand-blue text-brand-black border-brand-blue'
                     : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
@@ -1176,7 +1282,7 @@ const DesktopLayout = () => {
               <button
                 type="button"
                 onClick={() => navigate('/desktop/quarantine')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                className={`hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                   location.pathname === '/desktop/quarantine'
                     ? 'bg-rose-500 text-brand-black border-rose-500'
                     : 'bg-slate-900 hover:bg-slate-800 text-rose-400 border-slate-800 hover:border-rose-500/40'
@@ -1184,6 +1290,21 @@ const DesktopLayout = () => {
               >
                 <ShieldAlert size={14} className={location.pathname === '/desktop/quarantine' ? 'text-brand-black' : 'text-rose-400'} />
                 Quarantena
+              </button>
+            )}
+            {canManageSectionLocks && (
+              <button
+                type="button"
+                onClick={() => setShowLockModal(true)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all border ${
+                  currentSectionKey && sectionLocks[currentSectionKey]
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800 hover:border-brand-blue/40'
+                }`}
+                title="Blocca o sblocca sezioni (Solo Software Engineer)"
+              >
+                {currentSectionKey && sectionLocks[currentSectionKey] ? <Lock size={13} /> : <Unlock size={13} className="text-brand-blue" />}
+                <span>Sezioni{lockedCount > 0 ? ` (${lockedCount})` : ''}</span>
               </button>
             )}
             {hasPerm('access_zebra', user) && (
@@ -1211,7 +1332,7 @@ const DesktopLayout = () => {
           </div>
         </header>
 
-        <main className="flex-1 w-full max-w-full overflow-y-auto overflow-x-hidden bg-brand-black p-4 md:p-8">
+        <main className="flex-1 w-full min-w-0 max-w-full overflow-y-auto overflow-x-hidden bg-brand-black p-3 sm:p-5 md:p-8">
           <Suspense fallback={
             <div className="min-h-[50vh] flex flex-col items-center justify-center text-slate-400 gap-3">
               <div className="w-8 h-8 border-3 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
@@ -1222,6 +1343,140 @@ const DesktopLayout = () => {
           </Suspense>
         </main>
       </div>
+
+      {/* Modal Controllo Blocchi Sezioni (Solo Software Engineer) */}
+      {showLockModal && canManageSectionLocks && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl animate-fade-in-up">
+            <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800">
+              <div>
+                <h2 className="text-xl font-black text-white flex items-center gap-2.5">
+                  <Lock className="text-amber-400" size={22} />
+                  Controllo Blocchi Sezioni (Software Engineer)
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Blocca o sblocca qualsiasi pagina per tutti gli utenti del gestionale scegliendo il motivo.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLockModal(false)}
+                className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Impostazioni Motivo Predefinito per il prossimo blocco */}
+            <div className="py-4 border-b border-slate-800 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setLockReasonSelect('MAINTENANCE')}
+                  className={`p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all ${
+                    lockReasonSelect === 'MAINTENANCE'
+                      ? 'bg-amber-500/15 border-amber-500/60 text-amber-200'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <Wrench size={18} className="text-amber-400 shrink-0" />
+                  <div>
+                    <div className="text-xs font-black">Sezione in manutenzione</div>
+                    <div className="text-[10px] opacity-75">Blocco temporaneo per lavori tecnici</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLockReasonSelect('INVALID_LICENSE')}
+                  className={`p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all ${
+                    lockReasonSelect === 'INVALID_LICENSE'
+                      ? 'bg-rose-500/15 border-rose-500/60 text-rose-200'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <ShieldOff size={18} className="text-rose-400 shrink-0" />
+                  <div>
+                    <div className="text-xs font-black">Licenza non valida per quella sezione</div>
+                    <div className="text-[10px] opacity-75">Modulo non incluso o licenza scaduta</div>
+                  </div>
+                </button>
+              </div>
+              <input
+                type="text"
+                value={lockDraftNote}
+                onChange={e => setLockDraftNote(e.target.value)}
+                placeholder="Nota aggiuntiva opzionale mostrata nella schermata di blocco (es. Torna online alle 14:00)..."
+                className="w-full bg-slate-950 border border-slate-800 focus:border-brand-blue text-white rounded-xl px-3.5 py-2 text-xs outline-none"
+              />
+            </div>
+
+            {/* Lista Sezioni */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-2 pr-1">
+              {LOCKABLE_SECTIONS.map(sec => {
+                const lock = sectionLocks[sec.key];
+                const isMaint = lock?.reason === 'MAINTENANCE';
+                const isLic = lock?.reason === 'INVALID_LICENSE';
+                return (
+                  <div
+                    key={sec.key}
+                    className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
+                      lock
+                        ? (isLic ? 'bg-rose-950/20 border-rose-500/40' : 'bg-amber-950/20 border-amber-500/40')
+                        : 'bg-slate-950/70 border-slate-800'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">
+                          {sec.group}
+                        </span>
+                        <span className="font-bold text-sm text-white">{sec.label}</span>
+                        {lock && (
+                          <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                            isLic ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'
+                          }`}>
+                            {isLic ? 'Licenza Non Valida' : 'In Manutenzione'}
+                          </span>
+                        )}
+                      </div>
+                      {lock?.note && (
+                        <p className="text-[11px] text-slate-400 mt-1 truncate">Nota: {lock.note}</p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                      <button
+                        type="button"
+                        disabled={savingLocks}
+                        onClick={() => handleToggleLockSection(sec.key, 'MAINTENANCE')}
+                        className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                          isMaint
+                            ? 'bg-amber-500 text-slate-950 border-amber-400'
+                            : 'bg-slate-900 hover:bg-amber-500/15 text-amber-300 border-slate-700 hover:border-amber-500/40'
+                        }`}
+                      >
+                        <Wrench size={12} /> {isMaint ? 'Sblocca Manut.' : 'Manutenzione'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingLocks}
+                        onClick={() => handleToggleLockSection(sec.key, 'INVALID_LICENSE')}
+                        className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                          isLic
+                            ? 'bg-rose-500 text-white border-rose-400'
+                            : 'bg-slate-900 hover:bg-rose-500/15 text-rose-300 border-slate-700 hover:border-rose-500/40'
+                        }`}
+                      >
+                        <ShieldOff size={12} /> {isLic ? 'Sblocca Licenza' : 'Licenza Non Valida'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

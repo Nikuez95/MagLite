@@ -983,25 +983,25 @@ const ProductsManagement = () => {
   const totalProductPages = Math.ceil(filteredProducts.length / itemsPerPage);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-brand-black">
-      <div className="max-w-7xl mx-auto animate-fade-in-up">
+    <div className="flex-1 overflow-y-auto bg-brand-black min-w-0">
+      <div className="w-full min-w-0 max-w-7xl mx-auto animate-fade-in-up">
         
         {/* Header + Switch Tab Moderno */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-          <div>
-            <h1 className="text-3xl font-black text-brand-white mb-1 flex items-center gap-3">
-              <Package className="text-brand-blue" size={32} />
-              Stock & Anagrafica Prodotti
+          <div className="min-w-0">
+            <h1 className="text-2xl sm:text-3xl font-black text-brand-white mb-1 flex items-center gap-2.5 sm:gap-3">
+              <Package className="text-brand-blue shrink-0" size={30} />
+              <span className="truncate">Stock & Anagrafica Prodotti</span>
             </h1>
-            <p className="text-slate-400 text-sm">Inventario fisico per paletta in tempo reale, monitoraggio scadenze e catalogo referenze.</p>
+            <p className="text-slate-400 text-xs sm:text-sm">Inventario fisico per paletta in tempo reale, monitoraggio scadenze e catalogo referenze.</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 w-full md:w-auto">
             {/* Switch Tabs con Contatori Live */}
-            <div className="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800">
+            <div className="flex flex-wrap bg-slate-900 p-1.5 rounded-2xl border border-slate-800 w-full sm:w-auto">
               <button
                 onClick={() => setActiveTab('pallets')}
-                className={`px-4 py-2 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${
+                className={`flex-1 sm:flex-initial justify-center px-3 sm:px-4 py-2 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center gap-2 ${
                   activeTab === 'pallets'
                     ? 'bg-brand-blue text-brand-black shadow-lg'
                     : 'text-slate-400 hover:text-white'
@@ -1015,7 +1015,7 @@ const ProductsManagement = () => {
               </button>
               <button
                 onClick={() => setActiveTab('products')}
-                className={`px-4 py-2 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${
+                className={`flex-1 sm:flex-initial justify-center px-3 sm:px-4 py-2 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center gap-2 ${
                   activeTab === 'products'
                     ? 'bg-brand-blue text-brand-black shadow-lg'
                     : 'text-slate-400 hover:text-white'
@@ -1033,7 +1033,7 @@ const ProductsManagement = () => {
               <button
                 type="button"
                 onClick={() => navigate('/desktop/quarantine')}
-                className="flex items-center gap-2 px-4 py-2.5 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-400 font-bold text-sm rounded-xl transition-all"
+                className="w-full sm:w-auto justify-center flex items-center gap-2 px-4 py-2.5 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-400 font-bold text-sm rounded-xl transition-all"
               >
                 <ShieldAlert size={17} />
                 Registro Quarantene
@@ -1048,7 +1048,7 @@ const ProductsManagement = () => {
             {canManageProducts && (
               <button
                 onClick={() => setShowAddModal(true)}
-                className="flex items-center gap-2 px-5 py-2.5 bg-brand-blue text-brand-black font-black text-sm rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.25)] active:scale-95"
+                className="w-full sm:w-auto justify-center flex items-center gap-2 px-5 py-2.5 bg-brand-blue text-brand-black font-black text-sm rounded-xl hover:bg-sky-400 transition-all shadow-[0_0_20px_rgba(14,165,233,0.25)] active:scale-95"
               >
                 <Plus size={18} /> Nuova Referenza
               </button>
@@ -1059,7 +1059,7 @@ const ProductsManagement = () => {
         {/* 5 Card KPI Scadenze (Solo su Stock Palette) */}
         {activeTab === 'pallets' && (
           <div className="mb-6 space-y-3">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3">
               {/* Card 1: Tutti */}
               <button
                 type="button"
@@ -1195,8 +1195,8 @@ const ProductsManagement = () => {
         <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
           <div className="p-4 border-b border-slate-800 space-y-4">
             {/* Riga 1: Ricerca, Cliente, Magazzino/Giacenza, Stato, Ordinamento, Stampa Bulk */}
-            <div className="flex flex-col md:flex-row flex-wrap gap-3 items-stretch md:items-center">
-              <div className="relative flex-1 min-w-[220px]">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-3 items-stretch sm:items-center">
+              <div className="relative w-full sm:flex-1 sm:min-w-[220px]">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={17} />
                 <input
                   type="text"
@@ -1213,7 +1213,7 @@ const ProductsManagement = () => {
               </div>
 
               {/* Filtro Cliente (comune ad entrambi i tab) */}
-              <div className="w-[190px]">
+              <div className="w-full sm:w-[190px]">
                 <select
                   value={filterCustomer}
                   onChange={e => setFilterCustomer(e.target.value)}
@@ -1227,7 +1227,7 @@ const ProductsManagement = () => {
               </div>
 
               {activeTab === 'products' && (
-                <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
+                <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
                   <button onClick={() => setProductStockFilter('ALL')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti ({productStockStats.all})</button>
                   <button onClick={() => setProductStockFilter('IN_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'IN_STOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>In Giacenza ({productStockStats.inStock})</button>
                   <button onClick={() => setProductStockFilter('OUT_OF_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'OUT_OF_STOCK' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 hover:text-rose-400'}`}>Esauriti ({productStockStats.outOfStock})</button>
@@ -1237,7 +1237,7 @@ const ProductsManagement = () => {
               {activeTab === 'pallets' && (
                 <>
                   <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1">
+                    <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1">
                       <button onClick={() => setFilterWarehouse('ALL')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti Mag.</button>
                       <button onClick={() => setFilterWarehouse('Settala')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'Settala' ? 'bg-brand-blue text-brand-black font-bold' : 'text-slate-500 hover:text-brand-blue'}`}>Settala</button>
                       <button onClick={() => setFilterWarehouse('Caleppio')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'Caleppio' ? 'bg-amber-500 text-brand-black font-bold' : 'text-slate-500 hover:text-amber-500'}`}>Caleppio</button>
@@ -1245,7 +1245,7 @@ const ProductsManagement = () => {
                   </div>
 
                   <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <div className="flex bg-slate-950 rounded-xl border border-slate-800 p-1">
+                    <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1 gap-0.5">
                       <button onClick={() => setFilterStatus('ALL')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti Stati</button>
                       <button onClick={() => setFilterStatus('PENDING')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'PENDING' ? 'bg-slate-700 text-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>In Attesa</button>
                       <button onClick={() => setFilterStatus('STOCKED')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterStatus === 'STOCKED' ? 'bg-green-500/20 text-green-400 font-bold' : 'text-slate-500 hover:text-green-400'}`}>A Scaffale</button>
@@ -1258,12 +1258,12 @@ const ProductsManagement = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <ArrowUpDown size={14} className="text-brand-blue" />
+                  <div className="flex items-center gap-1.5 text-xs font-medium w-full sm:w-auto">
+                    <ArrowUpDown size={14} className="text-brand-blue shrink-0" />
                     <select
                       value={sortBy}
                       onChange={e => setSortBy(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-2.5 py-1.5 font-semibold focus:border-brand-blue"
+                      className="w-full sm:w-auto bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-2.5 py-1.5 font-semibold focus:border-brand-blue"
                     >
                       <option value="ARRIVAL_DESC">Ordina: Arrivo (Più recenti)</option>
                       <option value="CLIENT_PAL_ASC">Ordina: Rif. Paletta Cliente ↑ (Crescente)</option>
@@ -1333,8 +1333,8 @@ const ProductsManagement = () => {
             {/* Riga 2 (solo Stock Palette): Controllo Scadenze Avanzato */}
             {activeTab === 'pallets' && (
               <div className="pt-3 border-t border-slate-800/80 flex flex-col lg:flex-row flex-wrap items-start lg:items-center justify-between gap-4 bg-slate-950/40 -mx-4 -mb-4 px-4 py-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
-                  <Calendar size={15} className="text-brand-blue" />
+                <div className="flex flex-wrap items-center gap-2 text-xs font-medium w-full lg:w-auto">
+                  <Calendar size={15} className="text-brand-blue shrink-0" />
                   <div className="flex bg-slate-950 rounded-lg border border-slate-800 p-0.5">
                     <button
                       type="button"
@@ -1386,7 +1386,7 @@ const ProductsManagement = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3 text-xs font-medium">
-                  <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5">
+                  <div className="flex flex-wrap items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5">
                     <Clock size={15} className="text-amber-500 shrink-0" />
                     <span className="text-slate-300 font-bold">Preavviso Scadenza:</span>
                     <input
@@ -1485,7 +1485,337 @@ const ProductsManagement = () => {
             )}
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Responsive Mobile / Tablet Cards (< lg) */}
+          <div className="lg:hidden p-3 sm:p-4 space-y-3">
+            {activeTab === 'pallets' ? (
+              currentPallets.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 italic text-sm font-medium">
+                  Nessuna paletta trovata con i filtri selezionati.
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between px-1 pb-1 text-xs text-slate-400">
+                    <button
+                      type="button"
+                      onClick={toggleSelectAll}
+                      className="flex items-center gap-2 font-bold text-slate-300 hover:text-white"
+                    >
+                      <span className={`w-4 h-4 rounded border flex items-center justify-center ${
+                        currentPallets.length > 0 && currentPallets.every(p => selectedPallets.includes(p.id))
+                          ? 'bg-brand-blue border-brand-blue text-brand-black'
+                          : 'bg-slate-900 border-slate-700'
+                      }`}>
+                        {currentPallets.length > 0 && currentPallets.every(p => selectedPallets.includes(p.id)) && (
+                          <CheckCircle size={12} strokeWidth={3} />
+                        )}
+                      </span>
+                      Seleziona pagina ({currentPallets.length})
+                    </button>
+                    <span>Ordine: {sortBy}</span>
+                  </div>
+                  {currentPallets.map(p => {
+                    const expStatus = getExpirationStatus(p.expiration_date, expirationWarningValue, warningUnit);
+                    const isExpiredRow = expStatus.category === 'EXPIRED';
+                    const isWarningRow = expStatus.category === 'WARNING';
+                    const isQuarantined = Boolean(p.is_quarantined);
+                    const customerAllowed = canTouchCustomer(p.customer_id);
+                    const parsedFlags = p.flags && typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags || [];
+
+                    return (
+                      <div
+                        key={p.id}
+                        className={`rounded-2xl border p-3.5 sm:p-4 space-y-3 transition-colors ${
+                          isQuarantined
+                            ? 'bg-rose-950/30 border-rose-500/50'
+                            : isExpiredRow
+                            ? 'bg-rose-950/15 border-rose-500/30'
+                            : isWarningRow
+                            ? 'bg-amber-950/15 border-amber-500/30'
+                            : 'bg-slate-950/70 border-slate-800'
+                        }`}
+                      >
+                        {/* Top row: checkbox + code + warehouse + qty */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleSelect(p.id)}
+                              className={`mt-0.5 w-5 h-5 shrink-0 rounded border-2 flex items-center justify-center transition-all ${
+                                selectedPallets.includes(p.id)
+                                  ? 'bg-brand-blue border-brand-blue text-brand-black'
+                                  : 'bg-slate-900 border-slate-700'
+                              }`}
+                            >
+                              {selectedPallets.includes(p.id) && <CheckCircle size={13} strokeWidth={3} />}
+                            </button>
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setPrintModal({ show: true, code: p.pallet_code, copies: 1, format: 'THERMAL' })}
+                                  className="font-mono text-brand-blue font-bold text-xs flex items-center gap-1 hover:underline"
+                                >
+                                  <Printer size={12} /> {formatPalletCode(p.pallet_code)}
+                                </button>
+                                {p.is_mixed === 1 && (
+                                  <span className="bg-amber-500/20 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase">Mista</span>
+                                )}
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  p.warehouse === 'Settala' ? 'bg-brand-blue/10 text-brand-blue border border-brand-blue/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                                }`}>
+                                  {p.warehouse}
+                                </span>
+                              </div>
+                              <div className="font-bold text-brand-white text-sm mt-1 leading-snug">{p.product_name}</div>
+                              <div className="text-slate-400 text-xs">{p.customer_name}</div>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <div className="font-black text-brand-blue text-sm">
+                              {formatQuantity(p.quantity, p.uom)}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase font-bold">
+                              {formatUOM(p.uom || 'Pezzi')}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Rif / Weights / Lotto / Scad */}
+                        {(p.client_pallet_number || p.client_article_number || Number(p.net_weight_kg) > 0 || Number(p.gross_weight_kg) > 0) && (
+                          <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+                            {p.client_pallet_number && (
+                              <span className="bg-sky-500/15 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-md font-bold">
+                                Rif. Pal: {p.client_pallet_number}
+                              </span>
+                            )}
+                            {p.client_article_number && (
+                              <span className="text-slate-400 uppercase bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded">
+                                Art: {p.client_article_number}
+                              </span>
+                            )}
+                            {Number(p.net_weight_kg) > 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-sky-300">
+                                Netti: {Number(p.net_weight_kg)} kg
+                              </span>
+                            )}
+                            {Number(p.gross_weight_kg) > 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-amber-300">
+                                Lordi: {Number(p.gross_weight_kg)} kg
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                          <div className="bg-slate-900/80 border border-slate-800/80 rounded-xl p-2.5">
+                            <div className="font-mono text-slate-300">
+                              Lotto: <strong className="text-brand-white">{p.batch || '-'}</strong>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              Arrivo: {new Date(p.created_at).toLocaleDateString('it-IT')}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-900/80 border border-slate-800/80 rounded-xl p-2.5 flex flex-col justify-center">
+                            {p.expiration_date ? (
+                              <div className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase border ${expStatus.color} ${expStatus.bg}`}>
+                                Scad: {new Date(p.expiration_date).toLocaleDateString('it-IT')} • {expStatus.label}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-slate-500 font-semibold">Senza Scadenza</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Posizione + Quarantena + Flag */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {isQuarantined && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-500 text-brand-black font-black text-[10px] uppercase">
+                              <Lock size={11} /> IN QUARANTENA: {p.quarantine_reason || 'Bloccata'}
+                            </span>
+                          )}
+                          {p.status === 'PENDING' ? (
+                            <span className="text-slate-400 italic text-xs font-bold bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">⏳ IN ATTESA</span>
+                          ) : String(p.location || '').startsWith('ZONA CARICO') ? (
+                            <span
+                              onClick={() => openHistory(p.pallet_code)}
+                              className="text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/40 inline-flex items-center gap-1.5 cursor-pointer text-xs"
+                            >
+                              <Package size={13} /> {p.location}
+                            </span>
+                          ) : (
+                            <span
+                              onClick={() => openHistory(p.pallet_code)}
+                              className="text-green-400 font-bold bg-green-500/10 px-2.5 py-1 rounded-lg border border-green-500/30 inline-flex items-center gap-1 cursor-pointer text-xs"
+                            >
+                              <MapPin size={13} /> {p.location}
+                            </span>
+                          )}
+                          {parsedFlags.map(f => (
+                            <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase text-[9px] font-bold">{f}</span>
+                          ))}
+                        </div>
+
+                        {(p.notes || p.product_notes) && (
+                          <div className="text-xs text-slate-400 bg-slate-900/50 rounded-lg px-2.5 py-1.5 truncate">
+                            {p.notes || p.product_notes}
+                          </div>
+                        )}
+
+                        {/* Azioni Mobile */}
+                        <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-800/80">
+                          {canManageQuarantine && customerAllowed && (
+                            isQuarantined ? (
+                              <button
+                                type="button"
+                                onClick={() => openQuarantineModalForPallet(p, 'UNBLOCK')}
+                                className="px-2.5 py-1.5 bg-emerald-500/15 hover:bg-emerald-500 text-emerald-400 hover:text-brand-black border border-emerald-500/35 rounded-xl font-black text-xs flex items-center gap-1"
+                              >
+                                <Unlock size={13} /> Sblocca
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => openQuarantineModalForPallet(p, 'BLOCK')}
+                                className="p-2 text-rose-400 hover:text-brand-black hover:bg-rose-500 border border-rose-500/25 rounded-xl"
+                                title="Metti in Quarantena"
+                              >
+                                <Lock size={15} />
+                              </button>
+                            )
+                          )}
+                          {canMovePallet && (
+                            <button
+                              type="button"
+                              disabled={isQuarantined || !customerAllowed}
+                              onClick={() => setMoveModal({ show: true, pallet: p, mode: 'SINGLE_ITEM', moveQuantity: String(p.quantity), targetLocation: '', error: null })}
+                              className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-xl disabled:opacity-30"
+                              title="Sposta"
+                            >
+                              <ArrowRightLeft size={16} />
+                            </button>
+                          )}
+                          {canEditPallet && (
+                            <>
+                              <button
+                                disabled={isQuarantined || !customerAllowed}
+                                onClick={() => setAdjustQtyModal({ show: true, pallet: p, newQuantity: p.quantity, error: null })}
+                                className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 rounded-xl disabled:opacity-30"
+                                title="Modifica Quantità"
+                              >
+                                <Package size={16} />
+                              </button>
+                              <button
+                                disabled={isQuarantined || !customerAllowed}
+                                onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', net_weight_kg: p.net_weight_kg ?? '', gross_weight_kg: p.gross_weight_kg ?? '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
+                                className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl disabled:opacity-30"
+                                title="Modifica"
+                              >
+                                <Edit3 size={16} />
+                              </button>
+                            </>
+                          )}
+                          {canDeletePallet && (
+                            <button
+                              disabled={isQuarantined || !customerAllowed}
+                              onClick={() => handleDeletePallet(p.pallet_code)}
+                              className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl disabled:opacity-30"
+                              title="Elimina"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )
+            ) : currentProducts.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 italic text-sm font-medium">Nessun prodotto trovato.</div>
+            ) : (
+              currentProducts.map(p => {
+                const st = stockByProduct.get(p.id) || { totalQty: 0, palletCount: 0 };
+                const totalStock = st.totalQty;
+                const upb = parseFloat(p.units_per_box) || 1;
+                const parsedFlags = p.flags && typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags || [];
+
+                return (
+                  <div key={p.id} className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 sm:p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-mono text-brand-blue text-xs font-bold">{p.sku}</div>
+                        <div className="font-bold text-brand-white text-sm mt-0.5">{p.name}</div>
+                        <div className="text-xs text-slate-400">{p.customer_name}</div>
+                      </div>
+                      <span className="shrink-0 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-md font-mono text-[11px] text-slate-300">
+                        {p.uom || 'Pezzi'}{upb > 1 ? ` • ${upb}/sc` : ''}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      {totalStock > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSearchTerm(p.sku);
+                            setActiveTab('pallets');
+                          }}
+                          className="flex flex-col items-start bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-1.5 text-left"
+                        >
+                          <div className="flex items-center gap-1.5 text-emerald-400 font-black text-xs">
+                            {formatQuantity(totalStock, p.uom || 'Pezzi')} {formatUOM(p.uom || 'Pezzi')}
+                            <ExternalLink size={11} />
+                          </div>
+                          <span className="text-[10px] text-slate-400 font-semibold">
+                            {st.palletCount} {st.palletCount === 1 ? 'paletta' : 'palette'}
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-500 text-xs font-bold">
+                          0 (Esaurito)
+                        </span>
+                      )}
+
+                      {canManageProducts && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setEditProductModal({ show: true, product: { ...p, flags: parsedFlags.map(f => ({ label: f, value: f })), original_flags: parsedFlags } })}
+                            className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl"
+                            title="Modifica Anagrafica"
+                          >
+                            <Edit3 size={16} />
+                          </button>
+                          {canDeleteProducts && canTouchCustomer(p.customer_id) && (
+                            <button
+                              onClick={() => handleDeleteProduct(p.id, p.name)}
+                              className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-xl"
+                              title="Elimina Anagrafica"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {(p.notes || parsedFlags.length > 0) && (
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400 pt-1">
+                        {p.notes && <span className="truncate max-w-full">{p.notes}</span>}
+                        {parsedFlags.map(f => (
+                          <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase text-[9px] font-bold">{f}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Desktop Table (>= lg) */}
+          <div className="hidden lg:block overflow-x-auto">
             <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
               {activeTab === 'pallets' ? (
                 <>
@@ -1865,26 +2195,26 @@ const ProductsManagement = () => {
                 </>
               )}
             </table>
-            {activeTab === 'pallets' ? (
-              <Pagination
-                currentPage={palletsCurrentPage}
-                totalPages={totalPalletPages}
-                onPageChange={setPalletsCurrentPage}
-                itemsPerPage={itemsPerPage}
-                onItemsPerPageChange={setItemsPerPage}
-                totalItems={filteredPallets.length}
-              />
-            ) : (
-              <Pagination
-                currentPage={productsCurrentPage}
-                totalPages={totalProductPages}
-                onPageChange={setProductsCurrentPage}
-                itemsPerPage={itemsPerPage}
-                onItemsPerPageChange={setItemsPerPage}
-                totalItems={filteredProducts.length}
-              />
-            )}
           </div>
+          {activeTab === 'pallets' ? (
+            <Pagination
+              currentPage={palletsCurrentPage}
+              totalPages={totalPalletPages}
+              onPageChange={setPalletsCurrentPage}
+              itemsPerPage={itemsPerPage}
+              onItemsPerPageChange={setItemsPerPage}
+              totalItems={filteredPallets.length}
+            />
+          ) : (
+            <Pagination
+              currentPage={productsCurrentPage}
+              totalPages={totalProductPages}
+              onPageChange={setProductsCurrentPage}
+              itemsPerPage={itemsPerPage}
+              onItemsPerPageChange={setItemsPerPage}
+              totalItems={filteredProducts.length}
+            />
+          )}
         </div>
       </div>
 

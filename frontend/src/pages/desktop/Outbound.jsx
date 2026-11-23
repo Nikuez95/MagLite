@@ -935,24 +935,24 @@ const Outbound = () => {
   }, [pickingPallet]);
 
   return (
-    <div className="max-w-7xl mx-auto animate-fade-in">
+    <div className="w-full min-w-0 max-w-7xl mx-auto animate-fade-in">
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-        <div>
-          <h1 className="text-3xl font-black text-brand-white flex items-center gap-3">
-            <Truck className="text-brand-blue" size={34} />
-            Uscite e Spedizioni (Out-bound)
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-black text-brand-white flex items-center gap-2.5 sm:gap-3">
+            <Truck className="text-brand-blue shrink-0" size={30} />
+            <span className="truncate">Uscite e Spedizioni (Out-bound)</span>
           </h1>
-          <p className="text-slate-400 text-sm mt-1">
+          <p className="text-slate-400 text-xs sm:text-sm mt-1">
             Gestione ordini d'uscita, semaforo avanzamento picking Zebra in tempo reale e scarico definitivo.
           </p>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2.5 sm:gap-3 w-full md:w-auto">
           <button
             onClick={() => navigate('/desktop/outbound/history')}
-            className="bg-slate-900 border border-slate-700 hover:bg-slate-800 text-brand-white font-bold py-2.5 px-5 rounded-xl flex items-center gap-2 transition-all text-sm"
+            className="w-full sm:w-auto justify-center bg-slate-900 border border-slate-700 hover:bg-slate-800 text-brand-white font-bold py-2.5 px-4 sm:px-5 rounded-xl flex items-center gap-2 transition-all text-sm"
           >
-            <History size={18} className="text-brand-blue" /> Storico Articoli Usciti
+            <History size={18} className="text-brand-blue shrink-0" /> Storico Articoli Usciti
           </button>
           {canCreateOutbound && (<button
             onClick={() => {
@@ -974,7 +974,7 @@ const Outbound = () => {
               setPalletSearchTerm('');
               setShowModal(true);
             }}
-            className="bg-brand-blue hover:bg-sky-400 text-brand-black font-black py-2.5 px-6 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)] text-sm"
+            className="w-full sm:w-auto justify-center bg-brand-blue hover:bg-sky-400 text-brand-black font-black py-2.5 px-5 sm:px-6 rounded-xl flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(14,165,233,0.3)] text-sm"
           >
             <Plus size={18} /> Nuova Spedizione
           </button>)}
@@ -982,7 +982,7 @@ const Outbound = () => {
       </div>
 
       {/* Cruscotto Interattivo Stati Spedizione (5 Card KPI) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2.5 sm:gap-3 mb-6">
         <button
           type="button"
           onClick={() => setStatusFilter('')}
@@ -1082,11 +1082,12 @@ const Outbound = () => {
       </div>
 
       {/* Barra Filtri Avanzata */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 mb-6 flex flex-wrap items-center gap-3 shadow-xl">
-        <div className="flex-1 min-w-[230px] relative">
+      {/* Search & Filters Bar */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 shadow-xl">
+        <div className="w-full sm:flex-1 sm:min-w-[230px] relative">
           <input 
             type="text" 
-            placeholder="Cerca per ordine, cliente, DDT, lotto, articolo, paletta o operatore..."
+            placeholder="Cerca ordine, cliente, DDT, lotto, articolo o op..."
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl py-2.5 pl-10 pr-8 text-sm focus:ring-brand-blue"
@@ -1099,7 +1100,7 @@ const Outbound = () => {
           )}
         </div>
 
-        <div className="w-[200px]">
+        <div className="w-full sm:w-[205px]">
           <select
             value={customerFilter}
             onChange={e => setCustomerFilter(e.target.value)}
@@ -1112,13 +1113,13 @@ const Outbound = () => {
           </select>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <Calendar size={15} className="text-brand-blue ml-1" />
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="Da data" />
+        <div className="w-full lg:w-auto flex flex-wrap items-center gap-2 text-xs">
+          <Calendar size={15} className="text-brand-blue ml-1 shrink-0" />
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="flex-1 sm:flex-none min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="Da data" />
           <span className="text-slate-500">-</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="A data" />
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="flex-1 sm:flex-none min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="A data" />
 
-          <div className="hidden lg:flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
             <button type="button" onClick={() => applyDatePreset('TODAY')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">Oggi</button>
             <button type="button" onClick={() => applyDatePreset('WEEK')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">7 gg</button>
             <button type="button" onClick={() => applyDatePreset('MONTH')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">Mese</button>
@@ -1129,16 +1130,216 @@ const Outbound = () => {
           <button
             type="button"
             onClick={resetAllFilters}
-            className="flex items-center gap-1.5 px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors"
           >
             <RotateCcw size={13} /> Reset
           </button>
         )}
       </div>
 
-      {/* Orders Table */}
+      {/* Orders Table & Responsive Mobile Cards */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
+        {/* Mobile & Tablet Cards (< lg) */}
+        <div className="lg:hidden p-3 sm:p-4 space-y-3">
+          {filteredOrders.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 font-medium text-sm">
+              Nessuna spedizione corrisponde ai filtri selezionati
+            </div>
+          ) : filteredOrders.map(o => {
+            const totalItems = parseInt(o.total_items, 10) || 0;
+            const pickedItems = parseInt(o.picked_items, 10) || 0;
+            const progressPct = totalItems > 0 ? Math.min(100, Math.round((pickedItems / totalItems) * 100)) : 0;
+            const clientRecord = customerRecords.find(c => Number(c.id) === Number(o.customer_id));
+            const clientExitDdtEnabled = clientRecord
+              ? Number(clientRecord.generate_exit_ddt ?? 1) !== 0
+              : Number(o.customer_generate_exit_ddt ?? 1) !== 0;
+
+            return (
+              <div key={o.id} className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 sm:p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono font-black text-brand-white text-sm">{o.order_code}</span>
+                      {clientExitDdtEnabled && o.bolla_number && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-full font-mono font-bold">
+                          <FileText size={10} /> {o.bolla_number}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-brand-blue font-bold text-sm mt-0.5 truncate">{o.customer_name}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-[11px] font-bold text-slate-400">
+                      {new Date(o.exit_date).toLocaleDateString('it-IT')}
+                    </div>
+                    {o.client_ddt && (
+                      <div className="text-[10px] text-brand-blue font-bold uppercase mt-0.5">DDT: {o.client_ddt}</div>
+                    )}
+                  </div>
+                </div>
+
+                {(o.delivery_label || o.notes) && (
+                  <div className="flex flex-wrap gap-1.5 text-[11px]">
+                    {o.delivery_label && (
+                      <span className="px-2 py-0.5 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-300 font-semibold truncate max-w-full">
+                        Dest: {o.delivery_label}
+                      </span>
+                    )}
+                    {o.notes && (
+                      <span className="px-2 py-0.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 font-semibold truncate max-w-full">
+                        Nota: {o.notes}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="bg-slate-900/70 border border-slate-800/80 rounded-xl p-2.5 space-y-1.5">
+                  <div className="text-xs font-semibold text-slate-200 line-clamp-2">
+                    {o.products || <span className="text-slate-500 italic">Nessun articolo riepilogato</span>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-bold bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-md">
+                      {totalItems} {totalItems === 1 ? 'riga' : 'righe'}
+                    </span>
+                    {o.batches && (
+                      <span className="text-[10px] font-mono font-bold bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded-md truncate max-w-full">
+                        Lotti: {o.batches}
+                      </span>
+                    )}
+                    {o.client_pallets && (
+                      <span className="text-[10px] font-mono font-bold bg-sky-500/15 border border-sky-500/30 text-sky-300 px-2 py-0.5 rounded-md truncate max-w-full">
+                        Rif. Pal: {o.client_pallets}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Stato & Avanzamento */}
+                <div onClick={() => setTimelineModal(o)} className="cursor-pointer">
+                  {o.status === 'PENDING' && (
+                    <span className="inline-flex items-center gap-1.5 bg-slate-500/20 text-slate-300 px-3 py-1 rounded-full text-xs font-bold border border-slate-500/30">
+                      <span className="w-2 h-2 rounded-full bg-slate-400" />
+                      IN ATTESA ({pickedItems} / {totalItems} righe)
+                    </span>
+                  )}
+                  {o.status === 'PICKING' && (
+                    <div className="flex flex-col gap-1.5 bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-amber-400 text-xs font-black uppercase">
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" /> IN PRELIEVO
+                        </span>
+                        <span className="font-mono text-xs font-black text-brand-white">
+                          {pickedItems}/{totalItems} ({progressPct}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-amber-500 to-emerald-400 rounded-full" style={{ width: `${Math.max(6, progressPct)}%` }} />
+                      </div>
+                      <div className="text-[11px] text-slate-300 font-semibold">
+                        Operatore: <strong className="text-brand-white">{o.picking_operator || 'In corso...'}</strong>
+                      </div>
+                    </div>
+                  )}
+                  {o.status === 'READY' && (
+                    <div className="flex flex-col gap-1 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-emerald-400 text-xs font-black uppercase">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" /> PRONTO (ZONA CARICO)
+                        </span>
+                        <span className="font-mono text-xs font-bold text-emerald-300">{totalItems}/{totalItems} righe</span>
+                      </div>
+                      {o.picking_operator && (
+                        <div className="text-[11px] text-slate-300 font-semibold">
+                          Operatore: <strong className="text-brand-white">{o.picking_operator}</strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {o.status === 'SHIPPED' && (
+                    <span className="inline-flex items-center gap-1.5 bg-sky-500/20 text-sky-400 px-3 py-1 rounded-full text-xs font-bold border border-sky-500/30">
+                      <span className="w-2 h-2 rounded-full bg-sky-400" /> SPEDITO ({totalItems} righe)
+                    </span>
+                  )}
+                </div>
+
+                {/* Azioni Mobile */}
+                <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-800/80">
+                  <button
+                    onClick={() => setTimelineModal(o)}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-blue rounded-xl transition-colors"
+                    title="Vedi Dettagli e Tempistiche"
+                  >
+                    <Eye size={16} />
+                  </button>
+                  <button
+                    onClick={() => window.open(`http://${window.location.hostname}:3000/api/outbound/${o.order_code}/pdf?token=${token}`, '_blank')}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-white rounded-xl transition-colors"
+                    title="Stampa Picking List Interna"
+                  >
+                    <Printer size={16} />
+                  </button>
+                  {clientExitDdtEnabled && (
+                    <button
+                      onClick={() => openBollaModal(o)}
+                      className={`px-2.5 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 border ${
+                        o.bolla_number
+                          ? 'bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-brand-black border-sky-500/40'
+                          : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
+                      }`}
+                    >
+                      <FileText size={14} /> {o.bolla_number ? 'Bolla DDT' : 'Bolla'}
+                    </button>
+                  )}
+                  {o.status === 'SHIPPED' && canReturnOutbound && canTouchCustomer(o.customer_id) && (
+                    <button
+                      onClick={() => openReturnModal(o)}
+                      className="px-2.5 py-2 bg-amber-500/20 hover:bg-amber-500 text-amber-400 hover:text-black border border-amber-500/40 rounded-xl transition-all font-bold text-xs flex items-center gap-1"
+                    >
+                      <RotateCcw size={14} /> Reso
+                    </button>
+                  )}
+                  {o.status !== 'SHIPPED' && canTouchCustomer(o.customer_id) && (
+                    <>
+                      {canCreateOutbound && (
+                        <button
+                          onClick={() => editOrder(o.id)}
+                          className="bg-brand-blue/15 hover:bg-brand-blue text-brand-blue hover:text-brand-black p-2 rounded-xl transition-colors"
+                          title="Modifica Spedizione"
+                        >
+                          <Edit3 size={16} />
+                        </button>
+                      )}
+                      {canDeleteOutbound && (
+                        <button
+                          onClick={() => setDeleteConfirm({show: true, id: o.id, code: o.order_code, expected: Math.floor(1000 + Math.random() * 9000).toString(), input: ''})}
+                          className="bg-rose-500/15 hover:bg-rose-500 text-rose-400 hover:text-white p-2 rounded-xl transition-colors"
+                          title="Elimina Spedizione"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {o.status !== 'SHIPPED' && canPickOutbound && canTouchCustomer(o.customer_id) && (
+                    <button
+                      onClick={() => confirmOrder(o.order_code)}
+                      className={`px-3 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1 ${
+                        o.status === 'READY'
+                          ? 'bg-emerald-500 hover:bg-emerald-400 text-emerald-950'
+                          : 'bg-emerald-500/20 hover:bg-emerald-500 text-emerald-400 hover:text-emerald-950 border border-emerald-500/30'
+                      }`}
+                    >
+                      <CheckCircle size={15} /> {o.status === 'RETURNED' ? 'Rispedisci' : o.status === 'READY' ? 'Conferma' : 'Evadi'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Desktop Table (>= lg) */}
+        <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-left border-collapse whitespace-nowrap md:whitespace-normal">
             <thead>
               <tr className="bg-slate-950/60">
@@ -1405,7 +1606,7 @@ const Outbound = () => {
       {/* Modale Crea / Modifica Spedizione (Workspace Split-Screen) */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-7xl w-full shadow-2xl flex flex-col max-h-[92vh]">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 max-w-7xl w-full shadow-2xl flex flex-col max-h-[94vh] overflow-y-auto lg:overflow-hidden">
             
             {/* Header Modale */}
             <div className="flex justify-between items-center pb-4 mb-4 border-b border-slate-800">
@@ -1649,7 +1850,7 @@ const Outbound = () => {
             </div>
 
             {/* Area Centrale Split-Screen: Catalogo Giacenze (7/12) + Carrello Prelievo Inline (5/12) */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 overflow-hidden">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 overflow-visible lg:overflow-hidden">
               
               {/* SINISTRA: Catalogo Lotti & Articoli del Cliente */}
               <div className="lg:col-span-7 bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col min-h-0">
