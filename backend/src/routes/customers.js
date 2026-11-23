@@ -372,9 +372,19 @@ async function customerRoutes(fastify, options) {
       }
 
       await db.query(
+        'UPDATE OUTBOUND_ORDERS SET generate_exit_ddt = ? WHERE customer_id = ? AND status != "SHIPPED"',
+        [nextExitDdt, id]
+      );
+
+      await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['UPDATE_CUSTOMER', `Modificato cliente ${business_name} (${unique_id})`, 'Gestionale', request.user.username]
       );
+
+      if (fastify.io) {
+        fastify.io.emit('customers_updated');
+        fastify.io.emit('outbound_updated');
+      }
 
       return { success: true };
     } catch (err) {
@@ -538,9 +548,17 @@ async function customerRoutes(fastify, options) {
 
       await db.query('UPDATE CUSTOMERS SET generate_exit_ddt = ? WHERE id = ?', [enabled, id]);
       await db.query(
+        'UPDATE OUTBOUND_ORDERS SET generate_exit_ddt = ? WHERE customer_id = ? AND status != "SHIPPED"',
+        [enabled, id]
+      );
+      await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['UPDATE_CUSTOMER_EXIT_DDT', `Bolla di Uscita automatica ${enabled ? 'ATTIVATA' : 'DISATTIVATA'} per ${cust.business_name}`, 'Gestionale', request.user?.username || 'Sistema']
       );
+      if (fastify.io) {
+        fastify.io.emit('customers_updated');
+        fastify.io.emit('outbound_updated');
+      }
       return { success: true, generate_exit_ddt: Boolean(enabled) };
     } catch (err) {
       fastify.log.error(err);

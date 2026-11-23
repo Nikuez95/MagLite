@@ -732,6 +732,9 @@ async function runMigrations() {
       if (!ddtItemColNames.has('flags')) {
         await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN flags JSON DEFAULT NULL`);
       }
+      if (!ddtItemColNames.has('arrival_date')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN arrival_date DATETIME DEFAULT NULL`);
+      }
       console.log('✅ Schema Bolla di Uscita e Indirizzi Consegna verificato.');
     } catch (bollaMigErr) {
       console.warn('[MIGRATE BOLLA WARNING]', bollaMigErr.message);

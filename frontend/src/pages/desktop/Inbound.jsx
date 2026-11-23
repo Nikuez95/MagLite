@@ -362,6 +362,7 @@ const Inbound = () => {
         "KG Lordi": 785,
         "Lotto": "L-2026-01",
         "Scadenza": "2027-12-31",
+        "Data di Arrivo": "2025-11-15",
         "Posizione": "A-01-01",
         "Moltiplicatore Palette": 1,
         "Gruppo Frammentazione": "",
@@ -369,7 +370,7 @@ const Inbound = () => {
         "Nome Listino": examplePlanA,
         "Magazzino": "Settala",
         "Paletta Cliente": "PAL-001",
-        "Note": "Paletta intera con pesi, flag e listino specifico"
+        "Note": "Paletta intera con data arrivo storica, pesi, flag e listino"
       },
       {
         "Codice Articolo": "BISC-FROL-500",
@@ -382,6 +383,7 @@ const Inbound = () => {
         "KG Lordi": 198,
         "Lotto": "L-999A",
         "Scadenza": "2027-06-30",
+        "Data di Arrivo": "2026-01-20 09:30",
         "Posizione": "",
         "Moltiplicatore Palette": 1,
         "Gruppo Frammentazione": "MIX-1",
@@ -402,6 +404,7 @@ const Inbound = () => {
         "KG Lordi": 132,
         "Lotto": "L-999B",
         "Scadenza": "2027-08-15",
+        "Data di Arrivo": "2026-01-20 09:30",
         "Posizione": "",
         "Moltiplicatore Palette": 1,
         "Gruppo Frammentazione": "MIX-1",
@@ -422,6 +425,7 @@ const Inbound = () => {
         "KG Lordi": 215,
         "Lotto": "L-FAR-10",
         "Scadenza": "2027-03-15",
+        "Data di Arrivo": "",
         "Posizione": "",
         "Moltiplicatore Palette": 1,
         "Gruppo Frammentazione": "",
@@ -429,7 +433,7 @@ const Inbound = () => {
         "Nome Listino": "",
         "Magazzino": "Settala",
         "Paletta Cliente": "",
-        "Note": "Vuoto su Nome Listino = usa listino predefinito del cliente"
+        "Note": "Vuoto su Data di Arrivo/Listino = data caricamento e listino default"
       }
     ];
 
@@ -445,6 +449,7 @@ const Inbound = () => {
       { wch: 11 }, // KG Lordi
       { wch: 14 }, // Lotto
       { wch: 13 }, // Scadenza
+      { wch: 18 }, // Data di Arrivo
       { wch: 12 }, // Posizione
       { wch: 20 }, // Moltiplicatore Palette
       { wch: 22 }, // Gruppo Frammentazione
@@ -452,7 +457,7 @@ const Inbound = () => {
       { wch: 22 }, // Nome Listino
       { wch: 13 }, // Magazzino
       { wch: 16 }, // Paletta Cliente
-      { wch: 52 }  // Note
+      { wch: 56 }  // Note
     ];
 
     if (format === 'csv') {
@@ -470,6 +475,7 @@ const Inbound = () => {
     }
 
     const legendRows = [
+      { "Colonna": "Data di Arrivo", "Descrizione": "Data reale di entrata merce (formato YYYY-MM-DD oppure GG/MM/AAAA, anche con orario es. 15/11/2025 09:30) per caricare merce storica pre-gestionale. Se lasciata vuota usa la data e l'ora del caricamento file." },
       { "Colonna": "KG Netti", "Descrizione": "Peso netto opzionale della riga/paletta in chilogrammi (es. 756 o 120.5)." },
       { "Colonna": "KG Lordi", "Descrizione": "Peso lordo opzionale della riga/paletta in chilogrammi (es. 785 o 132.5)." },
       { "Colonna": "Gruppo Frammentazione", "Descrizione": "Inserisci lo stesso codice (es. MIX-1) su 2 o più righe per unirle in 1 sola Paletta Frammentata (1 IN / 1 OUT). Lascia vuoto per palette intere separate (oppure indica la stessa Posizione)." },
@@ -632,6 +638,34 @@ const Inbound = () => {
       return `${String(yNum).padStart(4, '0')}-${String(mNum).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
     };
 
+    const normalizeArrivalDateTime = (val, xlsxMod = null) => {
+      if (val === undefined || val === null || String(val).trim() === '') return null;
+      if (val instanceof Date && !isNaN(val)) {
+        const y = val.getFullYear();
+        if (y < 1900 || y > 2100) return null;
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        const hh = String(val.getHours()).padStart(2, '0');
+        const mm = String(val.getMinutes()).padStart(2, '0');
+        return `${y}-${m}-${d}T${hh}:${mm}`;
+      }
+      if (typeof val === 'number' && val > 20000 && val < 100000 && xlsxMod?.SSF?.parse_date_code) {
+        const parsed = xlsxMod.SSF.parse_date_code(val);
+        if (parsed && parsed.y && parsed.m && parsed.d) {
+          if (parsed.y < 1900 || parsed.y > 2100) return null;
+          const hh = String(parsed.H || 0).padStart(2, '0');
+          const mm = String(parsed.M || 0).padStart(2, '0');
+          return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}T${hh}:${mm}`;
+        }
+      }
+      const datePart = normalizeDate(val, xlsxMod);
+      if (!datePart) return null;
+      const timeMatch = String(val).trim().match(/[\sT](\d{1,2})[:.](\d{2})/);
+      const hh = timeMatch ? String(Math.min(23, parseInt(timeMatch[1], 10))).padStart(2, '0') : '09';
+      const mm = timeMatch ? String(Math.min(59, parseInt(timeMatch[2], 10))).padStart(2, '0') : '00';
+      return `${datePart}T${hh}:${mm}`;
+    };
+
     const parseNum = (val, fallback = 0) => {
       if (val === undefined || val === null || val === '') return fallback;
       if (typeof val === 'number') return isNaN(val) ? fallback : val;
@@ -652,7 +686,8 @@ const Inbound = () => {
         const worksheet = workbook.Sheets[firstSheetName];
 
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-        const headerKeywords = ['prodotto', 'descrizione', 'articolo', 'codice', 'sku', 'quantit', 'qta', 'qty', 'lotto', 'scad', 'unita', 'udm', 'um', 'scatol', 'bancal', 'palett', 'magazzin', 'posizion', 'ubicazion', 'scaffal', 'note', 'pezzi', 'kg', 'peso', 'framment', 'grupp', 'flag', 'listino'];
+        const headerKeywords = ['prodotto', 'descrizione', 'articolo', 'codice', 'sku', 'quantit', 'qta', 'qty', 'lotto', 'scad', 'unita', 'udm', 'um', 'scatol', 'bancal', 'palett', 'magazzin', 'posizion', 'ubicazion', 'scaffal', 'note', 'pezzi', 'kg', 'peso', 'framment', 'grupp', 'flag', 'listino', 'arrivo', 'ingresso', 'entrata'];
+        const uploadNowLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
         let headerRowIndex = 0;
         for (let r = 0; r < Math.min(matrix.length, 10); r++) {
           const rowCells = Array.isArray(matrix[r]) ? matrix[r] : [];
@@ -993,6 +1028,21 @@ const Inbound = () => {
             }
           }
 
+          const rawArrivo = getCol(
+            normRow,
+            ['data_di_arrivo', 'data_arrivo', 'data_ingresso', 'data_entrata', 'arrivo', 'ingresso', 'arrival_date', 'data_carico'],
+            k => (k.includes('data') && (k.includes('arriv') || k.includes('ingress') || k.includes('entrat'))) || k === 'arrival_date'
+          );
+          let resolvedArrivalDate = uploadNowLocal;
+          if (rawArrivo !== '' && rawArrivo !== null && rawArrivo !== undefined) {
+            const parsedArr = normalizeArrivalDateTime(rawArrivo, XLSX);
+            if (parsedArr) {
+              resolvedArrivalDate = parsedArr;
+            } else {
+              warningLines.push(`Riga ${lineNum}: Data di Arrivo "${String(rawArrivo).trim()}" non riconosciuta (usata data di caricamento)`);
+            }
+          }
+
           newCartItems.push({
             id: Date.now() + Math.random(),
             customer_id: formData.customer_id,
@@ -1019,7 +1069,7 @@ const Inbound = () => {
             client_ddt: ddtFromFile ? String(ddtFromFile).trim() : (clientDdt.trim() || ''),
             location: posizione,
             expiration_date: scadenza || '',
-            arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+            arrival_date: resolvedArrivalDate
           });
         }
 

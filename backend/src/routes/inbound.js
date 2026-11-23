@@ -84,9 +84,14 @@ async function inboundRoutes(fastify, options) {
             const itemFlagsJson = Array.isArray(item.flags) && item.flags.length > 0
               ? JSON.stringify(item.flags)
               : (typeof item.flags === 'string' && item.flags.trim() ? item.flags : null);
+            let itemArrivalDt = null;
+            if (item.arrival_date) {
+              const parsedArr = new Date(item.arrival_date);
+              if (!isNaN(parsedArr.getTime())) itemArrivalDt = parsedArr;
+            }
             await connection.query(
-              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemLocation]
+              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, arrival_date, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemArrivalDt, itemLocation]
             );
           }
 
@@ -376,19 +381,21 @@ async function inboundRoutes(fastify, options) {
             palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
           }
 
-          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata, oltre a listino, flag e pesi)
+          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata, oltre a listino, flag, data arrivo e pesi)
           const itemFlagsVal = item.flags
             ? (typeof item.flags === 'string' ? item.flags : JSON.stringify(item.flags))
             : null;
+          const itemArrivalVal = item.arrival_date ? new Date(item.arrival_date) : null;
           await connection.query(`
             INSERT INTO PALLETS 
-            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, created_at, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)
           `, [
             palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
             warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
             sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom,
             item.net_weight_kg ?? null, item.gross_weight_kg ?? null, item.tariff_plan_id ?? null, itemFlagsVal,
+            itemArrivalVal,
             ddt_id, ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
           ]);
 

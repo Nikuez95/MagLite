@@ -352,13 +352,19 @@ const Outbound = () => {
     fetchBaseData();
 
     const socket = io(`http://${window.location.hostname}:3000`);
+    const refreshCustomerAndOrders = () => {
+      fetchOrders();
+      fetchBaseData();
+    };
     socket.on('outbound_updated', fetchOrders);
+    socket.on('customers_updated', refreshCustomerAndOrders);
     socket.on('inventory_updated', fetchOrders);
     socket.on('locations_updated', fetchOrders);
     socket.on('dashboard_update', fetchOrders);
 
     return () => {
       socket.off('outbound_updated', fetchOrders);
+      socket.off('customers_updated', refreshCustomerAndOrders);
       socket.off('inventory_updated', fetchOrders);
       socket.off('locations_updated', fetchOrders);
       socket.off('dashboard_update', fetchOrders);
@@ -1153,13 +1159,17 @@ const Outbound = () => {
                 const totalItems = parseInt(o.total_items, 10) || 0;
                 const pickedItems = parseInt(o.picked_items, 10) || 0;
                 const progressPct = totalItems > 0 ? Math.min(100, Math.round((pickedItems / totalItems) * 100)) : 0;
+                const clientRecord = customerRecords.find(c => Number(c.id) === Number(o.customer_id));
+                const clientExitDdtEnabled = clientRecord
+                  ? Number(clientRecord.generate_exit_ddt ?? 1) !== 0
+                  : Number(o.customer_generate_exit_ddt ?? 1) !== 0;
 
                 return (
                 <tr key={o.id} className="hover:bg-slate-800/40 border-b border-slate-800/50 transition-colors group">
                   <td className="px-4 py-3.5 font-mono font-bold text-brand-white">
                     <div className="flex flex-col">
                       <span className="text-sm">{o.order_code}</span>
-                      {o.bolla_number && (
+                      {clientExitDdtEnabled && o.bolla_number && (
                         <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-mono font-bold mt-0.5">
                           <FileText size={11} /> Bolla: {o.bolla_number}
                         </span>
@@ -1316,18 +1326,20 @@ const Outbound = () => {
                       >
                         <Printer size={17} />
                       </button>
-                      <button
-                        onClick={() => openBollaModal(o)}
-                        className={`px-2.5 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 border ${
-                          o.bolla_number
-                            ? 'bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-brand-black border-sky-500/40'
-                            : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
-                        }`}
-                        title={o.bolla_number ? `Configura / Stampa Bolla ${o.bolla_number}` : 'Configura & Genera Bolla di Uscita / DDT Autotrasporto'}
-                      >
-                        <FileText size={15} />
-                        <span className="hidden xl:inline">{o.bolla_number ? 'Bolla DDT' : 'Bolla'}</span>
-                      </button>
+                      {clientExitDdtEnabled && (
+                        <button
+                          onClick={() => openBollaModal(o)}
+                          className={`px-2.5 py-2 rounded-xl transition-all font-bold text-xs flex items-center gap-1.5 border ${
+                            o.bolla_number
+                              ? 'bg-sky-500/15 hover:bg-sky-500 text-sky-300 hover:text-brand-black border-sky-500/40'
+                              : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
+                          }`}
+                          title={o.bolla_number ? `Configura / Stampa Bolla ${o.bolla_number}` : 'Configura & Genera Bolla di Uscita / DDT Autotrasporto'}
+                        >
+                          <FileText size={15} />
+                          <span className="hidden xl:inline">{o.bolla_number ? 'Bolla DDT' : 'Bolla'}</span>
+                        </button>
+                      )}
                       {o.status === 'SHIPPED' && (
                         <button 
                           onClick={() => openReturnModal(o)}
@@ -1515,70 +1527,85 @@ const Outbound = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 pt-3.5">
-                  <button
-                    type="button"
-                    onClick={() => setNewOrder(prev => ({ ...prev, generate_exit_ddt: !prev.generate_exit_ddt }))}
-                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                      newOrder.generate_exit_ddt
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-slate-900 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    <FileText size={12} /> Bolla: {newOrder.generate_exit_ddt ? 'SÌ' : 'NO'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewOrder(prev => ({
-                      ...prev,
-                      bolla_options: { ...prev.bolla_options, is_adr: !prev.bolla_options?.is_adr }
-                    }))}
-                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                      newOrder.bolla_options?.is_adr
-                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
-                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <ShieldAlert size={12} /> ADR
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewOrder(prev => ({
-                      ...prev,
-                      bolla_options: { ...prev.bolla_options, temp_6_8: !prev.bolla_options?.temp_6_8 }
-                    }))}
-                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                      newOrder.bolla_options?.temp_6_8
-                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
-                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Thermometer size={12} /> 6-8°C
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewOrder(prev => ({
-                      ...prev,
-                      bolla_options: { ...prev.bolla_options, temp_15_25: !prev.bolla_options?.temp_15_25 }
-                    }))}
-                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                      newOrder.bolla_options?.temp_15_25
-                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <Thermometer size={12} /> 15-25°C
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvancedBollaCreate(v => !v)}
-                    className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1"
-                  >
-                    <SlidersHorizontal size={12} /> {showAdvancedBollaCreate ? 'Chiudi Legali' : 'Dettagli Legali'}
-                  </button>
+                  {(() => {
+                    const selCust = customerRecords.find(c => Number(c.id) === Number(newOrder.customer_id));
+                    const custDdtOn = selCust ? Number(selCust.generate_exit_ddt ?? 1) !== 0 : true;
+                    if (!custDdtOn) {
+                      return (
+                        <span className="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-slate-900 text-slate-400 border border-slate-800">
+                          Bolla di Uscita disattivata per questo cliente
+                        </span>
+                      );
+                    }
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setNewOrder(prev => ({ ...prev, generate_exit_ddt: !prev.generate_exit_ddt }))}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                            newOrder.generate_exit_ddt
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : 'bg-slate-900 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          <FileText size={12} /> Bolla: {newOrder.generate_exit_ddt ? 'SÌ' : 'NO'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewOrder(prev => ({
+                            ...prev,
+                            bolla_options: { ...prev.bolla_options, is_adr: !prev.bolla_options?.is_adr }
+                          }))}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                            newOrder.bolla_options?.is_adr
+                              ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          <ShieldAlert size={12} /> ADR
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewOrder(prev => ({
+                            ...prev,
+                            bolla_options: { ...prev.bolla_options, temp_6_8: !prev.bolla_options?.temp_6_8 }
+                          }))}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                            newOrder.bolla_options?.temp_6_8
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          <Thermometer size={12} /> 6-8°C
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewOrder(prev => ({
+                            ...prev,
+                            bolla_options: { ...prev.bolla_options, temp_15_25: !prev.bolla_options?.temp_15_25 }
+                          }))}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                            newOrder.bolla_options?.temp_15_25
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          <Thermometer size={12} /> 15-25°C
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowAdvancedBollaCreate(v => !v)}
+                          className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1"
+                        >
+                          <SlidersHorizontal size={12} /> {showAdvancedBollaCreate ? 'Chiudi Legali' : 'Dettagli Legali'}
+                        </button>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 
-              {showAdvancedBollaCreate && (
+              {showAdvancedBollaCreate && (customerRecords.find(c => Number(c.id) === Number(newOrder.customer_id))?.generate_exit_ddt ?? 1) !== 0 && (
                 <div className="pt-2.5 border-t border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
                   {newOrder.bolla_options?.is_adr && (
                     <input

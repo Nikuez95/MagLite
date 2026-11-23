@@ -1984,9 +1984,9 @@ async function outboundRoutes(fastify, options) {
           
           let generatedBollaNumber = ordersLock[0]?.bolla_number || null;
           if (allPicked) {
-            const shouldGenBolla = ordersLock[0]?.generate_exit_ddt !== undefined && ordersLock[0]?.generate_exit_ddt !== null
-              ? Boolean(ordersLock[0].generate_exit_ddt)
-              : Boolean(ordersLock[0]?.customer_generate_exit_ddt ?? 1);
+            const custEnabled = Boolean(ordersLock[0]?.customer_generate_exit_ddt ?? 1);
+            const orderEnabled = ordersLock[0]?.generate_exit_ddt === undefined || ordersLock[0]?.generate_exit_ddt === null ? true : Boolean(ordersLock[0].generate_exit_ddt);
+            const shouldGenBolla = custEnabled && orderEnabled;
 
             if (shouldGenBolla && !generatedBollaNumber) {
               generatedBollaNumber = await generateBollaNumber(connection);
@@ -2157,9 +2157,9 @@ async function outboundRoutes(fastify, options) {
       }
 
       const [[custRow]] = await connection.query('SELECT COALESCE(generate_exit_ddt, 1) AS generate_exit_ddt FROM CUSTOMERS WHERE id = ?', [order.customer_id]);
-      const shouldGenBolla = order.generate_exit_ddt !== undefined && order.generate_exit_ddt !== null
-        ? Boolean(order.generate_exit_ddt)
-        : Boolean(custRow?.generate_exit_ddt ?? 1);
+      const custEnabled = Boolean(custRow?.generate_exit_ddt ?? 1);
+      const orderEnabled = order.generate_exit_ddt === undefined || order.generate_exit_ddt === null ? true : Boolean(order.generate_exit_ddt);
+      const shouldGenBolla = custEnabled && orderEnabled;
 
       let finalBollaNumber = order.bolla_number || null;
       let finalBollaGenAt = order.bolla_generated_at || null;
