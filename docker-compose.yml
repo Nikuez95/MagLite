@@ -6,10 +6,10 @@ services:
     container_name: maglite_db
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: maglite_db
-      MYSQL_USER: maglite_user
-      MYSQL_PASSWORD: maglite_pass
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Imposta DB_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${DB_NAME:-maglite_db}
+      MYSQL_USER: ${DB_USER:-maglite_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Imposta DB_PASSWORD in .env}
     ports:
       - "127.0.0.1:3306:3306" # Espone il DB solo sulla macchina host, non sulla rete esterna
     volumes:
@@ -25,12 +25,10 @@ services:
       dockerfile: Dockerfile
     container_name: maglite_backend
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
       - DB_HOST=database
-      - DB_USER=maglite_user
-      - DB_PASSWORD=maglite_pass
-      - DB_NAME=maglite_db
-      - JWT_SECRET=super_secret_jwt_key_maglite_2026
       - PORT=3000
     ports:
       - "3000:3000"

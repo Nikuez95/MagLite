@@ -4,8 +4,12 @@ const fastify = require('fastify')({
 
 const cors = require('@fastify/cors');
 const jwt = require('@fastify/jwt');
-require('dotenv').config();
+require('./config/env');
 const { resolveUserAccess } = require('./utils/permissions');
+
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET mancante in backend/.env: imposta una chiave segreta prima di avviare il server.');
+}
 
 // 1. Configurazione CORS
 fastify.register(cors, {
@@ -22,7 +26,7 @@ fastify.register(require('@fastify/multipart'), {
 
 // 2. Configurazione JWT
 fastify.register(jwt, {
-  secret: process.env.JWT_SECRET || 'super_secret_jwt_key_maglite_2026'
+  secret: process.env.JWT_SECRET
 });
 
 // 3. Decoratore per proteggere le rotte e arricchire il profilo permessi/gerarchia

@@ -1,6 +1,7 @@
 const zlib = require('zlib');
 const crypto = require('crypto');
 const https = require('https');
+const { updateEnvVars } = require('../config/env');
 
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4';
 const DEFAULT_QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB Cloudflare R2 Always-Free Tier
@@ -20,24 +21,16 @@ function encodeObjectKey(key) {
     .join('/');
 }
 
-async function getR2Config(db) {
-  const [rows] = await db.query(
-    `SELECT setting_key, setting_value FROM settings
-     WHERE setting_key IN ('cf_r2_token', 'cf_r2_account_id', 'cf_r2_bucket', 'cf_r2_quota_bytes', 'cf_r2_access_key_id', 'cf_r2_secret_access_key')`
-  );
-  const map = {};
-  for (const r of rows) {
-    map[r.setting_key] = r.setting_value;
-  }
-
-  const token = (process.env.CF_R2_TOKEN || map.cf_r2_token || '').trim();
-  let accountId = (process.env.CF_R2_ACCOUNT_ID || map.cf_r2_account_id || '').trim();
-  const bucket = (process.env.CF_R2_BUCKET || map.cf_r2_bucket || 'maglite-customer-files').trim();
-  const quotaParsed = Number(process.env.CF_R2_QUOTA_BYTES || map.cf_r2_quota_bytes || DEFAULT_QUOTA_BYTES);
+async function getR2Config() {
+  // Tutti i parametri R2 vengono letti esclusivamente da backend/.env (process.env)
+  const token = (process.env.CF_R2_TOKEN || '').trim();
+  let accountId = (process.env.CF_R2_ACCOUNT_ID || '').trim();
+  const bucket = (process.env.CF_R2_BUCKET || 'maglite-customer-files').trim();
+  const quotaParsed = Number(process.env.CF_R2_QUOTA_BYTES || DEFAULT_QUOTA_BYTES);
   const quotaBytes = Number.isFinite(quotaParsed) && quotaParsed > 0 ? quotaParsed : DEFAULT_QUOTA_BYTES;
 
-  let accessKeyId = (process.env.CF_R2_ACCESS_KEY_ID || map.cf_r2_access_key_id || '').trim();
-  let secretAccessKey = (process.env.CF_R2_SECRET_ACCESS_KEY || map.cf_r2_secret_access_key || '').trim();
+  let accessKeyId = (process.env.CF_R2_ACCESS_KEY_ID || '').trim();
+  let secretAccessKey = (process.env.CF_R2_SECRET_ACCESS_KEY || '').trim();
 
   if (token && !accountId) {
     try {
@@ -47,10 +40,7 @@ async function getR2Config(db) {
       const json = await res.json();
       if (json?.success && Array.isArray(json.result) && json.result[0]?.id) {
         accountId = json.result[0].id;
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_account_id", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [accountId, accountId]
-        );
+        updateEnvVars({ CF_R2_ACCOUNT_ID: accountId });
       }
     } catch (_) {}
   }
@@ -83,8 +73,8 @@ function buildCfError(json, fallbackMsg, statusHint = 502) {
     friendly = 'Cloudflare R2 non ancora attivato sul tuo account Cloudflare (errore 10042): accedi a dash.cloudflare.com → R2 → attiva R2.';
   } else if (code === 10000 || statusHint === 403) {
     friendly =
-      'Permesso negato da Cloudflare R2 (403): il token attuale non ha i permessi di scrittura (es. è in sola lettura o è un User Token senza "Object Read & Write"). ' +
-      'Vai su dash.cloudflare.com → R2 → Manage R2 API Tokens, crea un token con permesso "Object Read & Write" (o "Admin Read & Write") e inseriscilo in "Configura R2 / Token".';
+      'Permesso negato da Cloudflare R2 (403): il token configurato in backend/.env non ha i permessi di scrittura (es. è in sola lettura o senza "Object Read & Write"). ' +
+      'Genera un token "Object Read & Write" su Cloudflare Dashboard e aggiornalo in backend/.env.';
   }
 
   const err = new Error(friendly);
@@ -472,10 +462,7 @@ async function getR2QuotaSummary(db, cfg) {
     hasS3Keys: Boolean(cfg.accessKeyId && cfg.secretAccessKey),
     r2ErrorCode,
     r2ErrorMessage,
-    accountId: cfg.accountId || null,
     bucket: cfg.bucket,
-    tokenMasked: cfg.token ? `${cfg.token.slice(0, 9)}...${cfg.token.slice(-6)}` : null,
-    accessKeyMasked: cfg.accessKeyId ? `${cfg.accessKeyId.slice(0, 8)}...${cfg.accessKeyId.slice(-4)}` : null,
     quotaBytes: cfg.quotaBytes,
     usedBytesCloudflare,
     usedBytesMaglite,

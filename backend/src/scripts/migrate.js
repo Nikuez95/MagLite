@@ -1038,12 +1038,9 @@ async function runMigrations() {
           CONSTRAINT fk_cd_folder FOREIGN KEY (folder_id) REFERENCES CUSTOMER_DOCUMENT_FOLDERS(id) ON DELETE SET NULL
         )
       `);
+      // Configurazione R2 centralizzata esclusivamente in backend/.env: rimuove eventuali vecchie voci dal DB
       await connection.query(
-        `INSERT IGNORE INTO settings (setting_key, setting_value) VALUES
-         ('cf_r2_token', 'cfut_H1gtzTMwAvLoeZ2HBUqsu87ze8WYPTGKjAAnulnK80f2fce0'),
-         ('cf_r2_account_id', '2b2828e99ab9a60ef5ee1613626d3e00'),
-         ('cf_r2_bucket', 'maglite-customer-files'),
-         ('cf_r2_quota_bytes', '10737418240')`
+        "DELETE FROM settings WHERE setting_key IN ('cf_r2_token', 'cf_r2_secret_access_key', 'cf_r2_access_key_id', 'cf_r2_account_id', 'cf_r2_bucket', 'cf_r2_quota_bytes')"
       );
       console.log('✅ Tabelle CUSTOMER_DOCUMENT_FOLDERS, CUSTOMER_DOCUMENTS & config Cloudflare R2 verificate.');
     } catch (r2MigErr) {

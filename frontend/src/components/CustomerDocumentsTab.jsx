@@ -3,11 +3,10 @@ import axios from 'axios';
 import {
   Cloud, Upload, Folder, FolderPlus, FileText, Image as ImageIcon,
   FileArchive, FileSpreadsheet, File, Eye, Download, Trash2, Edit2,
-  Check, X, Loader2, Search, AlertTriangle, Settings, HardDrive,
+  Check, X, Loader2, Search, AlertTriangle, HardDrive,
   RefreshCw, Sparkles, ExternalLink, FolderInput
 } from 'lucide-react';
 import { appAlert, appConfirm } from '../utils/alerts.js';
-import { getCurrentUser, hasPerm } from '../utils/permissions.js';
 
 const FOLDER_COLORS = [
   { id: 'sky', label: 'Azzurro', dot: 'bg-sky-400', badge: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
@@ -50,9 +49,6 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
   const getToken = () => localStorage.getItem('maglite_token');
   const getHeaders = () => ({ Authorization: `Bearer ${getToken()}` });
 
-  const currentUser = getCurrentUser();
-  const canConfigureR2 = currentUser?.role === 'developer' || hasPerm('settings_manage');
-
   const [storageStatus, setStorageStatus] = useState(null);
   const [loadingStorage, setLoadingStorage] = useState(true);
 
@@ -92,29 +88,11 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
   });
   const [downloadingId, setDownloadingId] = useState(null);
 
-  // Configurazione token R2
-  const [showR2Config, setShowR2Config] = useState(false);
-  const [r2Form, setR2Form] = useState({
-    cf_r2_token: '',
-    cf_r2_account_id: '',
-    cf_r2_bucket: 'maglite-customer-files',
-    cf_r2_quota_gb: '10',
-    cf_r2_access_key_id: '',
-    cf_r2_secret_access_key: ''
-  });
-  const [savingR2Config, setSavingR2Config] = useState(false);
-
   const fetchStorageStatus = async () => {
     setLoadingStorage(true);
     try {
       const res = await axios.get(`${apiBase}/storage/status`, { headers: getHeaders() });
       setStorageStatus(res.data);
-      setR2Form(prev => ({
-        ...prev,
-        cf_r2_account_id: res.data?.accountId || '',
-        cf_r2_bucket: res.data?.bucket || 'maglite-customer-files',
-        cf_r2_quota_gb: res.data?.quotaBytes ? String(Math.round((res.data.quotaBytes / (1024 * 1024 * 1024)) * 10) / 10) : '10'
-      }));
     } catch (err) {
       console.error('Errore stato Cloudflare R2:', err);
     } finally {
@@ -384,22 +362,6 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
     }
   };
 
-  const handleSaveR2Config = async (e) => {
-    e.preventDefault();
-    setSavingR2Config(true);
-    try {
-      const res = await axios.put(`${apiBase}/storage/config`, r2Form, { headers: getHeaders() });
-      setStorageStatus(res.data?.status || null);
-      setR2Form(prev => ({ ...prev, cf_r2_token: '', cf_r2_access_key_id: '', cf_r2_secret_access_key: '' }));
-      setShowR2Config(false);
-      appAlert('Configurazione Cloudflare R2 aggiornata!', 'success');
-    } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore salvataggio configurazione R2.', 'error');
-    } finally {
-      setSavingR2Config(false);
-    }
-  };
-
   const usedPercent = storageStatus?.quotaBytes > 0
     ? Math.min(100, Math.round(((storageStatus.usedBytesEffective || 0) / storageStatus.quotaBytes) * 1000) / 10)
     : 0;
@@ -452,7 +414,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                 <div className="mt-2.5 flex items-start gap-2 text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
                   <AlertTriangle size={15} className="text-amber-400 shrink-0 mt-0.5" />
                   <span>
-                    Il token Cloudflare è valido (Account <code className="font-mono text-amber-300">{storageStatus.accountId}</code>), ma Cloudflare richiede di cliccare <b>Enable R2</b> nella{' '}
+                    Il token Cloudflare in <code className="font-mono text-amber-300">.env</code> è valido, ma Cloudflare richiede di cliccare <b>Enable R2</b> nella{' '}
                     <a
                       href="https://dash.cloudflare.com/"
                       target="_blank"
@@ -477,15 +439,6 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
             >
               <RefreshCw size={13} className={loadingStorage ? 'animate-spin' : ''} /> Aggiorna
             </button>
-            {canConfigureR2 && (
-              <button
-                type="button"
-                onClick={() => setShowR2Config(v => !v)}
-                className="px-3 py-2 bg-slate-800 hover:bg-brand-blue hover:text-brand-black text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
-              >
-                <Settings size={13} /> Configura R2 / Token
-              </button>
-            )}
           </div>
         </div>
 
@@ -508,83 +461,6 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
             />
           </div>
         </div>
-
-        {/* Pannello Configurazione Token / Bucket R2 */}
-        {showR2Config && canConfigureR2 && (
-          <form onSubmit={handleSaveR2Config} className="mt-4 pt-4 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 animate-fade-in">
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                Nuovo Token API Cloudflare ({storageStatus?.tokenMasked || 'non impostato'})
-              </label>
-              <input
-                type="password"
-                value={r2Form.cf_r2_token}
-                onChange={e => setR2Form({ ...r2Form, cf_r2_token: e.target.value })}
-                placeholder="Lascia vuoto per mantenere attuale"
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-brand-blue outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Account ID (opz. auto)</label>
-              <input
-                type="text"
-                value={r2Form.cf_r2_account_id}
-                onChange={e => setR2Form({ ...r2Form, cf_r2_account_id: e.target.value })}
-                placeholder="Auto da token"
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:border-brand-blue outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Nome Bucket R2</label>
-              <input
-                type="text"
-                value={r2Form.cf_r2_bucket}
-                onChange={e => setR2Form({ ...r2Form, cf_r2_bucket: e.target.value })}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:border-brand-blue outline-none"
-              />
-            </div>
-            <div className="sm:col-span-2 lg:col-span-2">
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">S3 Access Key ID (opzionale, per token R2 S3)</label>
-              <input
-                type="text"
-                value={r2Form.cf_r2_access_key_id}
-                onChange={e => setR2Form({ ...r2Form, cf_r2_access_key_id: e.target.value })}
-                placeholder={storageStatus?.accessKeyMasked ? `Attuale: ${storageStatus.accessKeyMasked}` : 'Lascia vuoto per derivazione automatica da Token'}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:border-brand-blue outline-none"
-              />
-            </div>
-            <div className="sm:col-span-2 lg:col-span-2">
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">S3 Secret Access Key (opzionale)</label>
-              <input
-                type="password"
-                value={r2Form.cf_r2_secret_access_key}
-                onChange={e => setR2Form({ ...r2Form, cf_r2_secret_access_key: e.target.value })}
-                placeholder="Lascia vuoto per mantenere attuale"
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:border-brand-blue outline-none"
-              />
-            </div>
-            <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-4 justify-end">
-              <div className="w-36">
-                <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Quota Piano (GB)</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="1"
-                  value={r2Form.cf_r2_quota_gb}
-                  onChange={e => setR2Form({ ...r2Form, cf_r2_quota_gb: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-brand-blue outline-none"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={savingR2Config}
-                className="px-4 py-2 bg-brand-blue hover:bg-sky-400 text-brand-black font-black text-xs rounded-xl transition-colors disabled:opacity-50"
-              >
-                {savingR2Config ? 'Salvo...' : 'Salva'}
-              </button>
-            </div>
-          </form>
-        )}
       </div>
 
       {/* Griglia Principale: Cartelle a sinistra + Upload & File a destra */}

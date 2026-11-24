@@ -42,72 +42,7 @@ async function customerFilesRoutes(fastify, options) {
     }
   });
 
-  // 2. PUT /api/customer-files/storage/config - Aggiorna token/bucket/quota R2 (solo ruolo admin/settings o software engineer)
-  fastify.put('/storage/config', async (request, reply) => {
-    const isAllowed =
-      request.user?.role === 'developer' ||
-      hasPermission(request.user, 'settings_manage');
-    if (!isAllowed) {
-      return reply.code(403).send({ error: 'Solo Software Engineer o Impostazioni possono modificare le credenziali R2.' });
-    }
-    const {
-      cf_r2_token,
-      cf_r2_account_id,
-      cf_r2_bucket,
-      cf_r2_quota_gb,
-      cf_r2_access_key_id,
-      cf_r2_secret_access_key
-    } = request.body || {};
-    try {
-      if (cf_r2_token !== undefined && String(cf_r2_token).trim()) {
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_token", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [String(cf_r2_token).trim(), String(cf_r2_token).trim()]
-        );
-      }
-      if (cf_r2_access_key_id !== undefined && String(cf_r2_access_key_id).trim()) {
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_access_key_id", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [String(cf_r2_access_key_id).trim(), String(cf_r2_access_key_id).trim()]
-        );
-      }
-      if (cf_r2_secret_access_key !== undefined && String(cf_r2_secret_access_key).trim()) {
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_secret_access_key", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [String(cf_r2_secret_access_key).trim(), String(cf_r2_secret_access_key).trim()]
-        );
-      }
-      if (cf_r2_account_id !== undefined) {
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_account_id", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [String(cf_r2_account_id || '').trim(), String(cf_r2_account_id || '').trim()]
-        );
-      }
-      if (cf_r2_bucket !== undefined && String(cf_r2_bucket).trim()) {
-        const cleanBucket = String(cf_r2_bucket).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_bucket", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [cleanBucket, cleanBucket]
-        );
-      }
-      if (cf_r2_quota_gb !== undefined && Number(cf_r2_quota_gb) > 0) {
-        const qBytes = String(Math.round(Number(cf_r2_quota_gb) * 1024 * 1024 * 1024));
-        await db.query(
-          'INSERT INTO settings (setting_key, setting_value) VALUES ("cf_r2_quota_bytes", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [qBytes, qBytes]
-        );
-      }
-
-      const cfg = await getR2Config(db);
-      const status = await getR2QuotaSummary(db, cfg);
-      return { success: true, status };
-    } catch (err) {
-      fastify.log.error(err);
-      return reply.code(500).send({ error: 'Errore salvataggio configurazione Cloudflare R2.' });
-    }
-  });
-
-  // 3. GET /api/customer-files/customers/:customerId - Lista cartelle & file separati per cliente
+  // 2. GET /api/customer-files/customers/:customerId - Lista cartelle & file separati per cliente
   fastify.get('/customers/:customerId', async (request, reply) => {
     if (!hasPermission(request.user, 'view_customers') && !hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato.' });
