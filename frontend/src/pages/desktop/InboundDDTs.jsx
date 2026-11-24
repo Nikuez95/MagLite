@@ -659,6 +659,7 @@ const InboundDDTs = () => {
                                         <th className="p-2.5">Lotto</th>
                                         <th className="p-2.5 text-right">Q.tà Attesa</th>
                                         <th className="p-2.5 text-right">Q.tà Spuntata</th>
+                                        <th className="p-2.5 text-right">KG Netti (Att → Eff)</th>
                                         <th className="p-2.5 text-right">Differenza</th>
                                         <th className="p-2.5 text-center">Esito Riga</th>
                                       </tr>
@@ -668,27 +669,45 @@ const InboundDDTs = () => {
                                         const exp = parseFloat(it.expected_quantity) || 0;
                                         const act = parseFloat(it.actual_quantity) || 0;
                                         const diff = act - exp;
-                                        const hasRowDisc = diff !== 0;
+                                        const expKg = it.net_weight_kg != null ? parseFloat(it.net_weight_kg) : null;
+                                        const actKg = it.actual_net_weight_kg != null ? parseFloat(it.actual_net_weight_kg) : null;
+                                        const kgDiff = actKg !== null ? Number((actKg - (expKg ?? 0)).toFixed(3)) : 0;
+                                        const hasKgDisc = actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001);
+                                        const hasBatchDisc = Boolean(it.actual_batch && it.actual_batch.trim() !== (it.batch || '').trim());
+                                        const hasRowDisc = Math.abs(diff) > 0.0001 || hasKgDisc || hasBatchDisc;
                                         return (
                                           <tr key={it.id} className={`border-b border-slate-800/50 ${hasRowDisc && d.status !== 'PENDING' ? 'bg-amber-500/10' : ''}`}>
                                             <td className="p-2.5">
                                               <div className="font-bold text-white">{it.product_name}</div>
                                               <div className="font-mono text-[11px] text-slate-400">{it.sku}</div>
                                             </td>
-                                            <td className="p-2.5 font-mono text-amber-400">{it.batch || '-'}</td>
+                                            <td className="p-2.5 font-mono text-amber-400">
+                                              <div>{it.batch || '-'}</div>
+                                              {hasBatchDisc && <div className="text-[10px] text-rose-400">Spuntato: {it.actual_batch}</div>}
+                                            </td>
                                             <td className="p-2.5 text-right font-bold text-slate-200">{exp} {it.product_uom}</td>
                                             <td className="p-2.5 text-right font-black text-brand-blue">{act} {it.product_uom}</td>
+                                            <td className="p-2.5 text-right font-mono text-xs">
+                                              {expKg !== null || actKg !== null ? (
+                                                <span className={hasKgDisc ? 'text-amber-300 font-bold' : 'text-slate-300'}>
+                                                  {expKg ?? '-'} → {actKg ?? expKg ?? '-'} kg
+                                                </span>
+                                              ) : <span className="text-slate-500">-</span>}
+                                            </td>
                                             <td className={`p-2.5 text-right font-mono font-black ${
-                                              diff === 0 ? 'text-emerald-400' : diff > 0 ? 'text-amber-400' : 'text-rose-400'
+                                              !hasRowDisc ? 'text-emerald-400' : (diff > 0 || kgDiff > 0) ? 'text-amber-400' : 'text-rose-400'
                                             }`}>
-                                              {diff > 0 ? `+${diff}` : diff} {it.product_uom}
+                                              <div>{diff > 0 ? `+${diff}` : diff} {it.product_uom}</div>
+                                              {hasKgDisc && (
+                                                <div className="text-[10px]">{kgDiff > 0 ? `+${kgDiff}` : kgDiff} kg</div>
+                                              )}
                                             </td>
                                             <td className="p-2.5 text-center">
-                                              {diff === 0 ? (
+                                              {!hasRowDisc ? (
                                                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">Allineato</span>
                                               ) : (
                                                 <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
-                                                  {diff < 0 ? 'Mancante' : 'Eccedenza'}
+                                                  {hasKgDisc && diff === 0 ? 'Peso Variato' : diff < 0 ? 'Mancante' : diff > 0 ? 'Eccedenza' : 'Variato'}
                                                 </span>
                                               )}
                                             </td>
@@ -834,7 +853,11 @@ const InboundDDTs = () => {
                   </tr>
                 ) : filteredHistory.map(h => {
                   const discrepantItems = Array.isArray(h.items_snapshot)
-                    ? h.items_snapshot.filter(i => parseFloat(i.expected_quantity) !== parseFloat(i.actual_quantity))
+                    ? h.items_snapshot.filter(i =>
+                        parseFloat(i.expected_quantity) !== parseFloat(i.actual_quantity) ||
+                        (Array.isArray(i.discrepancy_reasons) && i.discrepancy_reasons.length > 0) ||
+                        (i.weight_diff && Math.abs(parseFloat(i.weight_diff)) > 0.001)
+                      )
                     : [];
                   const itemsToShow = discrepantItems.length > 0 ? discrepantItems : (h.items_snapshot || []);
 
@@ -882,17 +905,26 @@ const InboundDDTs = () => {
                         <div className="space-y-1 max-w-md">
                           {itemsToShow.map((it, idx) => {
                             const diff = (parseFloat(it.actual_quantity) || 0) - (parseFloat(it.expected_quantity) || 0);
+                            const wDiff = parseFloat(it.weight_diff) || 0;
                             return (
                               <div key={idx} className="flex items-center justify-between gap-2 text-xs bg-slate-950/80 border border-slate-800/80 px-2.5 py-1 rounded-lg">
                                 <span className="font-bold text-white truncate">
                                   {it.product_name} <span className="font-mono text-slate-400">({it.sku})</span>
                                   {it.batch ? <span className="text-amber-400 font-mono ml-1">[L:{it.batch}]</span> : null}
+                                  {Array.isArray(it.discrepancy_reasons) && it.discrepancy_reasons.length > 0 && (
+                                    <span className="text-[10px] text-amber-300 ml-1.5">[{it.discrepancy_reasons.join(', ')}]</span>
+                                  )}
                                 </span>
                                 <span className="font-mono whitespace-nowrap shrink-0">
                                   Att: <b>{it.expected_quantity}</b> → Eff: <b>{it.actual_quantity}</b>{' '}
                                   <strong className={diff === 0 ? 'text-emerald-400' : diff > 0 ? 'text-amber-400' : 'text-rose-400'}>
                                     ({diff > 0 ? `+${diff}` : diff})
                                   </strong>
+                                  {Math.abs(wDiff) > 0.001 && (
+                                    <strong className="ml-1.5 text-amber-300">
+                                      [KG: {wDiff > 0 ? `+${wDiff}` : wDiff}]
+                                    </strong>
+                                  )}
                                 </span>
                               </div>
                             );
@@ -942,6 +974,7 @@ const InboundDDTs = () => {
                     <th className="p-3">Lotto</th>
                     <th className="p-3 text-right">Q.tà Attesa</th>
                     <th className="p-3 text-right">Q.tà Spuntata (Zebra)</th>
+                    <th className="p-3 text-right">KG Netti (Att → Eff)</th>
                     <th className="p-3 text-right">Differenza</th>
                   </tr>
                 </thead>
@@ -950,19 +983,37 @@ const InboundDDTs = () => {
                     const exp = parseFloat(it.expected_quantity) || 0;
                     const act = parseFloat(it.actual_quantity) || 0;
                     const diff = act - exp;
+                    const expKg = it.net_weight_kg != null ? parseFloat(it.net_weight_kg) : null;
+                    const actKg = it.actual_net_weight_kg != null ? parseFloat(it.actual_net_weight_kg) : null;
+                    const kgDiff = actKg !== null ? Number((actKg - (expKg ?? 0)).toFixed(3)) : 0;
+                    const hasKgDisc = actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001);
+                    const hasRowDisc = diff !== 0 || hasKgDisc || Boolean(it.actual_batch && it.actual_batch.trim() !== (it.batch || '').trim());
                     return (
-                      <tr key={it.id} className={`border-b border-slate-800/60 ${diff !== 0 ? 'bg-amber-500/10' : ''}`}>
+                      <tr key={it.id} className={`border-b border-slate-800/60 ${hasRowDisc ? 'bg-amber-500/10' : ''}`}>
                         <td className="p-3">
                           <div className="font-bold text-white">{it.product_name}</div>
                           <div className="font-mono text-slate-400">{it.sku}</div>
                         </td>
-                        <td className="p-3 font-mono text-amber-400">{it.batch || '-'}</td>
+                        <td className="p-3 font-mono text-amber-400">
+                          <div>{it.batch || '-'}</div>
+                          {it.actual_batch && it.actual_batch !== it.batch && (
+                            <div className="text-[10px] text-rose-400">Zebra: {it.actual_batch}</div>
+                          )}
+                        </td>
                         <td className="p-3 text-right font-bold text-slate-300">{exp} {it.product_uom}</td>
                         <td className="p-3 text-right font-black text-brand-blue">{act} {it.product_uom}</td>
+                        <td className="p-3 text-right font-mono">
+                          {expKg !== null || actKg !== null ? (
+                            <span className={hasKgDisc ? 'text-amber-300 font-bold' : 'text-slate-300'}>
+                              {expKg ?? '-'} → {actKg ?? expKg ?? '-'} kg
+                            </span>
+                          ) : '-'}
+                        </td>
                         <td className={`p-3 text-right font-mono font-black ${
-                          diff === 0 ? 'text-emerald-400' : diff > 0 ? 'text-amber-400' : 'text-rose-400'
+                          !hasRowDisc ? 'text-emerald-400' : (diff > 0 || kgDiff > 0) ? 'text-amber-400' : 'text-rose-400'
                         }`}>
-                          {diff > 0 ? `+${diff}` : diff} {it.product_uom}
+                          <div>{diff > 0 ? `+${diff}` : diff} {it.product_uom}</div>
+                          {hasKgDisc && <div className="text-[10px]">{kgDiff > 0 ? `+${kgDiff}` : kgDiff} kg</div>}
                         </td>
                       </tr>
                     );

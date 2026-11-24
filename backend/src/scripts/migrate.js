@@ -1007,6 +1007,30 @@ async function runMigrations() {
 
     // 7. Indici di performance per scalabilità a lungo termine (mesi/anni di storico)
     try {
+      const addColSafe = async (sql) => {
+        try {
+          await connection.query(sql);
+        } catch (err) {
+          if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[MIGRATE EXTRA COLS WARNING]', err.message);
+        }
+      };
+      await addColSafe('ALTER TABLE PRODUCTS ADD COLUMN kg_per_unit DECIMAL(10,4) DEFAULT NULL');
+      await addColSafe("ALTER TABLE PRODUCTS ADD COLUMN default_temp_regime VARCHAR(20) NOT NULL DEFAULT 'NONE'");
+      await addColSafe('ALTER TABLE PRODUCTS ADD COLUMN default_is_adr BOOLEAN NOT NULL DEFAULT FALSE');
+      await addColSafe('ALTER TABLE PRODUCTS ADD COLUMN default_adr_data JSON DEFAULT NULL');
+      await addColSafe('ALTER TABLE PALLETS ADD COLUMN kg_per_unit DECIMAL(10,4) DEFAULT NULL');
+      await addColSafe('ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN kg_per_unit DECIMAL(10,4) DEFAULT NULL');
+      await addColSafe('ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN actual_net_weight_kg DECIMAL(12,3) DEFAULT NULL');
+      await addColSafe('ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN actual_batch VARCHAR(100) DEFAULT NULL');
+      await addColSafe('ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN actual_expiration_date DATE DEFAULT NULL');
+      await addColSafe('ALTER TABLE OUTBOUND_ITEMS ADD COLUMN requested_kg DECIMAL(12,3) DEFAULT NULL');
+      await addColSafe('ALTER TABLE OUTBOUND_ITEMS ADD COLUMN kg_per_unit DECIMAL(10,4) DEFAULT NULL');
+      console.log('✅ Colonne kg_per_unit, default ADR/Temp e rettifica peso DDT verificate.');
+    } catch (newColsErr) {
+      console.warn('[MIGRATE NEW COLS BLOCK WARNING]', newColsErr.message);
+    }
+
+    try {
       const ensureIndex = async (tableName, indexName, columnsSql) => {
         const [[{ cnt }]] = await connection.query(
           `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.STATISTICS

@@ -845,14 +845,14 @@ const Inventory = () => {
 
     const renderRest = (textX) => {
       doc.setFontSize(16);
-      doc.text(title, textX, 18);
+      doc.text(title, textX, 17);
       
       doc.setFontSize(10);
-      doc.text(`Data: ${new Date().toLocaleDateString('it-IT')} | Elementi stampati: ${processedData.length} | Totale Unità: ${summaryMetrics.totalUnits.toLocaleString('it-IT')}`, textX, 26);
-      doc.text(filterText, textX, 32);
+      doc.text(`Data: ${new Date().toLocaleDateString('it-IT')} | Elementi stampati: ${processedData.length} | Totale Unità: ${summaryMetrics.totalUnits.toLocaleString('it-IT')}`, textX, 25);
+      doc.text(filterText, textX, 31, { maxWidth: 280 - textX });
 
       autoTable(doc, {
-        startY: 38,
+        startY: 46,
         head: [headers],
         body: data,
         styles: { fontSize: 8, cellPadding: 3 },
@@ -869,8 +869,8 @@ const Inventory = () => {
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64data = reader.result;
-        doc.addImage(base64data, 'PNG', 14, 10, 36, 25);
-        renderRest(56);
+        doc.addImage(base64data, 'PNG', 14, 8, 50, 34);
+        renderRest(68);
       };
       reader.readAsDataURL(blob);
     } catch (e) {

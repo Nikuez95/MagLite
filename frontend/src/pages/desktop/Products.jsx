@@ -230,7 +230,11 @@ const ProductsManagement = () => {
   const [locations, setLocations] = useState([]);
   const [freeLocations, setFreeLocations] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newProduct, setNewProduct] = useState({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '', default_article_number: '', flags: [] });
+  const [newProduct, setNewProduct] = useState({
+    sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, kg_per_unit: '',
+    customer_id: '', notes: '', default_article_number: '', flags: [],
+    default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT }
+  });
   const [editProductModal, setEditProductModal] = useState({ show: false, product: null });
   const [isProcessing, setIsProcessing] = useState(false);
   
@@ -501,13 +505,23 @@ const ProductsManagement = () => {
     try {
       const payload = {
         ...newProduct,
-        flags: newProduct.flags ? newProduct.flags.map(f => f.value) : []
+        kg_per_unit: newProduct.kg_per_unit !== '' && !isNaN(parseFloat(newProduct.kg_per_unit)) ? parseFloat(newProduct.kg_per_unit) : null,
+        flags: newProduct.flags ? newProduct.flags.map(f => f.value) : [],
+        default_temp_regime: newProduct.default_temp_regime || 'NONE',
+        default_is_adr: Boolean(newProduct.default_is_adr),
+        default_adr_data: newProduct.default_is_adr
+          ? { ...newProduct.default_adr_data, technical_name: newProduct.default_adr_data?.technical_name || newProduct.name || '' }
+          : null
       };
       await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       setShowAddModal(false);
-      setNewProduct({ sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, customer_id: '', notes: '', default_article_number: '', flags: [] });
+      setNewProduct({
+        sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, kg_per_unit: '',
+        customer_id: '', notes: '', default_article_number: '', flags: [],
+        default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT }
+      });
       fetchData();
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore');
@@ -543,9 +557,18 @@ const ProductsManagement = () => {
     
     setIsProcessing(true);
     try {
+      const ep = editProductModal.product;
       const payload = {
-        ...editProductModal.product,
+        ...ep,
+        kg_per_unit: ep.kg_per_unit !== '' && ep.kg_per_unit !== null && ep.kg_per_unit !== undefined && !isNaN(parseFloat(ep.kg_per_unit))
+          ? parseFloat(ep.kg_per_unit)
+          : null,
         flags: currentFlags,
+        default_temp_regime: ep.default_temp_regime || 'NONE',
+        default_is_adr: Boolean(ep.default_is_adr),
+        default_adr_data: ep.default_is_adr
+          ? { ...(ep.default_adr_data || DEFAULT_ADR_DRAFT), technical_name: ep.default_adr_data?.technical_name || ep.name || '' }
+          : null,
         updateExistingPallets
       };
       await axios.put(`http://${window.location.hostname}:3000/api/products/${editProductModal.product.id}`, payload, {
@@ -2366,16 +2389,30 @@ const ProductsManagement = () => {
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Nome Prodotto *</label>
                 <input required value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Unità per Scatola</label>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Unità x Scatola</label>
                   <input type="number" onWheel={(e) => e.target.blur()} min="1" value={newProduct.units_per_box} onChange={e => setNewProduct({...newProduct, units_per_box: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Num. Articolo Dft</label>
+                  <label className="block text-emerald-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Kg per Pezzo</label>
+                  <input type="number" step="0.001" min="0" onWheel={(e) => e.target.blur()} value={newProduct.kg_per_unit} onChange={e => setNewProduct({...newProduct, kg_per_unit: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-emerald-300 font-bold rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 10" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Num. Art. Dft</label>
                   <input value={newProduct.default_article_number} onChange={e => setNewProduct({...newProduct, default_article_number: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. ART-001" />
                 </div>
               </div>
+              <LogisticsMetaFields
+                compact
+                tempRegime={newProduct.default_temp_regime || 'NONE'}
+                onTempChange={(val) => setNewProduct(prev => ({ ...prev, default_temp_regime: val }))}
+                isAdr={Boolean(newProduct.default_is_adr)}
+                onAdrToggle={(val) => setNewProduct(prev => ({ ...prev, default_is_adr: val }))}
+                adrData={newProduct.default_adr_data || DEFAULT_ADR_DRAFT}
+                onAdrDataChange={(val) => setNewProduct(prev => ({ ...prev, default_adr_data: val }))}
+                defaultTechnicalName={newProduct.name || ''}
+              />
               <div>
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
                 <Select
@@ -2437,16 +2474,30 @@ const ProductsManagement = () => {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Unità per Scatola</label>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Unità x Scatola</label>
                   <input type="number" onWheel={(e) => e.target.blur()} min="1" value={editProductModal.product.units_per_box} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, units_per_box: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Num. Articolo Dft</label>
+                  <label className="block text-emerald-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Kg per Pezzo</label>
+                  <input type="number" step="0.001" min="0" onWheel={(e) => e.target.blur()} value={editProductModal.product.kg_per_unit ?? ''} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, kg_per_unit: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-emerald-300 font-bold rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. 10" />
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Num. Art. Dft</label>
                   <input value={editProductModal.product.default_article_number || ''} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, default_article_number: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" placeholder="Es. ART-001" />
                 </div>
               </div>
+              <LogisticsMetaFields
+                compact
+                tempRegime={normalizeTempRegime(editProductModal.product.default_temp_regime)}
+                onTempChange={(val) => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, default_temp_regime: val }})}
+                isAdr={Boolean(editProductModal.product.default_is_adr)}
+                onAdrToggle={(val) => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, default_is_adr: val }})}
+                adrData={parseAdrData(editProductModal.product.default_adr_data) || { ...DEFAULT_ADR_DRAFT, technical_name: editProductModal.product.name || '' }}
+                onAdrDataChange={(val) => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, default_adr_data: val }})}
+                defaultTechnicalName={editProductModal.product.name || ''}
+              />
               <div>
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Flag di Default (es. ADR)</label>
                 <Select

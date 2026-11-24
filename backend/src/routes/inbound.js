@@ -88,13 +88,14 @@ async function inboundRoutes(fastify, options) {
           };
 
           for (const item of cart) {
-            const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
+            const [[prodRow]] = await connection.query('SELECT sku, name, kg_per_unit FROM PRODUCTS WHERE id = ?', [item.product_id]);
             const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
             const itemName = prodRow?.name || item.product_name || item.name;
             const itemLocation = item.location ? String(item.location).trim().toUpperCase() : null;
             const itemPlanId = parseOptInt(item.tariff_plan_id);
             const itemNetKg = parseOptNum(item.net_weight_kg);
             const itemGrossKg = parseOptNum(item.gross_weight_kg);
+            const itemKgPerUnit = parseOptNum(item.kg_per_unit) ?? (prodRow?.kg_per_unit !== null && prodRow?.kg_per_unit !== undefined ? parseFloat(prodRow.kg_per_unit) : null);
             const itemGroup = item.pallet_group ? String(item.pallet_group).trim() : null;
             const itemFlagsJson = Array.isArray(item.flags) && item.flags.length > 0
               ? JSON.stringify(item.flags)
@@ -102,16 +103,34 @@ async function inboundRoutes(fastify, options) {
             const whPair = resolveWh(item.warehouse_id, item.warehouse);
             const itemTemp = normalizeTempRegime(item.temp_regime);
             const itemAdrFlag = Boolean(item.is_adr);
-            const itemAdrData = itemAdrFlag ? parseAdrData(item.adr_data) : null;
+            const itemAdrData = itemAdrFlag ? parseAdrData(item.adr_data, itemName) : null;
             let itemArrivalDt = null;
             if (item.arrival_date) {
               const parsedArr = new Date(item.arrival_date);
               if (!isNaN(parsedArr.getTime())) itemArrivalDt = parsedArr;
             }
             await connection.query(
-              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, arrival_date, location, warehouse, warehouse_id, temp_regime, is_adr, adr_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemArrivalDt, itemLocation, whPair.name, whPair.id, itemTemp, itemAdrFlag ? 1 : 0, itemAdrData ? JSON.stringify(itemAdrData) : null]
+              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, kg_per_unit, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, arrival_date, location, warehouse, warehouse_id, temp_regime, is_adr, adr_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, itemKgPerUnit, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemArrivalDt, itemLocation, whPair.name, whPair.id, itemTemp, itemAdrFlag ? 1 : 0, itemAdrData ? JSON.stringify(itemAdrData) : null]
             );
+            // Aggiorna i valori predefiniti sul prodotto (Temp/ADR/kg_per_unit) per i carichi futuri
+            if (item.product_id) {
+              await connection.query(
+                `UPDATE PRODUCTS
+                 SET kg_per_unit = COALESCE(?, kg_per_unit),
+                     default_temp_regime = ?,
+                     default_is_adr = ?,
+                     default_adr_data = ?
+                 WHERE id = ?`,
+                [
+                  itemKgPerUnit,
+                  itemTemp,
+                  itemAdrFlag ? 1 : 0,
+                  itemAdrData ? JSON.stringify(itemAdrData) : null,
+                  item.product_id
+                ]
+              );
+            }
           }
 
           await connection.query(
@@ -187,11 +206,14 @@ async function inboundRoutes(fastify, options) {
         const [[allItems], [discLogs]] = await Promise.all([
           db.query(`
             SELECT i.id, i.inbound_ddt_id, i.product_id, i.expected_quantity, i.actual_quantity,
-                   i.batch, i.client_pallet_number, i.client_article_number, i.expiration_date, i.pallet_uom, i.location, i.notes,
+                   i.net_weight_kg, i.actual_net_weight_kg, i.batch, i.actual_batch,
+                   i.client_pallet_number, i.client_article_number, i.expiration_date, i.actual_expiration_date,
+                   i.pallet_uom, i.location, i.notes,
                    COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
                    COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
                    COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
-                   COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
+                   COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box,
+                   COALESCE(NULLIF(i.kg_per_unit, 0), p.kg_per_unit) AS kg_per_unit
             FROM INBOUND_DDT_ITEMS i
             LEFT JOIN PRODUCTS p ON i.product_id = p.id
             WHERE i.inbound_ddt_id IN (?)
@@ -314,7 +336,8 @@ async function inboundRoutes(fastify, options) {
                COALESCE(NULLIF(i.sku, ''), p.sku) AS sku,
                COALESCE(NULLIF(i.product_name, ''), p.name) AS product_name,
                COALESCE(i.product_uom, p.uom, 'Pezzi') AS product_uom,
-               COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box
+               COALESCE(NULLIF(i.units_per_box, 0), p.units_per_box, 1) AS units_per_box,
+               COALESCE(NULLIF(i.kg_per_unit, 0), p.kg_per_unit) AS kg_per_unit
         FROM INBOUND_DDT_ITEMS i
         LEFT JOIN PRODUCTS p ON i.product_id = p.id
         WHERE i.inbound_ddt_id = ?
@@ -333,7 +356,7 @@ async function inboundRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di effettuare spunta in entrata.' });
     }
 
-    const { item_id, quantity, warehouse, location, expiration_date } = request.body;
+    const { item_id, quantity, warehouse, location, expiration_date, net_weight_kg, batch } = request.body;
     const ddt_id = request.params.id;
     const connection = await db.getConnection();
     try {
@@ -358,6 +381,37 @@ async function inboundRoutes(fastify, options) {
           if (ddts[0].status === 'PENDING') {
             await connection.query('UPDATE INBOUND_DDTS SET status = ? WHERE id = ?', ['IN_PROGRESS', ddt_id]);
           }
+
+          const [[prodRowScan]] = await connection.query('SELECT uom, kg_per_unit FROM PRODUCTS WHERE id = ?', [item.product_id]);
+          const rawItemUom = String(item.pallet_uom || item.product_uom || prodRowScan?.uom || 'Pezzi').toLowerCase().trim();
+          const isBancaliUom = ['bancali', 'bancale', 'palette', 'pallet'].includes(rawItemUom);
+          const scanQtyNum = parseFloat(quantity);
+          if (!Number.isFinite(scanQtyNum) || scanQtyNum <= 0) {
+            await connection.rollback();
+            return { status: 400, body: { error: 'Quantità spunta non valida.' } };
+          }
+          const expItemQty = parseFloat(item.expected_quantity) || 0;
+          const actItemQty = parseFloat(item.actual_quantity) || 0;
+          const remItemQty = Math.max(0, expItemQty - actItemQty);
+          if (isBancaliUom && remItemQty > 0 && Math.abs(scanQtyNum - remItemQty) > 0.001 && Math.abs(scanQtyNum - 1) > 0.001) {
+            await connection.rollback();
+            return {
+              status: 400,
+              body: { error: 'Con UDM Bancali/Palette non è consentito modificare il numero di pezzi: puoi rettificare KG Netti, Lotto o Scadenza.' }
+            };
+          }
+          const effectiveQty = isBancaliUom && remItemQty > 0 && Math.abs(scanQtyNum - 1) <= 0.001 && remItemQty >= 1
+            ? scanQtyNum
+            : (isBancaliUom && remItemQty > 0 ? remItemQty : scanQtyNum);
+
+          const parseOptNumScan = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
+          const scannedNetKg = parseOptNumScan(net_weight_kg);
+          const effectivePalletNetKg = scannedNetKg !== null ? scannedNetKg : (item.net_weight_kg ?? null);
+          const scannedBatch = batch !== undefined && batch !== null && String(batch).trim() ? String(batch).trim() : null;
+          const effectivePalletBatch = scannedBatch || item.batch || null;
+          const scannedExp = expiration_date ? sanitizeExpirationDate(expiration_date) : null;
+          const effectivePalletExp = scannedExp || sanitizeExpirationDate(item.expiration_date);
+          const effectiveKgPerUnit = item.kg_per_unit ?? prodRowScan?.kg_per_unit ?? null;
 
           // Generate or use existing pallet code based on location or pallet_group
           let palletCode = null;
@@ -412,14 +466,14 @@ async function inboundRoutes(fastify, options) {
 
           await connection.query(`
             INSERT INTO PALLETS 
-            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, created_at, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)
+            (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, created_at, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)
           `, [
-            palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
+            palletCode, ddts[0].customer_id, item.product_id, effectiveQty, item.units_per_box, effectiveKgPerUnit, effectivePalletBatch,
             whRowScan?.name || resolvedWhName, resolvedWhId, item.temp_regime || 'NONE', item.is_adr ? 1 : 0, itemAdrVal,
             locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
-            sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom,
-            item.net_weight_kg ?? null, item.gross_weight_kg ?? null, item.tariff_plan_id ?? null, itemFlagsVal,
+            effectivePalletExp, item.pallet_uom,
+            effectivePalletNetKg, item.gross_weight_kg ?? null, item.tariff_plan_id ?? null, itemFlagsVal,
             itemArrivalVal,
             ddt_id, ddts[0].client_ddt || null, ddts[0].checkin_id || null, ddts[0].checkin_session_code || null
           ]);
@@ -430,11 +484,19 @@ async function inboundRoutes(fastify, options) {
           
           await connection.query(
             "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-            ['INBOUND', `Spunta Zebra (${ddts[0].ddt_number}): Creata/aggiornata paletta ${palletCode} (${quantity} ${item.product_uom || 'pz'}) per ${item.product_name || 'Articolo'}${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
+            ['INBOUND', `Spunta Zebra (${ddts[0].ddt_number}): Creata/aggiornata paletta ${palletCode} (${effectiveQty} ${item.product_uom || 'pz'}${effectivePalletNetKg !== null ? ` · ${effectivePalletNetKg} kg netti` : ''}) per ${item.product_name || 'Articolo'}${locStr ? ' in ' + locStr : ''}`, 'Zebra', request.user ? request.user.username : 'Operatore']
           );
 
-          // Update actual quantity
-          await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = actual_quantity + ? WHERE id = ?', [quantity, item_id]);
+          // Update actual quantity, net weight, batch, expiration
+          await connection.query(
+            `UPDATE INBOUND_DDT_ITEMS
+             SET actual_quantity = actual_quantity + ?,
+                 actual_net_weight_kg = CASE WHEN ? IS NOT NULL THEN COALESCE(actual_net_weight_kg, 0) + ? ELSE actual_net_weight_kg END,
+                 actual_batch = COALESCE(?, actual_batch),
+                 actual_expiration_date = COALESCE(?, actual_expiration_date)
+             WHERE id = ?`,
+            [effectiveQty, scannedNetKg, scannedNetKg, scannedBatch, scannedExp, item_id]
+          );
 
           await connection.commit();
           return { status: 200, body: { success: true, pallet_code: palletCode } };
@@ -463,6 +525,89 @@ async function inboundRoutes(fastify, options) {
       connection.release();
     }
   });
+
+  function buildDdtDiscrepancySnapshot(items) {
+    let discrepancy = false;
+    let totalDiff = 0;
+    let totalWeightDiff = 0;
+    const summaryTags = new Set();
+
+    const itemsSnapshot = items.map(item => {
+      const exp = parseFloat(item.expected_quantity) || 0;
+      const act = parseFloat(item.actual_quantity) || 0;
+      const diff = Number((act - exp).toFixed(4));
+      const hasQtyDisc = Math.abs(diff) > 0.0001;
+
+      const expNetKg = item.net_weight_kg !== null && item.net_weight_kg !== undefined ? parseFloat(item.net_weight_kg) : null;
+      const actNetKg = item.actual_net_weight_kg !== null && item.actual_net_weight_kg !== undefined ? parseFloat(item.actual_net_weight_kg) : null;
+      const weightDiff = (expNetKg !== null && actNetKg !== null)
+        ? Number((actNetKg - expNetKg).toFixed(3))
+        : (expNetKg === null && actNetKg !== null ? Number(actNetKg.toFixed(3)) : 0);
+      const hasWeightDisc = actNetKg !== null && (expNetKg === null || Math.abs(actNetKg - expNetKg) > 0.001);
+
+      const expBatch = (item.batch || '').trim();
+      const actBatch = (item.actual_batch || '').trim();
+      const hasBatchDisc = Boolean(actBatch && actBatch !== expBatch);
+
+      const expExp = item.expiration_date ? String(item.expiration_date).slice(0, 10) : '';
+      const actExp = item.actual_expiration_date ? String(item.actual_expiration_date).slice(0, 10) : '';
+      const hasExpDisc = Boolean(actExp && expExp && actExp !== expExp);
+
+      const reasons = [];
+      if (hasQtyDisc) {
+        totalDiff += diff;
+        reasons.push(`Q.tà (${diff > 0 ? '+' : ''}${diff})`);
+        summaryTags.add('Quantità');
+      }
+      if (hasWeightDisc) {
+        totalWeightDiff = Number((totalWeightDiff + weightDiff).toFixed(3));
+        reasons.push(`KG Netti (${weightDiff > 0 ? '+' : ''}${weightDiff} kg)`);
+        summaryTags.add('KG Netti');
+      }
+      if (hasBatchDisc) {
+        reasons.push(`Lotto (${expBatch || '-'} → ${actBatch})`);
+        summaryTags.add('Lotto');
+      }
+      if (hasExpDisc) {
+        reasons.push(`Scadenza (${expExp} → ${actExp})`);
+        summaryTags.add('Scadenza');
+      }
+      if (reasons.length > 0) discrepancy = true;
+
+      return {
+        item_id: item.id,
+        product_id: item.product_id,
+        sku: item.sku,
+        product_name: item.product_name,
+        batch: item.batch || null,
+        actual_batch: actBatch || null,
+        expiration_date: expExp || null,
+        actual_expiration_date: actExp || null,
+        uom: item.product_uom || 'Pezzi',
+        expected_quantity: exp,
+        actual_quantity: act,
+        diff,
+        expected_net_weight_kg: expNetKg,
+        actual_net_weight_kg: actNetKg,
+        weight_diff: weightDiff,
+        discrepancy_reasons: reasons
+      };
+    });
+
+    const summaryDetails = [];
+    if (Math.abs(totalDiff) > 0.0001) summaryDetails.push(`Q.tà: ${totalDiff > 0 ? '+' : ''}${totalDiff}`);
+    if (Math.abs(totalWeightDiff) > 0.001) summaryDetails.push(`KG Netti: ${totalWeightDiff > 0 ? '+' : ''}${totalWeightDiff} kg`);
+    if (summaryTags.has('Lotto')) summaryDetails.push('Lotto variato');
+    if (summaryTags.has('Scadenza')) summaryDetails.push('Scadenza variata');
+
+    return {
+      discrepancy,
+      totalDiff,
+      totalWeightDiff,
+      summaryLabel: summaryDetails.join(' • ') || (totalDiff !== 0 ? `${totalDiff > 0 ? '+' : ''}${totalDiff}` : 'Dati variati'),
+      itemsSnapshot
+    };
+  }
 
   // 5. Complete DDT (from Zebra)
   fastify.post('/ddt/:id/complete', async (request, reply) => {
@@ -499,37 +644,12 @@ async function inboundRoutes(fastify, options) {
         WHERE i.inbound_ddt_id = ?
       `, [ddtId]);
 
-      let discrepancy = false;
-      let totalDiff = 0;
-      const itemsSnapshot = [];
-
-      for (const item of items) {
-        const exp = parseFloat(item.expected_quantity) || 0;
-        const act = parseFloat(item.actual_quantity) || 0;
-        const diff = act - exp;
-        if (exp !== act) {
-          discrepancy = true;
-          totalDiff += diff;
-        }
-        itemsSnapshot.push({
-          item_id: item.id,
-          product_id: item.product_id,
-          sku: item.sku,
-          product_name: item.product_name,
-          batch: item.batch || null,
-          uom: item.product_uom || 'Pezzi',
-          expected_quantity: exp,
-          actual_quantity: act,
-          diff
-        });
-      }
+      const { discrepancy, summaryLabel, itemsSnapshot } = buildDdtDiscrepancySnapshot(items);
 
       const status = discrepancy ? 'DISCREPANCY' : 'COMPLETED';
-
-
-
-
-      const notes = discrepancy ? `Rilevata discrepanza in spunta (${totalDiff > 0 ? '+' : ''}${totalDiff}) — In attesa di approvazione o rifiuto da Backoffice` : 'Spunta completata regolarmente senza discrepanze';
+      const notes = discrepancy
+        ? `Rilevata discrepanza in spunta (${summaryLabel}) — In attesa di approvazione o rifiuto da Backoffice`
+        : 'Spunta completata regolarmente senza discrepanze';
 
       await connection.query(
         'UPDATE INBOUND_DDTS SET status = ?, closed_at = NOW(), notes = ? WHERE id = ?',
@@ -547,7 +667,7 @@ async function inboundRoutes(fastify, options) {
             ddtId,
             ddt.ddt_number,
             ddt.customer_id,
-            `Discrepanza rilevata a fine spunta Zebra (Diff. totale: ${totalDiff > 0 ? '+' : ''}${totalDiff})`,
+            `Discrepanza rilevata a fine spunta Zebra (${summaryLabel})`,
             JSON.stringify(itemsSnapshot),
             request.user?.username || 'Operatore Zebra'
           ]
@@ -558,7 +678,7 @@ async function inboundRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         [
           'COMPLETE_INBOUND_DDT',
-          `Completata spunta DDT ${ddt.ddt_number} con stato ${status}${discrepancy ? ` (Diff: ${totalDiff > 0 ? '+' : ''}${totalDiff})` : ''}`,
+          `Completata spunta DDT ${ddt.ddt_number} con stato ${status}${discrepancy ? ` (${summaryLabel})` : ''}`,
           'Zebra',
           request.user?.username || 'Operatore Zebra'
         ]
@@ -569,7 +689,7 @@ async function inboundRoutes(fastify, options) {
         type: discrepancy ? 'INBOUND_DISCREPANCY' : 'INBOUND_COMPLETED',
         title: discrepancy ? `Discrepanza DDT ${ddt.ddt_number}` : `DDT Entrata Completato: ${ddt.ddt_number}`,
         message: discrepancy
-          ? `Rilevata discrepanza in spunta DDT ${ddt.ddt_number} (${totalDiff > 0 ? '+' : ''}${totalDiff}). Richiesta verifica Backoffice.`
+          ? `Rilevata discrepanza in spunta DDT ${ddt.ddt_number} (${summaryLabel}). Richiesta verifica Backoffice.`
           : `La spunta del DDT ${ddt.ddt_number} è stata completata regolarmente.`,
         customer_id: ddt.customer_id,
         entity_type: 'INBOUND',
@@ -638,21 +758,7 @@ async function inboundRoutes(fastify, options) {
         WHERE i.inbound_ddt_id = ?
       `, [ddtId]);
 
-      const itemsSnapshot = items.map(item => {
-        const exp = parseFloat(item.expected_quantity) || 0;
-        const act = parseFloat(item.actual_quantity) || 0;
-        return {
-          item_id: item.id,
-          product_id: item.product_id,
-          sku: item.sku,
-          product_name: item.product_name,
-          batch: item.batch || null,
-          uom: item.product_uom || 'Pezzi',
-          expected_quantity: exp,
-          actual_quantity: act,
-          diff: act - exp
-        };
-      });
+      const { itemsSnapshot } = buildDdtDiscrepancySnapshot(items);
 
       const resolvedNote = `Discrepanza accettata da ${username}: ${cleanReason}`;
 
@@ -749,24 +855,13 @@ async function inboundRoutes(fastify, options) {
         WHERE i.inbound_ddt_id = ?
       `, [ddtId]);
 
-      const itemsSnapshot = items.map(item => {
-        const exp = parseFloat(item.expected_quantity) || 0;
-        const act = parseFloat(item.actual_quantity) || 0;
-        return {
-          item_id: item.id,
-          product_id: item.product_id,
-          sku: item.sku,
-          product_name: item.product_name,
-          batch: item.batch || null,
-          uom: item.product_uom || 'Pezzi',
-          expected_quantity: exp,
-          actual_quantity: act,
-          diff: act - exp
-        };
-      });
+      const { itemsSnapshot } = buildDdtDiscrepancySnapshot(items);
 
       await connection.query('DELETE FROM PALLETS WHERE inbound_ddt_id = ?', [ddtId]);
-      await connection.query('UPDATE INBOUND_DDT_ITEMS SET actual_quantity = 0 WHERE inbound_ddt_id = ?', [ddtId]);
+      await connection.query(
+        'UPDATE INBOUND_DDT_ITEMS SET actual_quantity = 0, actual_net_weight_kg = NULL, actual_batch = NULL, actual_expiration_date = NULL WHERE inbound_ddt_id = ?',
+        [ddtId]
+      );
 
       const rejectNote = `Discrepanza RIFIUTATA da ${username} (${cleanReason}) — Da rispuntare su Zebra`;
 
@@ -858,13 +953,13 @@ async function inboundRoutes(fastify, options) {
       const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
       
       if (fsModule.existsSync(logoPath)) {
-        doc.image(logoPath, (doc.page.width - 200) / 2, doc.y, { fit: [200, 60], align: 'center' });
-        doc.moveDown(4);
+        doc.image(logoPath, (doc.page.width - 280) / 2, 24, { fit: [280, 88], align: 'center' });
+        doc.y = 120;
       } else {
         doc.fillColor('#0ea5e9').fontSize(24).font('Helvetica-Bold').text('Logistic Porcelli', { align: 'center' });
         doc.fillColor('#94a3b8').fontSize(10).font('Helvetica').text('Logistica & Magazzino', { align: 'center' });
+        doc.moveDown(2);
       }
-      doc.moveDown(2);
 
       doc.fillColor('#1e293b').fontSize(16).font('Helvetica-Bold').text('DDT ENTRATA MERCE (SPUNTA)', { align: 'center' });
       

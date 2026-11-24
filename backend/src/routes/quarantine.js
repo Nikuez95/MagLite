@@ -452,27 +452,27 @@ async function quarantineRoutes(fastify, options) {
       // --- LOGO & INTESTAZIONE ---
       const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
       if (fs.existsSync(logoPath)) {
-        doc.image(logoPath, 40, 40, { width: 140 });
+        doc.image(logoPath, 40, 26, { fit: [205, 68] });
       } else {
         doc.fillColor('#0ea5e9').fontSize(18).font('Helvetica-Bold').text('Logistic Porcelli', 40, 40);
       }
 
       doc.fillColor('#64748b').fontSize(9).font('Helvetica')
-        .text('LOGISTICA INTEGRATA & CONTROLLO QUALITÀ GDP', 250, 42, { align: 'right' })
-        .text('Procedure di Gestione Non Conformità - GDP Guidelines 2013/C 343/01', 250, 55, { align: 'right' })
-        .text(`Data Emissione: ${new Date().toLocaleString('it-IT')}`, 250, 68, { align: 'right' });
+        .text('LOGISTICA INTEGRATA & CONTROLLO QUALITÀ GDP', 255, 38, { align: 'right' })
+        .text('Procedure di Gestione Non Conformità - GDP Guidelines 2013/C 343/01', 255, 51, { align: 'right' })
+        .text(`Data Emissione: ${new Date().toLocaleString('it-IT')}`, 255, 64, { align: 'right' });
 
       doc.moveDown(4);
 
       // Titolo Documento
-      doc.rect(40, 100, doc.page.width - 80, 36).fill('#991b1b');
+      doc.rect(40, 104, doc.page.width - 80, 36).fill('#991b1b');
       doc.fillColor('#ffffff').fontSize(14).font('Helvetica-Bold')
-        .text('VERBALE DI NON CONFORMITÀ E BLOCCO QUARANTENA', 40, 110, { align: 'center' });
+        .text('VERBALE DI NON CONFORMITÀ E BLOCCO QUARANTENA', 40, 114, { align: 'center' });
 
       doc.moveDown(3);
 
       // Metadati Documento Protocollo
-      const startY = 150;
+      const startY = 152;
       doc.rect(40, startY, doc.page.width - 80, 40).stroke('#cbd5e1');
       doc.fillColor('#334155').fontSize(10).font('Helvetica-Bold')
         .text(`N° Protocollo: NC-GDP-${logData?.id || id}-${new Date().getFullYear()}`, 50, startY + 8)

@@ -70,26 +70,30 @@ export async function generateProformaPdf({
         reader.onloadend = () => resolve(reader.result);
         reader.readAsDataURL(blob);
       });
-      doc.addImage(base64Logo, 'PNG', 14, 12, 26, 18);
+      doc.addImage(base64Logo, 'PNG', 14, 10, 38, 26);
     }
   } catch (_) {}
 
   // Company details (Left)
-  doc.setFontSize(14);
+  doc.setFontSize(13);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
   const companyName = companySettings.company_name || 'La Mia Azienda';
-  const companyNameLines = doc.splitTextToSize(companyName, 66);
-  doc.text(companyNameLines, 43, 18);
+  const companyNameLines = doc.splitTextToSize(companyName, 56);
+  doc.text(companyNameLines, 55, 15);
 
-  doc.setFontSize(8.5);
+  doc.setFontSize(8.2);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(71, 85, 105);
-  let startY = 18 + (companyNameLines.length * 5.2);
-  if (companySettings.company_address) { doc.text(companySettings.company_address, 43, startY, { maxWidth: 66 }); startY += 4.3; }
-  if (companySettings.company_piva) { doc.text(`P.IVA: ${companySettings.company_piva}`, 43, startY); startY += 4.3; }
-  if (companySettings.company_cf) { doc.text(`CF: ${companySettings.company_cf}`, 43, startY); startY += 4.3; }
-  if (companySettings.company_email) { doc.text(`Email: ${companySettings.company_email}`, 43, startY); }
+  let startY = 15 + (companyNameLines.length * 4.8);
+  if (companySettings.company_address) {
+    const compAddrLines = doc.splitTextToSize(companySettings.company_address, 56);
+    doc.text(compAddrLines, 55, startY);
+    startY += compAddrLines.length * 3.9;
+  }
+  if (companySettings.company_piva) { doc.text(`P.IVA: ${companySettings.company_piva}`, 55, startY); startY += 4.0; }
+  if (companySettings.company_cf) { doc.text(`CF: ${companySettings.company_cf}`, 55, startY); startY += 4.0; }
+  if (companySettings.company_email) { doc.text(`Email: ${companySettings.company_email}`, 55, startY, { maxWidth: 56 }); }
 
   // Customer Card Box (Right)
   doc.setFillColor(248, 250, 252);

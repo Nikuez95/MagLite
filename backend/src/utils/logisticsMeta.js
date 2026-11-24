@@ -146,7 +146,7 @@ function formatAdrDescription(adrRaw) {
   return lq && base ? `${base} [LQ - Quantità Limitata]` : base;
 }
 
-function parseAdrData(raw) {
+function parseAdrData(raw, fallbackTechnicalName = '') {
   if (!raw) return null;
   let obj = raw;
   if (typeof raw === 'string') {
@@ -157,7 +157,7 @@ function parseAdrData(raw) {
     preset_key: obj.preset_key || 'CUSTOM',
     un_number: String(obj.un_number || '').trim().toUpperCase(),
     proper_shipping_name: String(obj.proper_shipping_name || '').trim(),
-    technical_name: String(obj.technical_name || '').trim(),
+    technical_name: String(obj.technical_name || fallbackTechnicalName || '').trim(),
     adr_class: String(obj.adr_class || '').trim(),
     packing_group: String(obj.packing_group || '').trim(),
     tunnel_code: String(obj.tunnel_code || '').trim(),

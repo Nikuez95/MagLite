@@ -25,6 +25,7 @@ const PERMISSION_CATALOG = [
       { key: 'view_non_conformities', label: 'Visualizza Non Conformità', desc: 'Accesso alla sezione dedicata alle segnalazioni di Non Conformità e storico.' },
       { key: 'view_customers', label: 'Visualizza Anagrafica Clienti', desc: 'Accesso alla scheda clienti e sottoreparti.' },
       { key: 'view_locations', label: 'Visualizza Mappa Magazzino', desc: 'Accesso alla mappa scaffali, corridoi e posizioni.' },
+      { key: 'view_warehouse_signs', label: 'Cartelli Magazzino', desc: 'Accesso al generatore e stampa di cartelli ed etichette brandizzate per aree e scaffali.' },
       { key: 'view_tms', label: 'Visualizza TMS (Trasporti)', desc: 'Accesso alla pianificazione trasporti e autisti.' },
       { key: 'view_custom_forms', label: 'Visualizza Moduli & Arrivi', desc: 'Accesso alla sezione Moduli & Check-in e storico arrivi merce.' },
       { key: 'view_finances', label: 'Visualizza Finanza', desc: 'Accesso a Dashboard Finanza, Spese e Archivio Proforme.' },
@@ -40,6 +41,7 @@ const PERMISSION_CATALOG = [
     description: 'Permessi operativi su ingressi, modifiche giacenze, spostamenti ed eliminazioni.',
     items: [
       { key: 'inbound_create', label: 'Aggiungere Merce & Creare DDT', desc: 'Permette di caricare nuovi bancali, generare barcode e confermare DDT entrata.' },
+      { key: 'scarico_container', label: 'Scarico Container', desc: 'Permette di selezionare e registrare arrivi/spunte in modalità Scarico Container (forfait container anziché tariffa per paletta IN).' },
       { key: 'delete_inbound_ddt', label: 'Eliminare DDT Entrata (Spunta)', desc: 'Permette di cancellare definitivamente registrazioni e spunte DDT in ingresso.' },
       { key: 'pallet_edit', label: 'Modificare Quantità e Note Palette', desc: 'Permette di rettificare quantità, scadenze, lotti e metadati delle palette.' },
       { key: 'pallet_move', label: 'Spostare / Stivare Palette e Scaffali', desc: 'Permette di stivare, spostare o unire palette e creare posizioni.' },
@@ -115,6 +117,7 @@ const VIEW_ONLY_PERMISSIONS = buildPermMap([
   'non_conformities_manage',
   'view_customers',
   'view_locations',
+  'view_warehouse_signs',
   'view_tms',
   'view_custom_forms',
   'view_audit'
@@ -134,9 +137,11 @@ const QUALITY_PERMISSIONS = buildPermMap([
   'non_conformities_manage',
   'view_customers',
   'view_locations',
+  'view_warehouse_signs',
   'view_custom_forms',
   'view_audit',
   'inbound_create',
+  'scarico_container',
   'pallet_edit',
   'pallet_move',
   'product_manage',
@@ -148,6 +153,7 @@ const QUALITY_PERMISSIONS = buildPermMap([
 const OPERATOR_PERMISSIONS = buildPermMap([
   'access_zebra',
   'inbound_create',
+  'scarico_container',
   'pallet_move',
   'outbound_pick'
 ]);
@@ -207,13 +213,25 @@ async function seedDefaultRoles(connection = db) {
     `UPDATE ROLES SET name = 'Software Engineer', hierarchy_level = 10000, is_system = 1 WHERE code = 'developer'`
   );
 
-  // Default per tutti i ruoli esistenti con accesso al gestionale desktop: abilita Non Conformità se non ancora configurato esplicitamente
+  // Default per tutti i ruoli esistenti: allinea Non Conformità, Cartelli Magazzino e Scarico Container se non ancora configurati esplicitamente
   const [allDbRoles] = await connection.query('SELECT id, permissions FROM ROLES');
   for (const dbRole of allDbRoles) {
     const parsedPerms = parseJsonSafe(dbRole.permissions, {});
+    let dirty = false;
     if (parsedPerms.access_desktop === true && (parsedPerms.view_non_conformities === undefined || parsedPerms.non_conformities_manage === undefined)) {
       if (parsedPerms.view_non_conformities === undefined) parsedPerms.view_non_conformities = true;
       if (parsedPerms.non_conformities_manage === undefined) parsedPerms.non_conformities_manage = true;
+      dirty = true;
+    }
+    if (parsedPerms.view_warehouse_signs === undefined && (parsedPerms.view_locations === true || parsedPerms.locations_manage === true)) {
+      parsedPerms.view_warehouse_signs = true;
+      dirty = true;
+    }
+    if (parsedPerms.scarico_container === undefined && (parsedPerms.inbound_create === true || parsedPerms.zebra_verify === true)) {
+      parsedPerms.scarico_container = true;
+      dirty = true;
+    }
+    if (dirty) {
       await connection.query('UPDATE ROLES SET permissions = ? WHERE id = ?', [JSON.stringify(parsedPerms), dbRole.id]);
     }
   }
@@ -308,6 +326,10 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
     if (isDeveloper) {
       effectivePermissions[key] = typeof rawRolePerms[key] === 'boolean' ? rawRolePerms[key] : true;
     } else if ((key === 'view_non_conformities' || key === 'non_conformities_manage') && rawRolePerms[key] === undefined && Boolean(rawRolePerms.access_desktop)) {
+      effectivePermissions[key] = true;
+    } else if (key === 'view_warehouse_signs' && rawRolePerms[key] === undefined && Boolean(rawRolePerms.view_locations || rawRolePerms.locations_manage)) {
+      effectivePermissions[key] = true;
+    } else if (key === 'scarico_container' && rawRolePerms[key] === undefined && Boolean(rawRolePerms.inbound_create || rawRolePerms.zebra_verify)) {
       effectivePermissions[key] = true;
     } else {
       effectivePermissions[key] = Boolean(rawRolePerms[key]);

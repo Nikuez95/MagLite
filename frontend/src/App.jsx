@@ -499,7 +499,7 @@ function App() {
             <Route
               path="warehouse-signs"
               element={
-                <ProtectedSection perm={['view_locations', 'locations_manage', 'inbound_create']} sectionName="Cartelli Magazzino" {...guardProps}>
+                <ProtectedSection perm="view_warehouse_signs" sectionName="Cartelli Magazzino" {...guardProps}>
                   <WarehouseSigns />
                 </ProtectedSection>
               }

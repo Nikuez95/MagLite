@@ -390,6 +390,14 @@ async function customFormsRoutes(fastify, options) {
     const { session_code } = request.params;
     const { step_id, answer, next_step_id, is_standby, standby_reason, is_completed, is_rejected, rejection_reason } = request.body || {};
 
+    if (
+      ((step_id === 'step_mezzo' && String(answer || '').toUpperCase() === 'CONTAINER') ||
+        (step_id === 'step_container' && answer && String(answer).trim())) &&
+      !hasPermission(request.user, 'scarico_container')
+    ) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso "Scarico Container" richiesto per registrare scarichi container.' });
+    }
+
     try {
       const [subRows] = await db.query('SELECT * FROM CUSTOM_FORM_SUBMISSIONS WHERE session_code = ?', [session_code]);
       if (subRows.length === 0) {

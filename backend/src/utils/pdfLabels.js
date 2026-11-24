@@ -106,12 +106,12 @@ async function drawLabel(doc, lbl, x, y, w, h) {
 
   // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
   if (fs.existsSync(logoPath)) {
-    doc.image(logoPath, x + 12, y + 12, { fit: [90, 25] });
+    doc.image(logoPath, x + 12, y + 9, { fit: [130, 34] });
     if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 11, { width: w - 122, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 110, y + 23, { width: w - 122, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 146, y + 11, { width: w - 158, align: 'right', lineBreak: false });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 146, y + 23, { width: w - 158, align: 'right', lineBreak: false });
     } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 110, y + 18, { width: w - 122, align: 'right', lineBreak: false });
+      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 146, y + 18, { width: w - 158, align: 'right', lineBreak: false });
     }
   } else {
     if (lbl.location) {
@@ -123,7 +123,7 @@ async function drawLabel(doc, lbl, x, y, w, h) {
   }
 
   // Divider
-  doc.moveTo(x + 10, y + 42).lineTo(x + w - 10, y + 42).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
+  doc.moveTo(x + 10, y + 46).lineTo(x + w - 10, y + 46).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
   doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
 
   // CLIENTE (Auto-shrink text per evitare a capo)

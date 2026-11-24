@@ -84,6 +84,7 @@ async function palletRoutes(fastify, options) {
                c.business_name as customer_name, c.parent_id as customer_parent_id,
                tp.name as tariff_plan_name, tp.is_flat_rate as tariff_plan_flat_rate,
                COALESCE(p.units_per_box, pr.units_per_box) as units_per_box,
+               COALESCE(NULLIF(p.kg_per_unit, 0), pr.kg_per_unit) as kg_per_unit,
                IF(mx.pallet_code IS NOT NULL, 1, 0) as is_mixed
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
@@ -238,22 +239,38 @@ async function palletRoutes(fastify, options) {
           const itemPlanId = parseOptInt(item.tariff_plan_id);
           const itemNetKg = parseOptNum(item.net_weight_kg);
           const itemGrossKg = parseOptNum(item.gross_weight_kg);
+          const itemKgPerUnit = parseOptNum(item.kg_per_unit);
           const whPair = resolveWarehousePair(item.warehouse_id, warehouse);
           const itemTempRegime = normalizeTempRegime(item.temp_regime);
           const itemIsAdr = Boolean(item.is_adr);
-          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data) : null;
+          const [[prodMetaRow]] = await connection.query('SELECT name, kg_per_unit FROM PRODUCTS WHERE id = ?', [product_id]);
+          const effectiveKgPerUnit = itemKgPerUnit && itemKgPerUnit > 0 ? itemKgPerUnit : (prodMetaRow?.kg_per_unit ? parseFloat(prodMetaRow.kg_per_unit) : null);
+          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data, prodMetaRow?.name || '') : null;
           
           await connection.query(
-            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
           );
           
-          if (item.units_per_box || item.boxes_per_pallet) {
-            await connection.query(
-              'UPDATE PRODUCTS SET units_per_box = ?, boxes_per_pallet = ? WHERE id = ?',
-              [item.units_per_box || 1, item.boxes_per_pallet || 1, product_id]
-            );
-          }
+          await connection.query(
+            `UPDATE PRODUCTS
+             SET units_per_box = COALESCE(NULLIF(?, 0), units_per_box),
+                 boxes_per_pallet = COALESCE(NULLIF(?, 0), boxes_per_pallet),
+                 kg_per_unit = COALESCE(?, kg_per_unit),
+                 default_temp_regime = ?,
+                 default_is_adr = ?,
+                 default_adr_data = ?
+             WHERE id = ?`,
+            [
+              item.units_per_box || null,
+              item.boxes_per_pallet || null,
+              effectiveKgPerUnit,
+              itemTempRegime,
+              itemIsAdr ? 1 : 0,
+              itemAdrObj ? JSON.stringify(itemAdrObj) : null,
+              product_id
+            ]
+          );
         }
 
         if (finalLocation) {
@@ -346,12 +363,14 @@ async function palletRoutes(fastify, options) {
           const itemPlanId = parseOptInt(item.tariff_plan_id);
           const itemNetKg = parseOptNum(item.net_weight_kg);
           const itemGrossKg = parseOptNum(item.gross_weight_kg);
+          const itemKgPerUnit = parseOptNum(item.kg_per_unit);
           const whPair = resolveWarehousePair(item.warehouse_id, warehouse);
           const itemTempRegime = normalizeTempRegime(item.temp_regime);
           const itemIsAdr = Boolean(item.is_adr);
-          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data) : null;
           
-          const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
+          const [[product]] = await connection.query('SELECT name, kg_per_unit FROM PRODUCTS WHERE id = ?', [product_id]);
+          const effectiveKgPerUnit = itemKgPerUnit && itemKgPerUnit > 0 ? itemKgPerUnit : (product?.kg_per_unit ? parseFloat(product.kg_per_unit) : null);
+          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data, product?.name || '') : null;
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
 
           if (itemLoc) {
@@ -374,8 +393,8 @@ async function palletRoutes(fastify, options) {
             const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
 
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
@@ -406,8 +425,8 @@ async function palletRoutes(fastify, options) {
             const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
 
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
@@ -431,8 +450,8 @@ async function palletRoutes(fastify, options) {
               const code = nextPalletCode();
               
               await connection.query(
-                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+                [code, customer_id, product_id, quantity, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
               );
               
               await connection.query(
@@ -458,13 +477,26 @@ async function palletRoutes(fastify, options) {
             }
           }
 
-          // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI INSERITI IN INBOUND
-          if (item.units_per_box || item.boxes_per_pallet) {
-            await connection.query(
-              'UPDATE PRODUCTS SET units_per_box = ?, boxes_per_pallet = ? WHERE id = ?',
-              [item.units_per_box || 1, item.boxes_per_pallet || 1, product_id]
-            );
-          }
+          // AGGIORNA ANAGRAFICA PRODOTTO CON I NUOVI MOLTIPLICATORI E DEFAULT TEMP/ADR INSERITI IN INBOUND
+          await connection.query(
+            `UPDATE PRODUCTS
+             SET units_per_box = COALESCE(NULLIF(?, 0), units_per_box),
+                 boxes_per_pallet = COALESCE(NULLIF(?, 0), boxes_per_pallet),
+                 kg_per_unit = COALESCE(?, kg_per_unit),
+                 default_temp_regime = ?,
+                 default_is_adr = ?,
+                 default_adr_data = ?
+             WHERE id = ?`,
+            [
+              item.units_per_box || null,
+              item.boxes_per_pallet || null,
+              effectiveKgPerUnit,
+              itemTempRegime,
+              itemIsAdr ? 1 : 0,
+              itemAdrObj ? JSON.stringify(itemAdrObj) : null,
+              product_id
+            ]
+          );
         }
 
         // Consolida tutte le posizioni toccate (somma eventuali righe identiche per prodotto + lotto nella stessa posizione)

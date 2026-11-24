@@ -164,8 +164,8 @@ const drawSignToCanvas = async ({
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const maxLogoH = Math.round(hPx * 0.14);
-        const maxLogoW = Math.round(wPx * 0.24);
+        const maxLogoH = Math.round(hPx * 0.21);
+        const maxLogoW = Math.round(wPx * 0.34);
         const ratio = Math.min(maxLogoW / img.width, maxLogoH / img.height);
         const lw = img.width * ratio;
         const lh = img.height * ratio;
@@ -182,7 +182,7 @@ const drawSignToCanvas = async ({
   if (badgeText) {
     const badgeFont = Math.round(Math.min(wPx, hPx) * 0.028);
     ctx.font = `900 ${badgeFont}px sans-serif`;
-    const bw = Math.min(wPx * 0.55, ctx.measureText(badgeText).width + badgeFont * 2.2);
+    const bw = Math.min(wPx * 0.50, ctx.measureText(badgeText).width + badgeFont * 2.2);
     const bh = badgeFont * 2.1;
     const bx = wPx - innerPad - bw;
     const by = innerPad + 4;
@@ -773,7 +773,7 @@ const WarehouseSigns = () => {
                   <img
                     src={logoSrc}
                     alt="Logo Azienda"
-                    className="h-8 sm:h-12 w-auto object-contain max-w-[140px]"
+                    className="h-12 sm:h-20 w-auto object-contain max-w-[220px]"
                   />
                 ) : (
                   <div />

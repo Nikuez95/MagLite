@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import LogisticsMetaFields, { DEFAULT_ADR_DRAFT } from '../../components/LogisticsMetaFields';
-import { TEMP_REGIME_MAP, formatAdrDescription } from '../../utils/logisticsMeta';
+import { TEMP_REGIME_MAP, formatAdrDescription, parseAdrData } from '../../utils/logisticsMeta';
 
 const Inbound = () => {
   const [customers, setCustomers] = useState([]);
@@ -77,6 +77,7 @@ const Inbound = () => {
     gross_weight_kg: '',
     units_per_box: '',
     boxes_per_pallet: '',
+    kg_per_unit: '',
     batch: '',
     client_pallet_number: '',
     client_article_number: '',
@@ -371,6 +372,7 @@ const Inbound = () => {
         "Unità di Misura": "Bancali",
         "Pezzi per Scatola": 6,
         "Scatole per Bancale": 84,
+        "Kg per Pezzo": 1.5,
         "KG Netti": 756,
         "KG Lordi": 785,
         "Lotto": "L-2026-01",
@@ -392,6 +394,7 @@ const Inbound = () => {
         "Unità di Misura": "Scatole",
         "Pezzi per Scatola": 12,
         "Scatole per Bancale": 60,
+        "Kg per Pezzo": 0.5,
         "KG Netti": 180,
         "KG Lordi": 198,
         "Lotto": "L-999A",
@@ -413,6 +416,7 @@ const Inbound = () => {
         "Unità di Misura": "Scatole",
         "Pezzi per Scatola": 12,
         "Scatole per Bancale": 60,
+        "Kg per Pezzo": 0.5,
         "KG Netti": 120,
         "KG Lordi": 132,
         "Lotto": "L-999B",
@@ -434,6 +438,7 @@ const Inbound = () => {
         "Unità di Misura": "Pezzi",
         "Pezzi per Scatola": 10,
         "Scatole per Bancale": 50,
+        "Kg per Pezzo": 1,
         "KG Netti": 200,
         "KG Lordi": 215,
         "Lotto": "L-FAR-10",
@@ -458,6 +463,7 @@ const Inbound = () => {
       { wch: 17 }, // Unità di Misura
       { wch: 17 }, // Pezzi per Scatola
       { wch: 19 }, // Scatole per Bancale
+      { wch: 14 }, // Kg per Pezzo
       { wch: 11 }, // KG Netti
       { wch: 11 }, // KG Lordi
       { wch: 14 }, // Lotto
@@ -833,6 +839,14 @@ const Inbound = () => {
           );
           const bpp = parseNum(rawBpp, 1) || 1;
 
+          const rawKgPerUnit = getCol(
+            normRow,
+            ['kg_per_pezzo', 'kg_pezzo', 'kg_x_pezzo', 'kg_per_unit', 'peso_per_pezzo', 'peso_unitario', 'kg_sacco'],
+            k => (k.includes('kg') && (k.includes('pezz') || k.includes('pz') || k.includes('unit') || k.includes('sacc'))) || k === 'kg_per_unit'
+          );
+          const parsedCsvKgPerUnit = parseNum(rawKgPerUnit, 0);
+          const csvKgPerUnit = parsedCsvKgPerUnit > 0 ? parsedCsvKgPerUnit : (existingProd?.raw?.kg_per_unit ? parseFloat(existingProd.raw.kg_per_unit) : null);
+
           const rawLotto = getCol(
             normRow,
             ['lotto', 'n_lotto', 'num_lotto', 'numero_lotto', 'codice_lotto', 'cod_lotto', 'batch', 'partita'],
@@ -907,6 +921,7 @@ const Inbound = () => {
                 customer_id: formData.customer_id,
                 units_per_box: upb,
                 boxes_per_pallet: bpp,
+                kg_per_unit: csvKgPerUnit,
                 default_article_number: articoloCliente || null
               };
               
@@ -927,6 +942,7 @@ const Inbound = () => {
                   uom: uomToSave,
                   units_per_box: upb,
                   boxes_per_pallet: bpp,
+                  kg_per_unit: csvKgPerUnit,
                   default_article_number: articoloCliente || ''
                 }
               };
@@ -1071,6 +1087,7 @@ const Inbound = () => {
             quantity: actualQty,
             units_per_box: upb,
             boxes_per_pallet: bpp,
+            kg_per_unit: csvKgPerUnit,
             pallet_uom: pallet_uom,
             uom: entryUom === 'Base' ? 'Pezzi' : (entryUom || 'Pezzi'),
             net_weight_kg: parsedNetKg,
@@ -1081,9 +1098,9 @@ const Inbound = () => {
             batch: lotto,
             warehouse: magazzino,
             warehouse_id: magazzinoId,
-            temp_regime: 'NONE',
-            is_adr: false,
-            adr_data: null,
+            temp_regime: existingProd?.raw?.default_temp_regime || 'NONE',
+            is_adr: Boolean(existingProd?.raw?.default_is_adr),
+            adr_data: existingProd?.raw?.default_is_adr ? parseAdrData(existingProd?.raw?.default_adr_data) : null,
             num_pallets: palletsCount,
             notes: note,
             client_pallet_number: palletCliente,
@@ -1162,8 +1179,14 @@ const Inbound = () => {
           customer_id: formData.customer_id,
           units_per_box: parseFloat(formData.units_per_box) || 1,
           boxes_per_pallet: parseFloat(formData.boxes_per_pallet) || 1,
+          kg_per_unit: formData.kg_per_unit !== '' && !isNaN(parseFloat(formData.kg_per_unit)) ? parseFloat(formData.kg_per_unit) : null,
           default_article_number: articleCode || null,
-          flags: formData.flags ? formData.flags.map(f => f.value) : []
+          flags: formData.flags ? formData.flags.map(f => f.value) : [],
+          default_temp_regime: formData.temp_regime || 'NONE',
+          default_is_adr: Boolean(formData.is_adr),
+          default_adr_data: formData.is_adr
+            ? { ...formData.adr_data, technical_name: formData.adr_data?.technical_name || formData.newProductName }
+            : null
         };
         
         const res = await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, { 
@@ -1263,6 +1286,7 @@ const Inbound = () => {
       quantity: actualQty,
       units_per_box: upb,
       boxes_per_pallet: bpp,
+      kg_per_unit: parseOptNum(formData.kg_per_unit),
       pallet_uom: pallet_uom,
       uom: formData.entry_uom === 'Base' ? 'Pezzi' : (formData.entry_uom || 'Pezzi'),
       net_weight_kg: parseOptNum(formData.net_weight_kg),
@@ -1308,6 +1332,7 @@ const Inbound = () => {
       arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16),
       isNewProduct: false,
       newProductName: '',
+      kg_per_unit: '',
       flags: [],
       temp_regime: 'NONE',
       is_adr: false,
@@ -1943,7 +1968,7 @@ const Inbound = () => {
                     value={formData.isNewProduct ? { label: formData.newProductName, value: formData.product_id } : (products.find(p => p.value === formData.product_id) || null)}
                     onChange={val => {
                       if (!val) {
-                        setFormData({...formData, product_id: null, isNewProduct: false, newProductName: ''});
+                        setFormData({...formData, product_id: null, isNewProduct: false, newProductName: '', kg_per_unit: '', temp_regime: 'NONE', is_adr: false, adr_data: { ...DEFAULT_ADR_DRAFT }});
                         return;
                       }
                       if (val.__isNew__) {
@@ -1954,13 +1979,19 @@ const Inbound = () => {
                           newProductName: val.value,
                           units_per_box: '',
                           boxes_per_pallet: '',
+                          kg_per_unit: '',
                           client_article_number: '',
-                          flags: []
+                          flags: [],
+                          temp_regime: 'NONE',
+                          is_adr: false,
+                          adr_data: { ...DEFAULT_ADR_DRAFT, technical_name: val.value || '' }
                         });
                       } else {
                         const prod = products.find(p => p.value === val.value);
                         const defaultArticle = prod?.raw?.default_article_number || (prod?.raw?.sku && !prod.raw.sku.startsWith('PROD-') ? prod.raw.sku : '');
                         const parsedFlags = prod?.raw?.flags ? (typeof prod.raw.flags === 'string' ? JSON.parse(prod.raw.flags) : prod.raw.flags) : [];
+                        const prodNameClean = prod?.raw?.name || '';
+                        const parsedProdAdr = prod?.raw?.default_adr_data ? parseAdrData(prod.raw.default_adr_data) : null;
                         setFormData({
                           ...formData, 
                           product_id: val.value,
@@ -1968,8 +1999,14 @@ const Inbound = () => {
                           newProductName: '',
                           units_per_box: prod?.raw?.units_per_box || '',
                           boxes_per_pallet: prod?.raw?.boxes_per_pallet || '',
+                          kg_per_unit: prod?.raw?.kg_per_unit || '',
                           client_article_number: defaultArticle,
-                          flags: parsedFlags.map(f => ({ label: f, value: f }))
+                          flags: parsedFlags.map(f => ({ label: f, value: f })),
+                          temp_regime: prod?.raw?.default_temp_regime || 'NONE',
+                          is_adr: Boolean(prod?.raw?.default_is_adr),
+                          adr_data: parsedProdAdr
+                            ? { ...DEFAULT_ADR_DRAFT, ...parsedProdAdr, technical_name: parsedProdAdr.technical_name || prodNameClean }
+                            : { ...DEFAULT_ADR_DRAFT, technical_name: prodNameClean }
                         });
                       }
                     }}
@@ -1978,14 +2015,18 @@ const Inbound = () => {
 
                 {/* Confezionamento & Quantità */}
                 <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-2.5">
                     <div>
-                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Pezzi per Scatola</label>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Pezzi x Scatola</label>
                       <input type="number" onWheel={(e) => e.target.blur()} min="0" value={formData.units_per_box} onChange={e => setFormData({...formData, units_per_box: e.target.value})} className="w-full bg-slate-900 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. 12" />
                     </div>
                     <div>
-                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Scatole per Paletta</label>
+                      <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Scatole x Paletta</label>
                       <input type="number" onWheel={(e) => e.target.blur()} min="0" value={formData.boxes_per_pallet} onChange={e => setFormData({...formData, boxes_per_pallet: e.target.value})} className="w-full bg-slate-900 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. 60" />
+                    </div>
+                    <div>
+                      <label className="block text-emerald-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Kg per Pezzo (Opz.)</label>
+                      <input type="number" step="0.001" min="0" onWheel={(e) => e.target.blur()} value={formData.kg_per_unit} onChange={e => setFormData({...formData, kg_per_unit: e.target.value})} className="w-full bg-slate-900 border border-slate-800 text-emerald-300 font-bold rounded-xl px-3 py-2 text-sm focus:ring-brand-blue" placeholder="Es. 10" />
                     </div>
                   </div>
 
@@ -2128,6 +2169,11 @@ const Inbound = () => {
                   onAdrToggle={(val) => setFormData(prev => ({ ...prev, is_adr: val }))}
                   adrData={formData.adr_data}
                   onAdrDataChange={(val) => setFormData(prev => ({ ...prev, adr_data: val }))}
+                  defaultTechnicalName={
+                    formData.isNewProduct
+                      ? formData.newProductName
+                      : (products.find(p => p.value === formData.product_id)?.raw?.name || '')
+                  }
                 />
 
                 <div>

@@ -21,6 +21,7 @@ const LogisticsMetaFields = ({
   onAdrToggle,
   adrData = DEFAULT_ADR_DRAFT,
   onAdrDataChange,
+  defaultTechnicalName = '',
   compact = false
 }) => {
   const safeAdr = { ...DEFAULT_ADR_DRAFT, ...(adrData || {}) };
@@ -37,7 +38,7 @@ const LogisticsMetaFields = ({
       preset_key: found.key,
       un_number: found.un_number,
       proper_shipping_name: found.proper_shipping_name,
-      technical_name: found.technical_name || '',
+      technical_name: defaultTechnicalName ? defaultTechnicalName : (found.technical_name || ''),
       adr_class: found.adr_class,
       packing_group: found.packing_group,
       tunnel_code: found.tunnel_code,
@@ -93,7 +94,13 @@ const LogisticsMetaFields = ({
           <input
             type="checkbox"
             checked={Boolean(isAdr)}
-            onChange={e => onAdrToggle?.(e.target.checked)}
+            onChange={e => {
+              const checked = e.target.checked;
+              onAdrToggle?.(checked);
+              if (checked && defaultTechnicalName && (!adrData?.technical_name || adrData?.technical_name === 'AOSA')) {
+                onAdrDataChange?.({ ...safeAdr, technical_name: defaultTechnicalName });
+              }
+            }}
             className="w-4 h-4 rounded border-rose-500/60 bg-slate-900 text-rose-500 cursor-pointer"
           />
         </label>

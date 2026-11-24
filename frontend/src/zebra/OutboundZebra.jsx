@@ -39,6 +39,8 @@ export const getPickQuantityInfo = (item) => {
       qty: 0,
       uom: 'Pezzi',
       upb: 1,
+      kgPerUnit: null,
+      totalKg: null,
       primaryText: '0 PEZZI',
       secondaryText: '',
       badgeText: null,
@@ -51,8 +53,14 @@ export const getPickQuantityInfo = (item) => {
 
   const qty = parseFloat(item.quantity_required) || 0;
   const upb = parseInt(item.units_per_box, 10) || 1;
+  const kgPerUnit = parseFloat(item.kg_per_unit) || 0;
   const uom = (item.uom || 'Pezzi').trim();
   const uomLower = uom.toLowerCase();
+  const totalPiecesForKg = (uomLower === 'scatole' || uomLower === 'cartoni') && upb > 1 ? qty * upb : qty;
+  const totalKg = item.requested_kg != null
+    ? parseFloat(item.requested_kg)
+    : (kgPerUnit > 0 ? Number((totalPiecesForKg * kgPerUnit).toFixed(3)) : null);
+  const kgSuffix = totalKg ? ` · ${totalKg} kg${kgPerUnit > 0 ? ` (${kgPerUnit} kg/pz)` : ''}` : '';
 
   // Caso 1: Richiesto in Pezzi/Sfuso ma il prodotto ha confezionamento in Scatole (units_per_box > 1)
   if (upb > 1 && (uomLower === 'pezzi' || uomLower === 'sfuso' || uomLower === 'pz' || uomLower === 'pezzo')) {
@@ -64,9 +72,11 @@ export const getPickQuantityInfo = (item) => {
         qty,
         uom,
         upb,
+        kgPerUnit: kgPerUnit || null,
+        totalKg,
         primaryText: `${boxes} ${boxes === 1 ? 'SCATOLA' : 'SCATOLE'}`,
-        secondaryText: `Equivalgono a ${qty} Pezzi`,
-        badgeText: `1 scatola = ${upb} pz`,
+        secondaryText: `Equivalgono a ${qty} Pezzi${kgSuffix}`,
+        badgeText: `1 scatola = ${upb} pz${totalKg ? ` • ${totalKg} kg` : ''}`,
         hasBoxConversion: true,
         isExactBoxes: true,
         boxes,
@@ -79,9 +89,11 @@ export const getPickQuantityInfo = (item) => {
         qty,
         uom,
         upb,
+        kgPerUnit: kgPerUnit || null,
+        totalKg,
         primaryText: `${boxes} ${boxes === 1 ? 'SCATOLA' : 'SCATOLE'} + ${loosePieces} ${loosePieces === 1 ? 'SFUSO' : 'SFUSI'}`,
-        secondaryText: `Equivalgono a ${qty} Pezzi totali`,
-        badgeText: `${boxes}×${upb} pz + ${loosePieces} sfusi`,
+        secondaryText: `Equivalgono a ${qty} Pezzi totali${kgSuffix}`,
+        badgeText: `${boxes}×${upb} pz + ${loosePieces} sfusi${totalKg ? ` • ${totalKg} kg` : ''}`,
         hasBoxConversion: true,
         isExactBoxes: false,
         boxes,
@@ -93,9 +105,11 @@ export const getPickQuantityInfo = (item) => {
       qty,
       uom,
       upb,
+      kgPerUnit: kgPerUnit || null,
+      totalKg,
       primaryText: `${qty} ${qty === 1 ? 'PEZZO SFUSO' : 'PEZZI SFUSI'}`,
-      secondaryText: `Meno di 1 scatola (1 scat. = ${upb} pz)`,
-      badgeText: `Conf. ${upb} pz/scat.`,
+      secondaryText: `Meno di 1 scatola (1 scat. = ${upb} pz)${kgSuffix}`,
+      badgeText: `Conf. ${upb} pz/scat.${totalKg ? ` • ${totalKg} kg` : ''}`,
       hasBoxConversion: false,
       isExactBoxes: false,
       boxes: 0,
@@ -110,9 +124,11 @@ export const getPickQuantityInfo = (item) => {
       qty,
       uom,
       upb,
+      kgPerUnit: kgPerUnit || null,
+      totalKg,
       primaryText: `${qty} ${qty === 1 ? 'SCATOLA' : 'SCATOLE'}`,
-      secondaryText: totalPieces ? `Equivalgono a ${totalPieces} Pezzi` : 'Preleva i colli indicati',
-      badgeText: upb > 1 ? `1 scatola = ${upb} pz` : null,
+      secondaryText: `${totalPieces ? `Equivalgono a ${totalPieces} Pezzi` : 'Preleva i colli indicati'}${kgSuffix}`,
+      badgeText: upb > 1 ? `1 scatola = ${upb} pz${totalKg ? ` • ${totalKg} kg` : ''}` : (totalKg ? `${totalKg} kg` : null),
       hasBoxConversion: false,
       isExactBoxes: false,
       boxes: qty,
@@ -127,8 +143,10 @@ export const getPickQuantityInfo = (item) => {
       qty,
       uom,
       upb,
+      kgPerUnit: kgPerUnit || null,
+      totalKg,
       primaryText: `${qty} ${qty === 1 ? 'BANCALE INTERO' : 'BANCALI'}`,
-      secondaryText: palQty > 0 ? `Contenuto paletta: ${palQty} ${item.base_uom || 'Pezzi'}` : 'Preleva bancale intero',
+      secondaryText: `${palQty > 0 ? `Contenuto paletta: ${palQty} ${item.base_uom || 'Pezzi'}` : 'Preleva bancale intero'}${totalKg ? ` · ${totalKg} kg` : ''}`,
       badgeText: upb > 1 ? `${upb} pz/scat.` : null,
       hasBoxConversion: false,
       isExactBoxes: false,
@@ -142,9 +160,11 @@ export const getPickQuantityInfo = (item) => {
     qty,
     uom,
     upb,
+    kgPerUnit: kgPerUnit || null,
+    totalKg,
     primaryText: `${qty} ${qty === 1 && uomLower === 'pezzi' ? 'PEZZO' : uom.toUpperCase()}`,
-    secondaryText: 'Unità singole da prelevare',
-    badgeText: null,
+    secondaryText: totalKg ? `Equivalgono a ${totalKg} kg (${kgPerUnit} kg/pz)` : 'Unità singole da prelevare',
+    badgeText: totalKg ? `${totalKg} kg (${kgPerUnit} kg/pz)` : null,
     hasBoxConversion: false,
     isExactBoxes: false,
     boxes: 0,

@@ -8,9 +8,13 @@ const { createNotification } = require('../utils/notifications');
 const { TEMP_REGIME_MAP, normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 
 async function getRoutingSettings(connection) {
-  const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
+  const [rows] = await connection.query(
+    'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority", "allocation_exact_first", "allocation_fallback_mode")'
+  );
   let zonePriority = [];
   let posPriority = ['01,02,03', '11,12,13', '21,22,23'];
+  let exactFirst = true;
+  let fallbackMode = 'LESS_FULL';
   rows.forEach(r => {
     try {
       if (r.setting_key === 'zone_routing_priority' && r.setting_value) {
@@ -21,11 +25,18 @@ async function getRoutingSettings(connection) {
         const parsed = JSON.parse(r.setting_value);
         if (Array.isArray(parsed) && parsed.length > 0) posPriority = parsed;
       }
+      if (r.setting_key === 'allocation_exact_first' && r.setting_value !== undefined && r.setting_value !== null) {
+        exactFirst = String(r.setting_value).toLowerCase() !== 'false' && r.setting_value !== '0';
+      }
+      if (r.setting_key === 'allocation_fallback_mode' && r.setting_value) {
+        const m = String(r.setting_value).trim().toUpperCase();
+        if (m === 'LESS_FULL' || m === 'LOWEST_SHELF') fallbackMode = m;
+      }
     } catch (e) {
       // ignore malformed JSON
     }
   });
-  return { zonePriority, posPriority };
+  return { zonePriority, posPriority, exactFirst, fallbackMode };
 }
 
 function extractLocationCoords(item) {
@@ -153,15 +164,30 @@ function getFloorLevel(pos, posPriority) {
   return 999;
 }
 
-function sortPalletsByRouting(pallets, zonePriority, posPriority) {
+function sortPalletsByRouting(pallets, zonePriority, posPriority, opts = {}) {
+  const { exactFirst = true, fallbackMode = 'LESS_FULL', targetBaseQty = null, usedById = null } = opts;
   return pallets.sort((a, b) => {
     // 1. FEFO (Data scadenza più vicina)
     const expA = a.expiration_date ? new Date(a.expiration_date).getTime() : 9999999999999;
     const expB = b.expiration_date ? new Date(b.expiration_date).getTime() : 9999999999999;
     if (expA !== expB) return expA - expB;
 
-    // 2. LIVELLO PIANO: Sempre priorità al piano più basso (piano terra 01,02,03 prima di 11,21,31...)
-    // Se un pallet è in Area1-G-23 e un altro in Area1-L-01 o Area3-B-03, invia sempre in quello più in basso
+    const availA = Math.max(0, (parseFloat(a.available_quantity) || 0) - (usedById?.get(a.id) || 0));
+    const availB = Math.max(0, (parseFloat(b.available_quantity) || 0) - (usedById?.get(b.id) || 0));
+
+    // 2. Priorità al bancale finito/chiuso (esatta quantità richiesta) anche se su ripiano alto
+    if (exactFirst && targetBaseQty && targetBaseQty > 0) {
+      const exactA = Math.abs(availA - targetBaseQty) < 0.001;
+      const exactB = Math.abs(availB - targetBaseQty) < 0.001;
+      if (exactA !== exactB) return exactA ? -1 : 1;
+    }
+
+    // 3. Strategia fallback: svuota bancale meno pieno (LESS_FULL) oppure posizione più bassa (LOWEST_SHELF)
+    if (fallbackMode === 'LESS_FULL' && Math.abs(availA - availB) > 0.0001) {
+      return availA - availB;
+    }
+
+    // 4. LIVELLO PIANO: priorità al piano più basso (piano terra 01,02,03 prima di 11,21,31...)
     const coordsA = extractLocationCoords(a);
     const coordsB = extractLocationCoords(b);
     const floorA = getFloorLevel(coordsA.pos, posPriority);
@@ -170,7 +196,7 @@ function sortPalletsByRouting(pallets, zonePriority, posPriority) {
       return floorA - floorB;
     }
 
-    // 3. A parità di piano, rispetta il percorso di magazzino (Zona -> Corsia -> Posizione)
+    // 5. A parità di piano, rispetta il percorso di magazzino (Zona -> Corsia -> Posizione)
     return compareByWarehousePath(a, b, zonePriority, posPriority);
   });
 }
@@ -183,7 +209,7 @@ function sortPickingTour(items, zonePriority, posPriority) {
 async function allocateOutboundItems(items, connection, excludeOrderId = null) {
   await consolidateLocationPallets(connection);
   const allocatedPallets = [];
-  const { zonePriority, posPriority } = await getRoutingSettings(connection);
+  const { zonePriority, posPriority, exactFirst, fallbackMode } = await getRoutingSettings(connection);
   const inMemoryUsedByPalletId = new Map();
 
   let excludeCondition = '';
@@ -208,6 +234,7 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       SELECT pal.*, loc.zone, loc.col, loc.pos,
              COALESCE(pal.units_per_box, p.units_per_box, 1) as effective_units_per_box,
              COALESCE(p.boxes_per_pallet, 1) as effective_boxes_per_pallet,
+             COALESCE(NULLIF(pal.kg_per_unit, 0), p.kg_per_unit) as effective_kg_per_unit,
              (pal.quantity - COALESCE((
                SELECT SUM(
                  CASE 
@@ -264,29 +291,48 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       return (parseFloat(pal.available_quantity) - alreadyUsedBase) > 0;
     });
 
-    // Se la richiesta fa riferimento a un bancale specifico, non applichiamo le regole di instradamento/scelta automatica piano
-    if (!isSpecific) {
-      sortPalletsByRouting(available, zonePriority, posPriority);
-    }
+    const firstKgPerUnit = parseFloat(available.find(p => parseFloat(p.effective_kg_per_unit) > 0)?.effective_kg_per_unit || req.kg_per_unit || 0) || null;
+    const rawUomUpper = String(normalizedUom || 'Pezzi').trim().toUpperCase();
+    const effectiveNormalizedUom = rawUomUpper === 'KG' && firstKgPerUnit && firstKgPerUnit > 0 ? 'Pezzi' : normalizedUom;
+    const totalReqKg = rawUomUpper === 'KG'
+      ? parseFloat(req.quantity_required)
+      : (req.requested_kg != null ? parseFloat(req.requested_kg) : null);
 
-    let remainingToAllocate = parseFloat(req.quantity_required);
+    let remainingToAllocate = rawUomUpper === 'KG' && firstKgPerUnit && firstKgPerUnit > 0
+      ? Number((parseFloat(req.quantity_required) / firstKgPerUnit).toFixed(4))
+      : parseFloat(req.quantity_required);
     const allocatedForThisReq = [];
+    const candidateQueue = [...available];
 
-    for (const pal of available) {
-      if (remainingToAllocate <= 0) break;
+    while (remainingToAllocate > 0 && candidateQueue.length > 0) {
+      if (!isSpecific) {
+        const sampleUpb = parseFloat(candidateQueue[0]?.effective_units_per_box) || 1;
+        const sampleBpp = parseFloat(candidateQueue[0]?.effective_boxes_per_pallet) || 1;
+        const targetBaseQty = (effectiveNormalizedUom === 'Scatole' || effectiveNormalizedUom === 'Cartoni')
+          ? remainingToAllocate * sampleUpb
+          : (effectiveNormalizedUom === 'Bancali' ? remainingToAllocate * sampleUpb * sampleBpp : remainingToAllocate);
+        sortPalletsByRouting(candidateQueue, zonePriority, posPriority, {
+          exactFirst,
+          fallbackMode,
+          targetBaseQty,
+          usedById: inMemoryUsedByPalletId
+        });
+      }
 
+      const pal = candidateQueue.shift();
       const alreadyUsedBase = inMemoryUsedByPalletId.get(pal.id) || 0;
       const availBaseQty = Math.max(0, parseFloat(pal.available_quantity) - alreadyUsedBase);
       if (availBaseQty <= 0) continue;
 
       const upb = parseFloat(pal.effective_units_per_box) || 1;
       const bpp = parseFloat(pal.effective_boxes_per_pallet) || 1;
+      const kgPerUnit = parseFloat(pal.effective_kg_per_unit) || firstKgPerUnit || null;
       const unitsPerPallet = upb * bpp;
 
       let palletQtyInRequestedUom = availBaseQty;
-      if (normalizedUom === 'Scatole' || normalizedUom === 'Cartoni') {
+      if (effectiveNormalizedUom === 'Scatole' || effectiveNormalizedUom === 'Cartoni') {
         palletQtyInRequestedUom = availBaseQty / upb;
-      } else if (normalizedUom === 'Bancali') {
+      } else if (effectiveNormalizedUom === 'Bancali') {
         // Se la riga paletta rappresenta più bancali accorpati (es. carico multi-paletta su stessa posizione)
         // e non ci sono abbastanza righe distinte per coprire la richiesta, calcola i bancali contenuti nella riga
         if (available.length < remainingToAllocate && unitsPerPallet > 1 && availBaseQty >= unitsPerPallet * 2) {
@@ -299,7 +345,19 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
       if (palletQtyInRequestedUom <= 0) continue;
 
       const take = Math.min(remainingToAllocate, palletQtyInRequestedUom);
-      
+      let usedBaseForTake = take;
+      if (effectiveNormalizedUom === 'Scatole' || effectiveNormalizedUom === 'Cartoni') {
+        usedBaseForTake = take * upb;
+      } else if (effectiveNormalizedUom === 'Bancali') {
+        usedBaseForTake = (palletQtyInRequestedUom > 1 && unitsPerPallet > 1) ? (take * unitsPerPallet) : availBaseQty;
+      }
+
+      const sliceReqKg = kgPerUnit && kgPerUnit > 0
+        ? (totalReqKg && remainingToAllocate === take && allocatedForThisReq.length === 0
+            ? totalReqKg
+            : Number((usedBaseForTake * kgPerUnit).toFixed(3)))
+        : null;
+
       allocatedForThisReq.push({
         pallet_id: pal.id,
         pallet_code: pal.pallet_code,
@@ -308,19 +366,15 @@ async function allocateOutboundItems(items, connection, excludeOrderId = null) {
         product_id: req.product_id,
         batch: pal.batch || null,
         quantity_required: take,
-        requested_uom: normalizedUom,
+        requested_uom: effectiveNormalizedUom,
+        requested_kg: sliceReqKg,
+        kg_per_unit: kgPerUnit,
         location: pal.location || null,
         zone: pal.zone || null,
         col: pal.col || null,
         pos: pal.pos || null
       });
 
-      let usedBaseForTake = take;
-      if (normalizedUom === 'Scatole' || normalizedUom === 'Cartoni') {
-        usedBaseForTake = take * upb;
-      } else if (normalizedUom === 'Bancali') {
-        usedBaseForTake = (palletQtyInRequestedUom > 1 && unitsPerPallet > 1) ? (take * unitsPerPallet) : availBaseQty;
-      }
       inMemoryUsedByPalletId.set(pal.id, alreadyUsedBase + usedBaseForTake);
       
       remainingToAllocate -= take;
@@ -801,8 +855,8 @@ async function outboundRoutes(fastify, options) {
 
           for (const item of allocatedItemsPOST) {
             await connection.query(
-              'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [orderId, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
+              'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, requested_kg, kg_per_unit, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [orderId, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.requested_kg ?? null, item.kg_per_unit ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
             );
           }
           
@@ -960,8 +1014,8 @@ async function outboundRoutes(fastify, options) {
           const allocatedItemsPUT = await allocateOutboundItems(items, connection, id);
           for (const item of allocatedItemsPUT) {
             await connection.query(
-              'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [id, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
+              'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, requested_kg, kg_per_unit, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [id, item.pallet_id ?? null, item.pallet_code ?? null, item.product_id ?? null, item.batch ?? null, item.quantity_required ?? null, item.requested_uom ?? null, item.requested_kg ?? null, item.kg_per_unit ?? null, item.client_pallet_number ?? null, item.is_specific ? 1 : 0]
             );
           }
           
@@ -1111,6 +1165,7 @@ async function outboundRoutes(fastify, options) {
       const [items] = await db.query(`
         SELECT i.*, p.name as product_name, COALESCE(i.requested_uom, p.uom) as uom,
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
+               COALESCE(NULLIF(i.kg_per_unit, 0), NULLIF(pal.kg_per_unit, 0), p.kg_per_unit) as kg_per_unit,
                pal.location, COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number,
                COALESCE(i.batch, pal.batch) as batch, pal.expiration_date,
                COALESCE(loc.zone, '') as zone, COALESCE(loc.col, '') as col, COALESCE(loc.pos, '') as pos, loc.pin
@@ -1153,16 +1208,16 @@ async function outboundRoutes(fastify, options) {
       const logoPath = path.join(__dirname, '../../../frontend/public/logo_scuro.png');
       
       if (fs.existsSync(logoPath)) {
-        doc.image(logoPath, 40, 30, { fit: [150, 50] });
+        doc.image(logoPath, 40, 22, { fit: [215, 72] });
       } else {
         doc.fillColor('#192935').font('Helvetica-Bold').fontSize(24).text('LOGISTIC PORCELLI', 40, 35, { align: 'left' });
       }
       
-      doc.fillColor('#64748b').fontSize(10).font('Helvetica').text('Magazzino e Logistica Avanzata', 350, 45, { align: 'right', width: 200 });
+      doc.fillColor('#64748b').fontSize(10).font('Helvetica').text('Magazzino e Logistica Avanzata', 340, 48, { align: 'right', width: 210 });
       doc.moveDown(4);
 
       // --- DOCUMENT TITLE ---
-      doc.y = 95;
+      doc.y = 104;
       doc.fillColor('#192935').font('Helvetica-Bold').fontSize(16).text('DOCUMENTO DI TRASPORTO INTERNO (PICKING LIST)', 40, doc.y, { align: 'left' });
       doc.moveTo(40, doc.y + 5).lineTo(550, doc.y + 5).lineWidth(2).strokeColor('#192935').stroke();
       doc.moveDown(1.5);
@@ -1287,6 +1342,10 @@ async function outboundRoutes(fastify, options) {
            if (breakDown.length > 0) qtyText = `${breakDown.join(' + ')} (${parseFloat(item.quantity_required)} pz)`;
         } else if (item.units_per_box > 1 && (item.uom === 'Scatole' || item.uom === 'Cartoni')) {
            qtyText = `${parseFloat(item.quantity_required)} SCAT. (${parseFloat(item.quantity_required) * item.units_per_box} pz)`;
+        }
+        const pdfKg = item.requested_kg || (item.kg_per_unit > 0 ? Number((parseFloat(item.quantity_required) * (item.uom === 'Scatole' ? (item.units_per_box || 1) : 1) * parseFloat(item.kg_per_unit)).toFixed(2)) : null);
+        if (pdfKg) {
+          qtyText += `\n(${pdfKg} kg)`;
         }
 
         doc.fillColor('#192935').font('Helvetica-Bold').fontSize(9).text(qtyText, 485, y, { width: 70 });
@@ -1488,6 +1547,7 @@ async function outboundRoutes(fastify, options) {
         SELECT i.*, p.name as product_name, p.sku, p.uom as base_uom,
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
+               COALESCE(NULLIF(i.kg_per_unit, 0), NULLIF(pal.kg_per_unit, 0), p.kg_per_unit) as kg_per_unit,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
                pal.quantity as pallet_quantity,
                pal.warehouse as pallet_warehouse,
@@ -1569,18 +1629,18 @@ async function outboundRoutes(fastify, options) {
         try {
           const base64Part = String(company.company_logo).split(',')[1];
           const imgBuf = Buffer.from(base64Part, 'base64');
-          doc.image(imgBuf, marginX, 18, { fit: [88, 42] });
-          logoEndX = marginX + 94;
+          doc.image(imgBuf, marginX, 16, { fit: [128, 62] });
+          logoEndX = marginX + 136;
         } catch (_) {}
       } else if (fs.existsSync(logoPath)) {
-        doc.image(logoPath, marginX, 18, { fit: [88, 42] });
-        logoEndX = marginX + 94;
+        doc.image(logoPath, marginX, 16, { fit: [128, 62] });
+        logoEndX = marginX + 136;
       }
 
-      const emitterW = Math.max(120, rightX - logoEndX - 10);
+      const emitterW = Math.max(115, rightX - logoEndX - 8);
       const emitterTitle = (company.company_name || 'MAGAZZINO LOGISTICA').toUpperCase();
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(11)
-        .text(emitterTitle, logoEndX, 19, { width: emitterW });
+      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(10.5)
+        .text(emitterTitle, logoEndX, 18, { width: emitterW });
       let emitterY = doc.y + 2;
       doc.fillColor('#475569').font('Helvetica').fontSize(7.6);
       if (company.company_address) {
@@ -1613,7 +1673,7 @@ async function outboundRoutes(fastify, options) {
         .text(metaHeaderLine, rightX + 7, 46, { width: rightW - 14, align: 'center' });
       doc.image(barcodeBuffer, rightX + 14, 46 + metaHeaderH + 4, { width: rightW - 28, height: 36 });
 
-      let cursorY = Math.max(emitterY + 10, 16 + rightBoxH + 10);
+      let cursorY = Math.max(emitterY + 10, logoEndX > marginX ? 86 : 0, 16 + rightBoxH + 10);
 
       // --- BANNER SPUNTA NORMATIVE / ALLERTE TRASPORTO AUTO-RILEVATE DALLE PALETTE ---
       const activeAlerts = [];
@@ -1979,6 +2039,7 @@ async function outboundRoutes(fastify, options) {
                COALESCE(pal.client_article_number, p.sku) as article_code,
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
+               COALESCE(NULLIF(i.kg_per_unit, 0), NULLIF(pal.kg_per_unit, 0), p.kg_per_unit) as kg_per_unit,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
                pal.location, pal.warehouse as pallet_warehouse, COALESCE(pal.warehouse_id, 1) as pallet_warehouse_id,
                COALESCE(pal.temp_regime, 'NONE') as temp_regime, COALESCE(pal.is_adr, 0) as is_adr, pal.adr_data,
@@ -2819,7 +2880,7 @@ async function outboundRoutes(fastify, options) {
       const whCondition = warehouse_id && warehouse_id !== 'ALL' ? `AND COALESCE(pal.warehouse_id, 1) = ${Number(warehouse_id) || 1}` : '';
 
       const [pallets] = await db.query(`
-        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.sku as product_sku, COALESCE(pal.pallet_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
+        SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.sku as product_sku, COALESCE(pal.pallet_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet, COALESCE(NULLIF(pal.kg_per_unit, 0), p.kg_per_unit) as kg_per_unit,
                (pal.quantity - COALESCE((
                  SELECT SUM(
                    CASE 

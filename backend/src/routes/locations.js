@@ -391,10 +391,10 @@ async function locationRoutes(fastify, options) {
         doc.rect(x + 5, y + 5, labelWidth - 10, labelHeight - 10).stroke('#cccccc');
 
         if (fs.existsSync(logoPath)) {
-          doc.image(logoPath, x + 10, y + 10, { fit: [60, 20] });
+          doc.image(logoPath, x + 12, y + 9, { fit: [108, 32] });
         }
 
-        doc.font('Helvetica-Bold').fontSize(16).fillColor('#333333').text(String(loc.barcode || ''), x, y + 35, {
+        doc.font('Helvetica-Bold').fontSize(16).fillColor('#333333').text(String(loc.barcode || ''), x, y + 44, {
           width: labelWidth,
           align: 'center'
         });
@@ -407,7 +407,7 @@ async function locationRoutes(fastify, options) {
           doc.fontSize(pinSize);
         }
         
-        doc.fillColor('#000000').text(pinStr, x, y + 70, {
+        doc.fillColor('#000000').text(pinStr, x, y + 76, {
           width: labelWidth,
           align: 'center'
         });

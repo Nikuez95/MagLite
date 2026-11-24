@@ -32,6 +32,22 @@ export function hasPerm(permKey, customUser = null) {
     return true;
   }
 
+  if (
+    permKey === 'view_warehouse_signs' &&
+    user.permissions?.view_warehouse_signs === undefined &&
+    (user.permissions?.view_locations === true || user.permissions?.locations_manage === true)
+  ) {
+    return true;
+  }
+
+  if (
+    permKey === 'scarico_container' &&
+    user.permissions?.scarico_container === undefined &&
+    (user.permissions?.inbound_create === true || user.permissions?.zebra_verify === true)
+  ) {
+    return true;
+  }
+
   if (user.role === 'developer') return true;
   return false;
 }
@@ -82,7 +98,7 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/non-conformities', perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'], label: 'Non Conformità' },
   { path: '/desktop/customers', perm: 'view_customers', label: 'Anagrafica Clienti' },
   { path: '/desktop/locations', perm: 'view_locations', label: 'Mappa Magazzino' },
-  { path: '/desktop/warehouse-signs', perm: ['view_locations', 'locations_manage', 'inbound_create'], label: 'Cartelli Magazzino' },
+  { path: '/desktop/warehouse-signs', perm: 'view_warehouse_signs', label: 'Cartelli Magazzino' },
   { path: '/desktop/container-simulator', perm: ['view_outbound', 'tms_manage', 'view_tms', 'view_locations'], label: 'Simulatore Container' },
   { path: '/desktop/tms', perm: ['view_tms', 'tms_manage'], label: 'TMS (Trasporti)' },
   { path: '/desktop/finances', perm: ['view_finances', 'finance_manage'], label: 'Dashboard Finanza' },

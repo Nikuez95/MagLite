@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle, Play, MapPin, Hash, Search, X } from 'lucide-react';
+import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle, Play, MapPin, Hash, Search, X, Lock, Scale } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
@@ -22,6 +22,8 @@ const InboundZebra = () => {
   const [selectedItem, setSelectedItem] = useState(null);
   const [qtyInput, setQtyInput] = useState('');
   const [boxesInput, setBoxesInput] = useState('');
+  const [netWeightInput, setNetWeightInput] = useState('');
+  const [batchInput, setBatchInput] = useState('');
   const [expDateInput, setExpDateInput] = useState('');
   const [locationInput, setLocationInput] = useState('');
   const [locationsList, setLocationsList] = useState([]);
@@ -113,24 +115,42 @@ const InboundZebra = () => {
       return;
     }
     
+    const parsedNetKg = netWeightInput !== '' && !isNaN(parseFloat(netWeightInput)) ? parseFloat(netWeightInput) : null;
+    const trimmedBatch = batchInput.trim() || null;
+
     setIsProcessing(true);
     setError(null);
     try {
       const res = await axios.post(`http://${window.location.hostname}:3000/api/inbound/ddt/${ddt.id}/scan`, {
           item_id: selectedItem.id,
           quantity: q,
+          net_weight_kg: parsedNetKg,
+          batch: trimmedBatch,
           expiration_date: expDateInput || null,
           location: locationInput || null,
-          warehouse: 'Settala'
+          warehouse: workspace?.warehouseName || 'Settala'
         }, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      // Update local item quantity
-      setItems(items.map(i => i.id === selectedItem.id ? { ...i, actual_quantity: parseFloat(i.actual_quantity) + q } : i));
+      // Update local item quantity & actual metadata
+      setItems(items.map(i => {
+        if (i.id !== selectedItem.id) return i;
+        const prevActKg = i.actual_net_weight_kg !== null && i.actual_net_weight_kg !== undefined ? parseFloat(i.actual_net_weight_kg) : null;
+        const nextActKg = parsedNetKg !== null ? Number(((prevActKg || 0) + parsedNetKg).toFixed(3)) : i.actual_net_weight_kg;
+        return {
+          ...i,
+          actual_quantity: parseFloat(i.actual_quantity) + q,
+          actual_net_weight_kg: nextActKg,
+          actual_batch: trimmedBatch || i.actual_batch,
+          actual_expiration_date: expDateInput || i.actual_expiration_date
+        };
+      }));
       setSelectedItem(null);
       setQtyInput('');
       setBoxesInput('');
+      setNetWeightInput('');
+      setBatchInput('');
       await fetchLocs();
       setStep('LIST_ITEMS');
     } catch (err) {
@@ -244,6 +264,13 @@ const InboundZebra = () => {
     items.forEach(i => {
       if (parseFloat(i.actual_quantity) < parseFloat(i.expected_quantity)) allDone = false;
       if (parseFloat(i.actual_quantity) !== parseFloat(i.expected_quantity)) hasDiscrepancy = true;
+      const expKg = i.net_weight_kg !== null && i.net_weight_kg !== undefined ? parseFloat(i.net_weight_kg) : null;
+      const actKg = i.actual_net_weight_kg !== null && i.actual_net_weight_kg !== undefined ? parseFloat(i.actual_net_weight_kg) : null;
+      if (actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001)) hasDiscrepancy = true;
+      if (i.actual_batch && String(i.actual_batch).trim() !== String(i.batch || '').trim()) hasDiscrepancy = true;
+      const expExp = i.expiration_date ? String(i.expiration_date).slice(0, 10) : '';
+      const actExp = i.actual_expiration_date ? String(i.actual_expiration_date).slice(0, 10) : '';
+      if (actExp && expExp && actExp !== expExp) hasDiscrepancy = true;
     });
 
     const filteredItems = items.filter(item => {
@@ -316,7 +343,20 @@ const InboundZebra = () => {
             return (
               <button 
                 key={item.id}
-                onClick={() => { setSelectedItem(item); setStep('INPUT_QTY'); setQtyInput(''); setBoxesInput(''); setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : ''); setLocationInput(item.location || ''); setError(null); }}
+                onClick={() => {
+                  const uomLower = String(item.pallet_uom || item.product_uom || '').toLowerCase().trim();
+                  const isBancali = ['bancali', 'bancale', 'palette', 'pallet'].includes(uomLower);
+                  const rem = Math.max(0, (parseFloat(item.expected_quantity) || 0) - (parseFloat(item.actual_quantity) || 0));
+                  setSelectedItem(item);
+                  setStep('INPUT_QTY');
+                  setQtyInput(isBancali ? String(rem > 0 ? rem : (parseFloat(item.expected_quantity) || 1)) : '');
+                  setBoxesInput('');
+                  setNetWeightInput(item.net_weight_kg !== null && item.net_weight_kg !== undefined ? String(item.net_weight_kg) : '');
+                  setBatchInput(item.batch || '');
+                  setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : '');
+                  setLocationInput(item.location || '');
+                  setError(null);
+                }}
                 className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800 hover:border-brand-blue'}`}
               >
                 <div className="flex justify-between items-start mb-2">
@@ -365,7 +405,9 @@ const InboundZebra = () => {
             {isProcessing ? 'Chiusura...' : 'Concludi Spunta'}
           </button>
           {hasDiscrepancy && (
-            <p className="text-amber-500 text-xs text-center mt-2 font-bold">Attenzione: Le quantità non coincidono.</p>
+            <p className="text-amber-500 text-xs text-center mt-2 font-bold">
+              Attenzione: Rilevate discrepanze (Quantità / KG Netti / Lotto / Scadenza).
+            </p>
           )}
         </div>
       </div>
@@ -380,8 +422,9 @@ const InboundZebra = () => {
     const remaining = Math.max(0, exp - act);
 
     const unitsPerBox = parseInt(selectedItem.units_per_box, 10);
-    const rawUom = (selectedItem.product_uom || selectedItem.uom || '').toLowerCase().trim();
-    const isPieces = rawUom === 'pezzi' || rawUom === 'pz' || rawUom === 'pezzo' || rawUom === 'base' || rawUom === '' || (unitsPerBox > 1 && rawUom !== 'scatole' && rawUom !== 'bancali');
+    const rawUom = (selectedItem.pallet_uom || selectedItem.product_uom || selectedItem.uom || '').toLowerCase().trim();
+    const isBancali = ['bancali', 'bancale', 'palette', 'pallet'].includes(rawUom);
+    const isPieces = !isBancali && (rawUom === 'pezzi' || rawUom === 'pz' || rawUom === 'pezzo' || rawUom === 'base' || rawUom === '' || (unitsPerBox > 1 && rawUom !== 'scatole' && rawUom !== 'bancali'));
     const hasUnitsPerBox = !isNaN(unitsPerBox) && unitsPerBox > 1;
 
     const handleBoxesChange = (val) => {
@@ -443,7 +486,19 @@ const InboundZebra = () => {
             <p className="text-xs text-slate-500 mt-1">Inserisci scatole o pezzi da mettere su questa paletta.</p>
           </div>
 
-          {isPieces && hasUnitsPerBox ? (
+          {isBancali ? (
+            <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-4 mb-5 max-w-sm mx-auto w-full text-center">
+              <div className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-black uppercase mb-1">
+                <Lock size={14} /> UDM {selectedItem.pallet_uom || selectedItem.product_uom} — Q.tà bloccata
+              </div>
+              <div className="text-4xl font-black text-brand-white">
+                {qtyInput} <span className="text-lg text-slate-400">{selectedItem.pallet_uom || selectedItem.product_uom}</span>
+              </div>
+              <p className="text-[11px] text-amber-200/80 mt-1">
+                Puoi rettificare qui sotto KG Netti, Lotto o Data Scadenza per segnalare eventuali discrepanze.
+              </p>
+            </div>
+          ) : isPieces && hasUnitsPerBox ? (
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 mb-6 max-w-sm mx-auto w-full shadow-lg">
               <div className="text-xs text-amber-400 font-mono font-bold text-center mb-4 bg-amber-500/10 border border-amber-500/20 py-1.5 px-3 rounded-lg w-fit mx-auto flex items-center gap-1.5">
                 <span>📦</span>
@@ -493,6 +548,39 @@ const InboundZebra = () => {
             </div>
           )}
             
+            <div className="grid grid-cols-2 gap-3 w-full max-w-sm mx-auto mb-4">
+              <div>
+                <label className="block text-emerald-400 font-bold mb-1.5 text-xs uppercase tracking-wider text-center flex items-center justify-center gap-1">
+                  <Scale size={13} /> KG Netti Effettivi
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  onWheel={(e) => e.target.blur()}
+                  value={netWeightInput}
+                  onChange={e => setNetWeightInput(e.target.value)}
+                  placeholder={selectedItem.net_weight_kg != null ? String(selectedItem.net_weight_kg) : 'Es. 500'}
+                  className="w-full bg-slate-900 border-2 border-slate-800 focus:border-emerald-400 p-3 rounded-xl text-center text-white font-black"
+                />
+                {selectedItem.net_weight_kg != null && (
+                  <p className="text-[10px] text-slate-500 text-center mt-1 font-mono">Attesi: {selectedItem.net_weight_kg} kg</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-amber-400 font-bold mb-1.5 text-xs uppercase tracking-wider text-center">Lotto Effettivo</label>
+                <input
+                  type="text"
+                  value={batchInput}
+                  onChange={e => setBatchInput(e.target.value)}
+                  placeholder={selectedItem.batch || 'Es. L2026-01'}
+                  className="w-full bg-slate-900 border-2 border-slate-800 focus:border-amber-400 p-3 rounded-xl text-center text-white font-bold"
+                />
+                {selectedItem.batch && (
+                  <p className="text-[10px] text-slate-500 text-center mt-1 font-mono truncate">Atteso: {selectedItem.batch}</p>
+                )}
+              </div>
+            </div>
+
             <div className="mb-4 w-full max-w-[250px] mx-auto">
               <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider text-center">Data Scadenza (Opzionale)</label>
               <input 

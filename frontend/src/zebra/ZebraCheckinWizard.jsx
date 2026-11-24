@@ -24,6 +24,7 @@ import {
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { appAlert, appConfirm } from '../utils/alerts';
+import { hasPerm } from '../utils/permissions';
 
 const ZebraCheckinWizard = () => {
   const navigate = useNavigate();
@@ -199,6 +200,10 @@ const ZebraCheckinWizard = () => {
   // 3. Gestione Scelta Bottoni (CHOICE)
   const handleChoiceSelect = async (option) => {
     if (isSubmitting) return;
+    if (String(option?.value || '').toUpperCase() === 'CONTAINER' && !hasPerm('scarico_container')) {
+      appAlert('Non hai il permesso "Scarico Container" assegnato al tuo ruolo.', 'Accesso Negato', 'warning');
+      return;
+    }
     const answerVal = option.value;
     const updatedAnswers = { ...answers, [currentStep.id]: answerVal };
     setAnswers(updatedAnswers);
@@ -963,16 +968,32 @@ const ZebraCheckinWizard = () => {
                 slate: 'border-slate-800 hover:border-slate-400 text-slate-300 bg-slate-900/90 active:bg-slate-800'
               }[opt.color || 'blue'];
 
+              const isContainerBlocked =
+                String(opt.value || '').toUpperCase() === 'CONTAINER' && !hasPerm('scarico_container');
+
               return (
                 <button
                   key={idx}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isContainerBlocked}
                   onClick={() => handleChoiceSelect(opt)}
-                  className={`w-full p-5 rounded-3xl border-2 font-black text-lg text-left flex items-center justify-between shadow-xl transition-all active:scale-[0.98] ${colorClasses}`}
+                  className={`w-full p-5 rounded-3xl border-2 font-black text-lg text-left flex items-center justify-between shadow-xl transition-all ${
+                    isContainerBlocked
+                      ? 'border-slate-800 bg-slate-900/40 text-slate-500 opacity-50 cursor-not-allowed'
+                      : `active:scale-[0.98] ${colorClasses}`
+                  }`}
                 >
-                  <span className="tracking-wide text-brand-white">{opt.label}</span>
+                  <div className="flex flex-col">
+                    <span className={`tracking-wide ${isContainerBlocked ? 'text-slate-400' : 'text-brand-white'}`}>
+                      {opt.label}
+                    </span>
+                    {isContainerBlocked && (
+                      <span className="text-[10px] font-bold text-rose-400 mt-0.5">
+                        Permesso &quot;Scarico Container&quot; richiesto
+                      </span>
+                    )}
+                  </div>
                   <div className="w-10 h-10 rounded-2xl bg-slate-800/80 flex items-center justify-center shrink-0 ml-2">
-                    <ArrowRight size={20} />
+                    {isContainerBlocked ? <Lock size={18} className="text-rose-400" /> : <ArrowRight size={20} />}
                   </div>
                 </button>
               );

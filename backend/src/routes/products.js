@@ -1,4 +1,5 @@
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 const db = require('../config/db');
 
 async function productRoutes(fastify, options) {
@@ -27,7 +28,14 @@ async function productRoutes(fastify, options) {
         JOIN CUSTOMERS c ON p.customer_id = c.id 
         ORDER BY p.name ASC
       `);
-      return rows.filter(r => canAccessCustomer(request.user, r.customer_id));
+      return rows
+        .filter(r => canAccessCustomer(request.user, r.customer_id))
+        .map(r => ({
+          ...r,
+          default_temp_regime: normalizeTempRegime(r.default_temp_regime),
+          default_is_adr: Boolean(r.default_is_adr),
+          default_adr_data: parseAdrData(r.default_adr_data, r.name)
+        }));
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante il recupero dei prodotti' });
@@ -102,7 +110,11 @@ async function productRoutes(fastify, options) {
 
   // POST /api/products
   fastify.post('/', async (request, reply) => {
-    const { sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags } = request.body;
+    const {
+      sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet,
+      kg_per_unit, default_article_number, flags,
+      default_temp_regime, default_is_adr, default_adr_data
+    } = request.body;
     
     const cleanArticle = default_article_number ? String(default_article_number).trim() : '';
     const rawSku = sku ? String(sku).trim() : '';
@@ -115,6 +127,14 @@ async function productRoutes(fastify, options) {
 
     const finalDefaultArticle = cleanArticle || (!cleanSku.startsWith('PROD-') ? cleanSku : null);
     const flagsJson = flags ? JSON.stringify(flags) : null;
+    const parsedKgPerUnit = (kg_per_unit !== undefined && kg_per_unit !== null && kg_per_unit !== '' && Number.isFinite(parseFloat(kg_per_unit)) && parseFloat(kg_per_unit) > 0)
+      ? parseFloat(kg_per_unit)
+      : null;
+    const cleanDefTemp = default_temp_regime !== undefined ? normalizeTempRegime(default_temp_regime) : undefined;
+    const cleanDefIsAdr = default_is_adr !== undefined ? Boolean(default_is_adr) : undefined;
+    const cleanDefAdrJson = default_adr_data !== undefined
+      ? (cleanDefIsAdr ? JSON.stringify(parseAdrData(default_adr_data, cleanName) || {}) : null)
+      : undefined;
 
     const connection = await db.getConnection();
     try {
@@ -139,8 +159,22 @@ async function productRoutes(fastify, options) {
           }
         }
         await connection.query(
-          'UPDATE PRODUCTS SET name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet), default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags) WHERE id = ?',
-          [cleanName, uom || null, units_per_box || null, boxes_per_pallet || null, finalDefaultArticle, flagsJson, target.id]
+          `UPDATE PRODUCTS
+           SET name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet),
+               kg_per_unit = COALESCE(?, kg_per_unit),
+               default_temp_regime = COALESCE(?, default_temp_regime),
+               default_is_adr = COALESCE(?, default_is_adr),
+               default_adr_data = CASE WHEN ? IS NOT NULL THEN ? ELSE default_adr_data END,
+               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags)
+           WHERE id = ?`,
+          [
+            cleanName, uom || null, units_per_box || null, boxes_per_pallet || null,
+            parsedKgPerUnit,
+            cleanDefTemp !== undefined ? cleanDefTemp : null,
+            cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
+            cleanDefAdrJson !== undefined ? 1 : null, cleanDefAdrJson ?? null,
+            finalDefaultArticle, flagsJson, target.id
+          ]
         );
         await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [cleanSku, target.id]);
         await connection.commit();
@@ -159,8 +193,22 @@ async function productRoutes(fastify, options) {
           }
         }
         await connection.query(
-          'UPDATE PRODUCTS SET sku = ?, name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet), default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags) WHERE id = ?',
-          [newSkuForTarget, cleanName, uom || null, units_per_box || null, boxes_per_pallet || null, finalDefaultArticle, flagsJson, target.id]
+          `UPDATE PRODUCTS
+           SET sku = ?, name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet),
+               kg_per_unit = COALESCE(?, kg_per_unit),
+               default_temp_regime = COALESCE(?, default_temp_regime),
+               default_is_adr = COALESCE(?, default_is_adr),
+               default_adr_data = CASE WHEN ? IS NOT NULL THEN ? ELSE default_adr_data END,
+               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags)
+           WHERE id = ?`,
+          [
+            newSkuForTarget, cleanName, uom || null, units_per_box || null, boxes_per_pallet || null,
+            parsedKgPerUnit,
+            cleanDefTemp !== undefined ? cleanDefTemp : null,
+            cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
+            cleanDefAdrJson !== undefined ? 1 : null, cleanDefAdrJson ?? null,
+            finalDefaultArticle, flagsJson, target.id
+          ]
         );
         await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [newSkuForTarget, target.id]);
         await connection.commit();
@@ -168,8 +216,12 @@ async function productRoutes(fastify, options) {
       }
 
       const [result] = await connection.query(
-        'INSERT INTO PRODUCTS (sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, finalDefaultArticle, flagsJson]
+        'INSERT INTO PRODUCTS (sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, kg_per_unit, default_article_number, flags, default_temp_regime, default_is_adr, default_adr_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1,
+          parsedKgPerUnit, finalDefaultArticle, flagsJson,
+          cleanDefTemp || 'NONE', cleanDefIsAdr ? 1 : 0, cleanDefAdrJson || null
+        ]
       );
       await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
@@ -191,7 +243,11 @@ async function productRoutes(fastify, options) {
 
   // PUT /api/products/:id
   fastify.put('/:id', async (request, reply) => {
-    const { sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, default_article_number, flags, updateExistingPallets } = request.body;
+    const {
+      sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet,
+      kg_per_unit, default_article_number, flags, updateExistingPallets,
+      default_temp_regime, default_is_adr, default_adr_data
+    } = request.body;
     const targetId = parseInt(request.params.id, 10);
     
     const cleanArticle = default_article_number ? String(default_article_number).trim() : '';
@@ -205,6 +261,15 @@ async function productRoutes(fastify, options) {
 
     const finalDefaultArticle = cleanArticle || (!cleanSku.startsWith('PROD-') ? cleanSku : null);
     const flagsJson = flags ? JSON.stringify(flags) : null;
+    const hasKgField = kg_per_unit !== undefined;
+    const parsedKgPerUnit = (kg_per_unit !== undefined && kg_per_unit !== null && kg_per_unit !== '' && Number.isFinite(parseFloat(kg_per_unit)) && parseFloat(kg_per_unit) > 0)
+      ? parseFloat(kg_per_unit)
+      : null;
+    const cleanDefTemp = default_temp_regime !== undefined ? normalizeTempRegime(default_temp_regime) : undefined;
+    const cleanDefIsAdr = default_is_adr !== undefined ? Boolean(default_is_adr) : undefined;
+    const cleanDefAdrJson = default_adr_data !== undefined
+      ? (cleanDefIsAdr ? JSON.stringify(parseAdrData(default_adr_data, cleanName) || {}) : null)
+      : undefined;
 
     const connection = await db.getConnection();
     try {
@@ -223,14 +288,34 @@ async function productRoutes(fastify, options) {
       }
 
       await connection.query(
-        'UPDATE PRODUCTS SET sku = ?, name = ?, uom = ?, customer_id = ?, notes = ?, units_per_box = ?, boxes_per_pallet = ?, default_article_number = ?, flags = ? WHERE id = ?',
-        [cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1, finalDefaultArticle, flagsJson, targetId]
+        `UPDATE PRODUCTS
+         SET sku = ?, name = ?, uom = ?, customer_id = ?, notes = ?, units_per_box = ?, boxes_per_pallet = ?,
+             kg_per_unit = CASE WHEN ? THEN ? ELSE kg_per_unit END,
+             default_temp_regime = COALESCE(?, default_temp_regime),
+             default_is_adr = COALESCE(?, default_is_adr),
+             default_adr_data = CASE WHEN ? THEN ? ELSE default_adr_data END,
+             default_article_number = ?, flags = ?
+         WHERE id = ?`,
+        [
+          cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1,
+          hasKgField ? 1 : 0, parsedKgPerUnit,
+          cleanDefTemp !== undefined ? cleanDefTemp : null,
+          cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
+          cleanDefAdrJson !== undefined ? 1 : 0, cleanDefAdrJson ?? null,
+          finalDefaultArticle, flagsJson, targetId
+        ]
       );
 
       await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [cleanSku, targetId]);
       
       if (updateExistingPallets) {
-        await connection.query('UPDATE PALLETS SET flags = ? WHERE product_id = ?', [flagsJson, targetId]);
+        await connection.query(
+          `UPDATE PALLETS
+           SET flags = ?,
+               kg_per_unit = CASE WHEN ? THEN ? ELSE kg_per_unit END
+           WHERE product_id = ?`,
+          [flagsJson, hasKgField ? 1 : 0, parsedKgPerUnit, targetId]
+        );
       }
 
       await connection.query(

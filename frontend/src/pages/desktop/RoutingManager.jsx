@@ -9,6 +9,8 @@ const RoutingManager = () => {
   const [zones, setZones] = useState([]);
   const [posPatterns, setPosPatterns] = useState([]);
   const [newPattern, setNewPattern] = useState('');
+  const [exactFirst, setExactFirst] = useState(true);
+  const [fallbackMode, setFallbackMode] = useState('LESS_FULL');
   const [isSaving, setIsSaving] = useState(false);
   const navigate = useNavigate();
   const token = localStorage.getItem('maglite_token');
@@ -43,6 +45,12 @@ const RoutingManager = () => {
       // Remove zones that no longer exist (optional, but let's keep them in case they are re-added)
       setZones(mergedZones);
       setPosPatterns(savedPos);
+      if (setRes.data.allocation_exact_first !== undefined && setRes.data.allocation_exact_first !== null) {
+        setExactFirst(String(setRes.data.allocation_exact_first).toLowerCase() !== 'false' && setRes.data.allocation_exact_first !== '0');
+      }
+      if (setRes.data.allocation_fallback_mode) {
+        setFallbackMode(String(setRes.data.allocation_fallback_mode).toUpperCase() === 'LOWEST_SHELF' ? 'LOWEST_SHELF' : 'LESS_FULL');
+      }
 
     } catch (err) {
       console.error(err);
@@ -56,7 +64,9 @@ const RoutingManager = () => {
     try {
       await axios.post(`http://${window.location.hostname}:3000/api/settings`, {
         zone_routing_priority: JSON.stringify(zones),
-        position_routing_priority: JSON.stringify(posPatterns)
+        position_routing_priority: JSON.stringify(posPatterns),
+        allocation_exact_first: exactFirst ? 'true' : 'false',
+        allocation_fallback_mode: fallbackMode
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -213,6 +223,69 @@ const RoutingManager = () => {
             />
             <button onClick={addPattern} className="bg-slate-800 hover:bg-slate-700 text-brand-white px-4 rounded-xl font-bold transition-colors">
               <Plus size={20} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ALLOCATION STRATEGY */}
+      <div className="mt-8 bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-5">
+        <div>
+          <h2 className="text-xl font-bold text-brand-white">3. Strategia Intelligente Scelta Bancali</h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Stabilisce quale bancale viene assegnato automaticamente per primo a parità di scadenza FEFO.
+          </p>
+        </div>
+
+        <label className="flex items-start gap-3 p-4 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-brand-blue transition-colors">
+          <input
+            type="checkbox"
+            checked={exactFirst}
+            onChange={(e) => setExactFirst(e.target.checked)}
+            className="mt-1 w-5 h-5 rounded border-slate-600 bg-slate-900 text-brand-blue cursor-pointer"
+          />
+          <div>
+            <div className="font-bold text-brand-white">
+              Priorità al bancale finito/chiuso (quantità esatta), anche se in alto
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              Es: la spedizione richiede 50 pz e hai 50 pz su un bancale in alto e 10 pz in basso → indirizza subito sul bancale da 50 per svuotarlo completamente in un solo prelievo.
+            </div>
+          </div>
+        </label>
+
+        <div>
+          <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+            Quando non c&apos;è un bancale esatto, scegli prima:
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setFallbackMode('LESS_FULL')}
+              className={`p-4 rounded-xl border text-left transition-all ${
+                fallbackMode === 'LESS_FULL'
+                  ? 'bg-brand-blue/15 border-brand-blue text-white'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+            >
+              <div className="font-bold text-sm text-brand-white">Bancale meno pieno (libera spazio)</div>
+              <div className="text-xs text-slate-400 mt-1">
+                Dà priorità alle palette con meno quantità residua per liberare prima le ubicazioni, poi per piano più comodo.
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setFallbackMode('LOWEST_SHELF')}
+              className={`p-4 rounded-xl border text-left transition-all ${
+                fallbackMode === 'LOWEST_SHELF'
+                  ? 'bg-brand-blue/15 border-brand-blue text-white'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+            >
+              <div className="font-bold text-sm text-brand-white">Posizione più comoda (piano più basso)</div>
+              <div className="text-xs text-slate-400 mt-1">
+                Dà priorità al livello terra / piano più basso definito al punto 2 e al percorso tra zone.
+              </div>
             </button>
           </div>
         </div>

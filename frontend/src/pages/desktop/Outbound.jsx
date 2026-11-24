@@ -690,6 +690,8 @@ const Outbound = () => {
           product_id: c.product_id,
           quantity_required: parseFloat(c.quantity_required),
           requested_uom: c.requested_uom,
+          requested_kg: c.requested_kg ?? null,
+          kg_per_unit: c.kg_per_unit ?? null,
           batch: c.batch
         }))
       };
@@ -932,6 +934,7 @@ const Outbound = () => {
         expiration_date: p.expiration_date || null,
         units_per_box: upb,
         boxes_per_pallet: bpp,
+        kg_per_unit: parseFloat(p.kg_per_unit) || null,
         base_uom: baseUom
       };
 
@@ -962,6 +965,7 @@ const Outbound = () => {
           pallet_count: 0,
           units_per_box: upb,
           boxes_per_pallet: bpp,
+          kg_per_unit: parseFloat(p.kg_per_unit) || null,
           uom: p.uom || p.pallet_uom || 'Pezzi',
           base_uom: baseUom,
           pallet_codes: new Set(),
@@ -2457,12 +2461,34 @@ const Outbound = () => {
                             >
                               <option value="Pezzi">Pezzi</option>
                               <option value="Scatole">Scatole</option>
+                              {(c.kg_per_unit > 0 || matchingPalletsForCart[0]?.kg_per_unit > 0) && (
+                                <option value="Kg">Kg (peso)</option>
+                              )}
                               <option value="Bancali">Bancali / Palette</option>
-                              <option value="KG">KG</option>
+                              <option value="KG">KG (UDM base)</option>
                               <option value="Metro Cubo">Metro Cubo</option>
                             </select>
                           </div>
                         </div>
+                        {(c.requested_kg || c.kg_per_unit > 0 || matchingPalletsForCart[0]?.kg_per_unit > 0) && (() => {
+                          const effKgUnit = parseFloat(c.kg_per_unit || matchingPalletsForCart[0]?.kg_per_unit || 0);
+                          const qNum = parseFloat(c.quantity_required) || 0;
+                          if (!effKgUnit || !qNum) return null;
+                          if (c.requested_uom === 'Kg') {
+                            const convPcs = Number((qNum / effKgUnit).toFixed(4));
+                            return (
+                              <div className="text-[10px] text-emerald-300 font-mono bg-emerald-500/10 border border-emerald-500/25 rounded-lg px-2 py-1">
+                                Conversione automatica: <strong>{qNum} kg</strong> ÷ {effKgUnit} kg/pz = <strong>{convPcs} Pezzi</strong>
+                              </div>
+                            );
+                          }
+                          const estKg = c.requested_kg || Number((qNum * effKgUnit).toFixed(2));
+                          return (
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              Peso equivalente: <strong className="text-emerald-300">{estKg} kg</strong> ({effKgUnit} kg/pz)
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                     })
@@ -2539,7 +2565,7 @@ const Outbound = () => {
                               selectedPalletId: p.id,
                               selectedBatch: p.batch
                             }));
-                            setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Scatole' ? Math.max(1, Math.floor(p.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : p.available_quantity));
+                            setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Kg' && pickingPallet.kg_per_unit > 0 ? Number((p.available_quantity * pickingPallet.kg_per_unit).toFixed(2)) : (pickUom === 'Scatole' ? Math.max(1, Math.floor(p.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : p.available_quantity)));
                           }}
                           className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition-all ${
                             isSel
@@ -2568,7 +2594,7 @@ const Outbound = () => {
                         selectedBatch: chosen ? chosen.batch : prev.selectedBatch
                       }));
                       if (chosen) {
-                        setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Scatole' ? Math.max(1, Math.floor(chosen.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : chosen.available_quantity));
+                        setPickQty(pickUom === 'Bancali' ? 1 : (pickUom === 'Kg' && pickingPallet.kg_per_unit > 0 ? Number((chosen.available_quantity * pickingPallet.kg_per_unit).toFixed(2)) : (pickUom === 'Scatole' ? Math.max(1, Math.floor(chosen.available_quantity / (parseFloat(pickingPallet.units_per_box) || 1))) : chosen.available_quantity)));
                       }
                     }
                   }}
@@ -2585,18 +2611,41 @@ const Outbound = () => {
 
             <div className="mb-4">
               <label className="block text-slate-400 text-xs font-bold mb-1.5">Unità di Misura Prelievo</label>
-              <div className="grid grid-cols-3 gap-2">
-                {Array.from(new Set([pickingPallet.base_uom || 'Pezzi', 'Scatole', 'Bancali'])).map(u => (
+              <div className={`grid ${Number(pickingPallet.kg_per_unit) > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-2`}>
+                {Array.from(new Set([
+                  pickingPallet.base_uom || 'Pezzi',
+                  'Scatole',
+                  ...(Number(pickingPallet.kg_per_unit) > 0 ? ['Kg'] : []),
+                  'Bancali'
+                ])).map(u => (
                   <button 
                     key={u}
                     type="button"
-                    onClick={() => setPickUom(u)}
+                    onClick={() => {
+                      setPickUom(u);
+                      const kgUnit = parseFloat(pickingPallet.kg_per_unit) || 0;
+                      const upbVal = parseFloat(pickingPallet.units_per_box) || 1;
+                      if (u === 'Kg' && kgUnit > 0) {
+                        setPickQty(Number((selectedBatchStats.qty * kgUnit).toFixed(2)));
+                      } else if (u === 'Scatole') {
+                        setPickQty(Math.max(1, Math.floor(selectedBatchStats.qty / upbVal)));
+                      } else if (u === 'Bancali') {
+                        setPickQty(1);
+                      } else {
+                        setPickQty(selectedBatchStats.qty);
+                      }
+                    }}
                     className={`py-2.5 px-2 text-xs font-bold rounded-xl border transition-colors ${pickUom === u ? 'bg-brand-blue text-brand-black border-brand-blue' : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600'}`}
                   >
-                    {u === 'Bancali' ? 'Bancali / Pal.' : u}
+                    {u === 'Bancali' ? 'Bancali / Pal.' : (u === 'Kg' ? 'Kg (Peso)' : u)}
                   </button>
                 ))}
               </div>
+              {Number(pickingPallet.kg_per_unit) > 0 && (
+                <div className="text-[11px] text-emerald-400 font-mono mt-1.5">
+                  Conversione articolo: 1 {pickingPallet.base_uom || 'Pezzo'} = <strong>{pickingPallet.kg_per_unit} kg</strong>
+                </div>
+              )}
             </div>
 
             <div className="mb-5">
@@ -2624,7 +2673,30 @@ const Outbound = () => {
                       Max ({selectedBatchStats.pallets} Pal.)
                     </button>
                   )}
-                  {pickUom !== 'Scatole' && pickUom !== 'Bancali' && selectedBatchStats.qty > 0 && (
+                  {pickUom === 'Kg' && pickingPallet.kg_per_unit > 0 && selectedBatchStats.qty > 0 && (() => {
+                    const maxKg = Number((selectedBatchStats.qty * parseFloat(pickingPallet.kg_per_unit)).toFixed(3));
+                    return (
+                      <>
+                        {maxKg >= 2 && (
+                          <button
+                            type="button"
+                            onClick={() => setPickQty(Number((maxKg / 2).toFixed(2)))}
+                            className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold hover:bg-slate-700"
+                          >
+                            50% ({Number((maxKg / 2).toFixed(2))} kg)
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setPickQty(maxKg)}
+                          className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold hover:bg-emerald-500 hover:text-black"
+                        >
+                          Tutto ({maxKg} kg)
+                        </button>
+                      </>
+                    );
+                  })()}
+                  {pickUom !== 'Scatole' && pickUom !== 'Bancali' && pickUom !== 'Kg' && selectedBatchStats.qty > 0 && (
                     <>
                       {selectedBatchStats.qty >= 2 && (
                         <button
@@ -2648,13 +2720,30 @@ const Outbound = () => {
               </div>
               <input 
                 type="number" 
-                min="1"
+                min="0.001"
                 step="any"
                 autoFocus
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-brand-white focus:border-brand-blue text-lg font-bold"
                 value={pickQty}
                 onChange={e => setPickQty(e.target.value)}
               />
+              {pickUom === 'Kg' && parseFloat(pickingPallet.kg_per_unit) > 0 && parseFloat(pickQty) > 0 && (() => {
+                const kgU = parseFloat(pickingPallet.kg_per_unit);
+                const convPcs = Number((parseFloat(pickQty) / kgU).toFixed(4));
+                const isExactInt = Math.abs(convPcs - Math.round(convPcs)) < 0.0001;
+                return (
+                  <div className={`mt-2 p-2.5 rounded-xl border text-xs font-bold flex items-center justify-between ${
+                    isExactInt
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                  }`}>
+                    <span>Conversione automatica:</span>
+                    <span className="font-mono text-sm">
+                      {parseFloat(pickQty)} kg → {convPcs} {pickingPallet.base_uom || 'Pezzi'}
+                    </span>
+                  </div>
+                );
+              })()}
               <div className="text-xs text-slate-400 mt-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <div>
                   Disponibilità per{' '}
@@ -2671,6 +2760,7 @@ const Outbound = () => {
                 <div className="mt-1 font-mono text-emerald-400 font-bold">
                   • {selectedBatchStats.qty} {pickingPallet.base_uom || 'Pezzi'}
                   {pickingPallet.units_per_box > 1 && ` • ${selectedBatchStats.boxes} Scatole`}
+                  {pickingPallet.kg_per_unit > 0 && ` • ${Number((selectedBatchStats.qty * parseFloat(pickingPallet.kg_per_unit)).toFixed(2))} Kg (${pickingPallet.kg_per_unit} kg/pz)`}
                   {` • ${selectedBatchStats.pallets} Bancali/Palette`}
                 </div>
               </div>
@@ -2686,15 +2776,31 @@ const Outbound = () => {
                  }
 
                  const upb = parseFloat(pickingPallet.units_per_box) || 1;
-                 if (pickUom === 'Bancali' && reqVal > selectedBatchStats.pallets) {
-                   appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.pallets} bancali/palette disponibili.`);
-                   return;
-                 }
-                 if (pickUom === 'Scatole' && (reqVal * upb) > selectedBatchStats.qty) {
-                   appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.boxes} scatole disponibili.`);
-                   return;
-                 }
-                 if (pickUom !== 'Bancali' && pickUom !== 'Scatole' && reqVal > selectedBatchStats.qty) {
+                 const kgPerUnit = parseFloat(pickingPallet.kg_per_unit) || 0;
+                 let finalQtyReq = reqVal;
+                 let finalReqUom = pickUom;
+                 let finalReqKg = kgPerUnit > 0 ? Number((reqVal * (pickUom === 'Scatole' ? upb : 1) * kgPerUnit).toFixed(3)) : null;
+
+                 if (pickUom === 'Bancali') {
+                   if (reqVal > selectedBatchStats.pallets) {
+                     appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.pallets} bancali/palette disponibili.`);
+                     return;
+                   }
+                 } else if (pickUom === 'Scatole') {
+                   if ((reqVal * upb) > selectedBatchStats.qty) {
+                     appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.boxes} scatole disponibili.`);
+                     return;
+                   }
+                 } else if (pickUom === 'Kg' && kgPerUnit > 0) {
+                   const pcs = Number((reqVal / kgPerUnit).toFixed(4));
+                   if (pcs > selectedBatchStats.qty + 0.0001) {
+                     appAlert(`Disponibilità insufficiente: massimo ${Number((selectedBatchStats.qty * kgPerUnit).toFixed(2))} Kg (${selectedBatchStats.qty} ${pickingPallet.base_uom || 'Pezzi'}) disponibili.`);
+                     return;
+                   }
+                   finalQtyReq = pcs;
+                   finalReqUom = pickingPallet.base_uom || 'Pezzi';
+                   finalReqKg = reqVal;
+                 } else if (reqVal > selectedBatchStats.qty) {
                    appAlert(`Disponibilità insufficiente: massimo ${selectedBatchStats.qty} ${pickingPallet.base_uom || 'Pezzi'} disponibili.`);
                    return;
                  }
@@ -2707,8 +2813,10 @@ const Outbound = () => {
                     client_pallet_number: chosen && chosen.client_pallet_number ? chosen.client_pallet_number : null,
                     product_id: pickingPallet.product_id,
                     product_name: pickingPallet.name,
-                    quantity_required: reqVal,
-                    requested_uom: pickUom,
+                    quantity_required: finalQtyReq,
+                    requested_uom: finalReqUom,
+                    requested_kg: finalReqKg,
+                    kg_per_unit: kgPerUnit || null,
                     batch: targetBatch
                  };
                  setCart([...cart, newCartItem]);
