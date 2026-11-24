@@ -6,6 +6,18 @@ import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
 import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
+const formatLocalDateISO = (val) => {
+  if (!val) return '';
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 const InboundZebra = () => {
   const navigate = useNavigate();
   const workspace = useZebraWorkspace();
@@ -116,7 +128,10 @@ const InboundZebra = () => {
     }
     
     const parsedNetKg = netWeightInput !== '' && !isNaN(parseFloat(netWeightInput)) ? parseFloat(netWeightInput) : null;
-    const trimmedBatch = batchInput.trim() || null;
+    const trimmedBatch = batchInput.trim();
+    const expectedBatch = String(selectedItem.batch || '').trim();
+    const batchPayload = trimmedBatch !== expectedBatch || trimmedBatch !== '' ? trimmedBatch : undefined;
+    const expPayload = expDateInput || null;
 
     setIsProcessing(true);
     setError(null);
@@ -125,8 +140,8 @@ const InboundZebra = () => {
           item_id: selectedItem.id,
           quantity: q,
           net_weight_kg: parsedNetKg,
-          batch: trimmedBatch,
-          expiration_date: expDateInput || null,
+          batch: batchPayload,
+          expiration_date: expPayload,
           location: locationInput || null,
           warehouse: workspace?.warehouseName || 'Settala'
         }, {
@@ -134,16 +149,19 @@ const InboundZebra = () => {
       });
 
       // Update local item quantity & actual metadata
+      const wasMetaOnlyUpdate = Boolean(res.data?.updated_metadata);
       setItems(items.map(i => {
         if (i.id !== selectedItem.id) return i;
         const prevActKg = i.actual_net_weight_kg !== null && i.actual_net_weight_kg !== undefined ? parseFloat(i.actual_net_weight_kg) : null;
-        const nextActKg = parsedNetKg !== null ? Number(((prevActKg || 0) + parsedNetKg).toFixed(3)) : i.actual_net_weight_kg;
+        const nextActKg = parsedNetKg !== null
+          ? (wasMetaOnlyUpdate ? parsedNetKg : Number(((prevActKg || 0) + parsedNetKg).toFixed(3)))
+          : i.actual_net_weight_kg;
         return {
           ...i,
-          actual_quantity: parseFloat(i.actual_quantity) + q,
+          actual_quantity: wasMetaOnlyUpdate ? parseFloat(i.actual_quantity || 0) : (parseFloat(i.actual_quantity || 0) + q),
           actual_net_weight_kg: nextActKg,
-          actual_batch: trimmedBatch || i.actual_batch,
-          actual_expiration_date: expDateInput || i.actual_expiration_date
+          actual_batch: batchPayload !== undefined ? batchPayload : i.actual_batch,
+          actual_expiration_date: expPayload || i.actual_expiration_date
         };
       }));
       setSelectedItem(null);
@@ -267,10 +285,10 @@ const InboundZebra = () => {
       const expKg = i.net_weight_kg !== null && i.net_weight_kg !== undefined ? parseFloat(i.net_weight_kg) : null;
       const actKg = i.actual_net_weight_kg !== null && i.actual_net_weight_kg !== undefined ? parseFloat(i.actual_net_weight_kg) : null;
       if (actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001)) hasDiscrepancy = true;
-      if (i.actual_batch && String(i.actual_batch).trim() !== String(i.batch || '').trim()) hasDiscrepancy = true;
-      const expExp = i.expiration_date ? String(i.expiration_date).slice(0, 10) : '';
-      const actExp = i.actual_expiration_date ? String(i.actual_expiration_date).slice(0, 10) : '';
-      if (actExp && expExp && actExp !== expExp) hasDiscrepancy = true;
+      if (i.actual_batch !== null && i.actual_batch !== undefined && String(i.actual_batch).trim() !== String(i.batch || '').trim()) hasDiscrepancy = true;
+      const expExp = formatLocalDateISO(i.expiration_date);
+      const actExp = formatLocalDateISO(i.actual_expiration_date);
+      if (actExp && actExp !== expExp) hasDiscrepancy = true;
     });
 
     const filteredItems = items.filter(item => {
@@ -339,25 +357,33 @@ const InboundZebra = () => {
             const exp = parseFloat(item.expected_quantity);
             const act = parseFloat(item.actual_quantity || 0);
             const isComplete = act >= exp;
+            const cardUom = (item.pallet_uom && String(item.pallet_uom).toLowerCase() !== 'pezzi' ? item.pallet_uom : null) || item.product_uom || 'Pezzi';
+            const expKg = item.net_weight_kg !== null && item.net_weight_kg !== undefined ? parseFloat(item.net_weight_kg) : null;
+            const actKg = item.actual_net_weight_kg !== null && item.actual_net_weight_kg !== undefined ? parseFloat(item.actual_net_weight_kg) : null;
+            const hasKgMod = actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001);
+            const hasBatchMod = item.actual_batch !== null && item.actual_batch !== undefined && String(item.actual_batch).trim() !== String(item.batch || '').trim();
+            const expExp = formatLocalDateISO(item.expiration_date);
+            const actExp = formatLocalDateISO(item.actual_expiration_date);
+            const hasExpMod = Boolean(actExp && actExp !== expExp);
             
             return (
               <button 
                 key={item.id}
                 onClick={() => {
-                  const uomLower = String(item.pallet_uom || item.product_uom || '').toLowerCase().trim();
+                  const uomLower = String(cardUom || '').toLowerCase().trim();
                   const isBancali = ['bancali', 'bancale', 'palette', 'pallet'].includes(uomLower);
                   const rem = Math.max(0, (parseFloat(item.expected_quantity) || 0) - (parseFloat(item.actual_quantity) || 0));
                   setSelectedItem(item);
                   setStep('INPUT_QTY');
                   setQtyInput(isBancali ? String(rem > 0 ? rem : (parseFloat(item.expected_quantity) || 1)) : '');
                   setBoxesInput('');
-                  setNetWeightInput(item.net_weight_kg !== null && item.net_weight_kg !== undefined ? String(item.net_weight_kg) : '');
-                  setBatchInput(item.batch || '');
-                  setExpDateInput(item.expiration_date ? new Date(item.expiration_date).toISOString().slice(0, 10) : '');
+                  setNetWeightInput(item.actual_net_weight_kg !== null && item.actual_net_weight_kg !== undefined ? String(item.actual_net_weight_kg) : (item.net_weight_kg !== null && item.net_weight_kg !== undefined ? String(item.net_weight_kg) : ''));
+                  setBatchInput(item.actual_batch !== null && item.actual_batch !== undefined ? item.actual_batch : (item.batch || ''));
+                  setExpDateInput(formatLocalDateISO(item.actual_expiration_date || item.expiration_date));
                   setLocationInput(item.location || '');
                   setError(null);
                 }}
-                className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800 hover:border-brand-blue'}`}
+                className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${(hasKgMod || hasBatchMod || hasExpMod) ? 'bg-amber-500/10 border-amber-500/40' : isComplete ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900 border-slate-800 active:bg-slate-800 hover:border-brand-blue'}`}
               >
                 <div className="flex justify-between items-start mb-2">
                   <div className="font-bold text-white text-lg truncate flex-1">
@@ -370,14 +396,33 @@ const InboundZebra = () => {
                   </div>
                   <div className="text-xs font-mono text-slate-500 ml-2 mt-1 shrink-0">{item.sku}</div>
                 </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-slate-400">Attesi: <strong className="text-white">{exp}</strong></span>
+                <div className="flex items-center gap-2 text-sm flex-wrap">
+                  <span className="text-slate-400">Attesi: <strong className="text-white">{exp} {cardUom}</strong></span>
                   <span className="text-slate-600">|</span>
-                  <span className="text-brand-blue">Fatti: <strong className={`text-lg ${act >= exp ? 'text-emerald-500' : 'text-brand-blue'}`}>{act}</strong></span>
-                  {item.units_per_box > 0 && (item.product_uom?.toLowerCase() === 'pezzi' || item.product_uom?.toLowerCase() === 'pz') && (
+                  <span className="text-brand-blue">Fatti: <strong className={`text-lg ${act >= exp ? 'text-emerald-500' : 'text-brand-blue'}`}>{act} {cardUom}</strong></span>
+                  {item.units_per_box > 0 && (cardUom.toLowerCase() === 'pezzi' || cardUom.toLowerCase() === 'pz') && (
                     <span className="text-xs text-slate-500 font-mono ml-auto">({item.units_per_box} pz/scat.)</span>
                   )}
                 </div>
+                {(hasKgMod || hasBatchMod || hasExpMod) && (
+                  <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-amber-500/20 text-[11px] font-mono">
+                    {hasKgMod && (
+                      <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                        KG: {expKg ?? '-'} → {actKg} kg
+                      </span>
+                    )}
+                    {hasBatchMod && (
+                      <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                        Lotto: {item.batch || '-'} → {item.actual_batch || '[vuoto]'}
+                      </span>
+                    )}
+                    {hasExpMod && (
+                      <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                        Scad: {expExp || '-'} → {actExp}
+                      </span>
+                    )}
+                  </div>
+                )}
               </button>
             );
           })}
@@ -422,7 +467,11 @@ const InboundZebra = () => {
     const remaining = Math.max(0, exp - act);
 
     const unitsPerBox = parseInt(selectedItem.units_per_box, 10);
-    const rawUom = (selectedItem.pallet_uom || selectedItem.product_uom || selectedItem.uom || '').toLowerCase().trim();
+    const displayUom = (selectedItem.pallet_uom && String(selectedItem.pallet_uom).toLowerCase() !== 'pezzi' ? selectedItem.pallet_uom : null)
+      || selectedItem.product_uom
+      || selectedItem.uom
+      || 'Pezzi';
+    const rawUom = String(displayUom).toLowerCase().trim();
     const isBancali = ['bancali', 'bancale', 'palette', 'pallet'].includes(rawUom);
     const isPieces = !isBancali && (rawUom === 'pezzi' || rawUom === 'pz' || rawUom === 'pezzo' || rawUom === 'base' || rawUom === '' || (unitsPerBox > 1 && rawUom !== 'scatole' && rawUom !== 'bancali'));
     const hasUnitsPerBox = !isNaN(unitsPerBox) && unitsPerBox > 1;
@@ -475,24 +524,28 @@ const InboundZebra = () => {
                   {Number.isInteger(remaining / unitsPerBox) ? (remaining / unitsPerBox) : (remaining / unitsPerBox).toFixed(1)} SCATOLE
                 </p>
                 <p className="text-slate-300 font-bold text-sm mt-1">
-                  Equivalgono a <span className="text-brand-blue font-black">{remaining}</span> / {exp} {selectedItem.product_uom}
+                  Equivalgono a <span className="text-brand-blue font-black">{remaining}</span> / {exp} {displayUom}
                 </p>
               </div>
             ) : (
               <p className="text-slate-400 font-bold mb-1">
-                Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp} {selectedItem.product_uom}
+                Da fare: <span className="text-brand-blue text-2xl">{remaining}</span> / {exp} {displayUom}
               </p>
             )}
-            <p className="text-xs text-slate-500 mt-1">Inserisci scatole o pezzi da mettere su questa paletta.</p>
+            <p className="text-xs text-slate-500 mt-1">
+              {isBancali
+                ? 'Conferma bancale (quantità fissa in Bancali). Puoi variare KG Netti, Lotto o Scadenza.'
+                : 'Inserisci scatole o pezzi da mettere su questa paletta.'}
+            </p>
           </div>
 
           {isBancali ? (
             <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-4 mb-5 max-w-sm mx-auto w-full text-center">
               <div className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-black uppercase mb-1">
-                <Lock size={14} /> UDM {selectedItem.pallet_uom || selectedItem.product_uom} — Q.tà bloccata
+                <Lock size={14} /> UDM {displayUom} — Q.tà bloccata
               </div>
               <div className="text-4xl font-black text-brand-white">
-                {qtyInput} <span className="text-lg text-slate-400">{selectedItem.pallet_uom || selectedItem.product_uom}</span>
+                {qtyInput} <span className="text-lg text-slate-400">{displayUom}</span>
               </div>
               <p className="text-[11px] text-amber-200/80 mt-1">
                 Puoi rettificare qui sotto KG Netti, Lotto o Data Scadenza per segnalare eventuali discrepanze.

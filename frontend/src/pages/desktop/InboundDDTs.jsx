@@ -660,6 +660,7 @@ const InboundDDTs = () => {
                                         <th className="p-2.5 text-right">Q.tà Attesa</th>
                                         <th className="p-2.5 text-right">Q.tà Spuntata</th>
                                         <th className="p-2.5 text-right">KG Netti (Att → Eff)</th>
+                                        <th className="p-2.5 text-center">Scadenza (Att → Eff)</th>
                                         <th className="p-2.5 text-right">Differenza</th>
                                         <th className="p-2.5 text-center">Esito Riga</th>
                                       </tr>
@@ -669,12 +670,16 @@ const InboundDDTs = () => {
                                         const exp = parseFloat(it.expected_quantity) || 0;
                                         const act = parseFloat(it.actual_quantity) || 0;
                                         const diff = act - exp;
+                                        const rowUom = (it.pallet_uom && String(it.pallet_uom).toLowerCase() !== 'pezzi' ? it.pallet_uom : null) || it.product_uom || 'Pezzi';
                                         const expKg = it.net_weight_kg != null ? parseFloat(it.net_weight_kg) : null;
                                         const actKg = it.actual_net_weight_kg != null ? parseFloat(it.actual_net_weight_kg) : null;
                                         const kgDiff = actKg !== null ? Number((actKg - (expKg ?? 0)).toFixed(3)) : 0;
                                         const hasKgDisc = actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001);
-                                        const hasBatchDisc = Boolean(it.actual_batch && it.actual_batch.trim() !== (it.batch || '').trim());
-                                        const hasRowDisc = Math.abs(diff) > 0.0001 || hasKgDisc || hasBatchDisc;
+                                        const hasBatchDisc = it.actual_batch !== null && it.actual_batch !== undefined && String(it.actual_batch).trim() !== (it.batch || '').trim();
+                                        const expExpStr = it.expiration_date ? String(it.expiration_date).slice(0, 10) : '';
+                                        const actExpStr = it.actual_expiration_date ? String(it.actual_expiration_date).slice(0, 10) : '';
+                                        const hasExpDisc = Boolean(actExpStr && actExpStr !== expExpStr);
+                                        const hasRowDisc = Math.abs(diff) > 0.0001 || hasKgDisc || hasBatchDisc || hasExpDisc;
                                         return (
                                           <tr key={it.id} className={`border-b border-slate-800/50 ${hasRowDisc && d.status !== 'PENDING' ? 'bg-amber-500/10' : ''}`}>
                                             <td className="p-2.5">
@@ -683,10 +688,10 @@ const InboundDDTs = () => {
                                             </td>
                                             <td className="p-2.5 font-mono text-amber-400">
                                               <div>{it.batch || '-'}</div>
-                                              {hasBatchDisc && <div className="text-[10px] text-rose-400">Spuntato: {it.actual_batch}</div>}
+                                              {hasBatchDisc && <div className="text-[10px] text-rose-400 font-bold">Zebra: {it.actual_batch || '[vuoto]'}</div>}
                                             </td>
-                                            <td className="p-2.5 text-right font-bold text-slate-200">{exp} {it.product_uom}</td>
-                                            <td className="p-2.5 text-right font-black text-brand-blue">{act} {it.product_uom}</td>
+                                            <td className="p-2.5 text-right font-bold text-slate-200">{exp} {rowUom}</td>
+                                            <td className="p-2.5 text-right font-black text-brand-blue">{act} {rowUom}</td>
                                             <td className="p-2.5 text-right font-mono text-xs">
                                               {expKg !== null || actKg !== null ? (
                                                 <span className={hasKgDisc ? 'text-amber-300 font-bold' : 'text-slate-300'}>
@@ -694,10 +699,17 @@ const InboundDDTs = () => {
                                                 </span>
                                               ) : <span className="text-slate-500">-</span>}
                                             </td>
+                                            <td className="p-2.5 text-center font-mono text-xs">
+                                              {expExpStr || actExpStr ? (
+                                                <span className={hasExpDisc ? 'text-amber-300 font-bold' : 'text-slate-300'}>
+                                                  {expExpStr || '-'} → {actExpStr || expExpStr || '-'}
+                                                </span>
+                                              ) : <span className="text-slate-500">-</span>}
+                                            </td>
                                             <td className={`p-2.5 text-right font-mono font-black ${
                                               !hasRowDisc ? 'text-emerald-400' : (diff > 0 || kgDiff > 0) ? 'text-amber-400' : 'text-rose-400'
                                             }`}>
-                                              <div>{diff > 0 ? `+${diff}` : diff} {it.product_uom}</div>
+                                              <div>{diff > 0 ? `+${diff}` : diff} {rowUom}</div>
                                               {hasKgDisc && (
                                                 <div className="text-[10px]">{kgDiff > 0 ? `+${kgDiff}` : kgDiff} kg</div>
                                               )}
@@ -706,9 +718,16 @@ const InboundDDTs = () => {
                                               {!hasRowDisc ? (
                                                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">Allineato</span>
                                               ) : (
-                                                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
-                                                  {hasKgDisc && diff === 0 ? 'Peso Variato' : diff < 0 ? 'Mancante' : diff > 0 ? 'Eccedenza' : 'Variato'}
-                                                </span>
+                                                <div className="flex flex-wrap justify-center gap-1">
+                                                  {Math.abs(diff) > 0.0001 && (
+                                                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
+                                                      {diff < 0 ? 'Mancante' : 'Eccedenza'}
+                                                    </span>
+                                                  )}
+                                                  {hasKgDisc && <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">Peso</span>}
+                                                  {hasBatchDisc && <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold">Lotto</span>}
+                                                  {hasExpDisc && <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold">Scad.</span>}
+                                                </div>
                                               )}
                                             </td>
                                           </tr>
@@ -749,6 +768,15 @@ const InboundDDTs = () => {
                                         <div className="text-slate-200 font-semibold mt-1">
                                           {lg.reason || '-'}
                                         </div>
+                                        {Array.isArray(lg.items_snapshot) && lg.items_snapshot.some(s => Array.isArray(s.discrepancy_reasons) && s.discrepancy_reasons.length > 0) && (
+                                          <div className="mt-1.5 flex flex-wrap gap-1">
+                                            {lg.items_snapshot.filter(s => Array.isArray(s.discrepancy_reasons) && s.discrepancy_reasons.length > 0).map((s, idx) => (
+                                              <span key={idx} className="px-2 py-0.5 rounded bg-slate-900 border border-amber-500/30 text-[10px] font-mono text-amber-300">
+                                                {s.product_name || s.sku}: {s.discrepancy_reasons.join(' • ')}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
                                         <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1.5">
                                           <User size={12} className="text-brand-blue" /> Operatore: <strong className="text-white">{lg.username}</strong> ({lg.source})
                                         </div>
@@ -906,24 +934,34 @@ const InboundDDTs = () => {
                           {itemsToShow.map((it, idx) => {
                             const diff = (parseFloat(it.actual_quantity) || 0) - (parseFloat(it.expected_quantity) || 0);
                             const wDiff = parseFloat(it.weight_diff) || 0;
+                            const hasBatchChange = it.actual_batch !== null && it.actual_batch !== undefined && String(it.actual_batch).trim() !== String(it.batch || '').trim();
+                            const hasExpChange = it.actual_expiration_date && String(it.actual_expiration_date).slice(0, 10) !== String(it.expiration_date || '').slice(0, 10);
                             return (
-                              <div key={idx} className="flex items-center justify-between gap-2 text-xs bg-slate-950/80 border border-slate-800/80 px-2.5 py-1 rounded-lg">
+                              <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs bg-slate-950/80 border border-slate-800/80 px-2.5 py-1.5 rounded-lg">
                                 <span className="font-bold text-white truncate">
                                   {it.product_name} <span className="font-mono text-slate-400">({it.sku})</span>
                                   {it.batch ? <span className="text-amber-400 font-mono ml-1">[L:{it.batch}]</span> : null}
                                   {Array.isArray(it.discrepancy_reasons) && it.discrepancy_reasons.length > 0 && (
-                                    <span className="text-[10px] text-amber-300 ml-1.5">[{it.discrepancy_reasons.join(', ')}]</span>
+                                    <span className="text-[10px] text-amber-300 ml-1.5 block sm:inline">[{it.discrepancy_reasons.join(' • ')}]</span>
                                   )}
                                 </span>
-                                <span className="font-mono whitespace-nowrap shrink-0">
-                                  Att: <b>{it.expected_quantity}</b> → Eff: <b>{it.actual_quantity}</b>{' '}
-                                  <strong className={diff === 0 ? 'text-emerald-400' : diff > 0 ? 'text-amber-400' : 'text-rose-400'}>
-                                    ({diff > 0 ? `+${diff}` : diff})
-                                  </strong>
+                                <span className="font-mono whitespace-nowrap shrink-0 flex flex-wrap items-center gap-1.5">
+                                  <span>
+                                    Att: <b>{it.expected_quantity}</b> → Eff: <b>{it.actual_quantity}</b>{' '}
+                                    <strong className={diff === 0 ? 'text-emerald-400' : diff > 0 ? 'text-amber-400' : 'text-rose-400'}>
+                                      ({diff > 0 ? `+${diff}` : diff})
+                                    </strong>
+                                  </span>
                                   {Math.abs(wDiff) > 0.001 && (
-                                    <strong className="ml-1.5 text-amber-300">
+                                    <strong className="text-amber-300">
                                       [KG: {wDiff > 0 ? `+${wDiff}` : wDiff}]
                                     </strong>
+                                  )}
+                                  {hasBatchChange && (
+                                    <strong className="text-rose-300">[Lotto: {it.batch || '-'}→{it.actual_batch || 'vuoto'}]</strong>
+                                  )}
+                                  {hasExpChange && (
+                                    <strong className="text-purple-300">[Scad: {it.expiration_date || '-'}→{it.actual_expiration_date}]</strong>
                                   )}
                                 </span>
                               </div>
@@ -953,7 +991,7 @@ const InboundDDTs = () => {
                   DDT {discrepancyModal.ddt.ddt_number} — {discrepancyModal.ddt.customer_name || discrepancyModal.ddt.business_name}
                 </h2>
                 <p className="text-slate-400 text-xs mt-1">
-                  Verifica le differenze riscontrate dall&apos;operatore Zebra. Se accetti (indicando il motivo), la merce entrerà subito in inventario e potrai stampare i barcode. Se rifiuti, l&apos;operatore Zebra dovrà ripetere la spunta.
+                  Verifica le differenze riscontrate dall&apos;operatore Zebra. Se accetti (indicando il motivo), tutte le rettifiche segnalate (Q.tà, KG Netti, Lotto, Scadenza) verranno applicate alle palette in stock mantenendo lo storico completo.
                 </p>
               </div>
               <button
@@ -966,15 +1004,15 @@ const InboundDDTs = () => {
             </div>
 
             {/* Tabella Comparativa Atteso vs Spuntato */}
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden mb-5 max-h-64 overflow-y-auto">
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-x-auto mb-5 max-h-64 overflow-y-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-900 text-slate-400 uppercase sticky top-0">
                   <tr>
                     <th className="p-3">Articolo / SKU</th>
-                    <th className="p-3">Lotto</th>
-                    <th className="p-3 text-right">Q.tà Attesa</th>
-                    <th className="p-3 text-right">Q.tà Spuntata (Zebra)</th>
-                    <th className="p-3 text-right">KG Netti (Att → Eff)</th>
+                    <th className="p-3">Lotto (Att → Zebra)</th>
+                    <th className="p-3 text-right">Q.tà (Att → Zebra)</th>
+                    <th className="p-3 text-right">KG Netti (Att → Zebra)</th>
+                    <th className="p-3 text-center">Scadenza (Att → Zebra)</th>
                     <th className="p-3 text-right">Differenza</th>
                   </tr>
                 </thead>
@@ -983,11 +1021,16 @@ const InboundDDTs = () => {
                     const exp = parseFloat(it.expected_quantity) || 0;
                     const act = parseFloat(it.actual_quantity) || 0;
                     const diff = act - exp;
+                    const rowUom = (it.pallet_uom && String(it.pallet_uom).toLowerCase() !== 'pezzi' ? it.pallet_uom : null) || it.product_uom || 'Pezzi';
                     const expKg = it.net_weight_kg != null ? parseFloat(it.net_weight_kg) : null;
                     const actKg = it.actual_net_weight_kg != null ? parseFloat(it.actual_net_weight_kg) : null;
                     const kgDiff = actKg !== null ? Number((actKg - (expKg ?? 0)).toFixed(3)) : 0;
                     const hasKgDisc = actKg !== null && (expKg === null || Math.abs(actKg - expKg) > 0.001);
-                    const hasRowDisc = diff !== 0 || hasKgDisc || Boolean(it.actual_batch && it.actual_batch.trim() !== (it.batch || '').trim());
+                    const hasBatchDisc = it.actual_batch !== null && it.actual_batch !== undefined && String(it.actual_batch).trim() !== (it.batch || '').trim();
+                    const expExpStr = it.expiration_date ? String(it.expiration_date).slice(0, 10) : '';
+                    const actExpStr = it.actual_expiration_date ? String(it.actual_expiration_date).slice(0, 10) : '';
+                    const hasExpDisc = Boolean(actExpStr && actExpStr !== expExpStr);
+                    const hasRowDisc = diff !== 0 || hasKgDisc || hasBatchDisc || hasExpDisc;
                     return (
                       <tr key={it.id} className={`border-b border-slate-800/60 ${hasRowDisc ? 'bg-amber-500/10' : ''}`}>
                         <td className="p-3">
@@ -996,12 +1039,13 @@ const InboundDDTs = () => {
                         </td>
                         <td className="p-3 font-mono text-amber-400">
                           <div>{it.batch || '-'}</div>
-                          {it.actual_batch && it.actual_batch !== it.batch && (
-                            <div className="text-[10px] text-rose-400">Zebra: {it.actual_batch}</div>
+                          {hasBatchDisc && (
+                            <div className="text-[10px] text-rose-400 font-bold">Zebra: {it.actual_batch || '[vuoto]'}</div>
                           )}
                         </td>
-                        <td className="p-3 text-right font-bold text-slate-300">{exp} {it.product_uom}</td>
-                        <td className="p-3 text-right font-black text-brand-blue">{act} {it.product_uom}</td>
+                        <td className="p-3 text-right font-bold">
+                          <span className="text-slate-300">{exp}</span> → <span className="text-brand-blue font-black">{act} {rowUom}</span>
+                        </td>
                         <td className="p-3 text-right font-mono">
                           {expKg !== null || actKg !== null ? (
                             <span className={hasKgDisc ? 'text-amber-300 font-bold' : 'text-slate-300'}>
@@ -1009,11 +1053,20 @@ const InboundDDTs = () => {
                             </span>
                           ) : '-'}
                         </td>
+                        <td className="p-3 text-center font-mono">
+                          {expExpStr || actExpStr ? (
+                            <span className={hasExpDisc ? 'text-purple-300 font-bold' : 'text-slate-300'}>
+                              {expExpStr || '-'} → {actExpStr || expExpStr || '-'}
+                            </span>
+                          ) : '-'}
+                        </td>
                         <td className={`p-3 text-right font-mono font-black ${
                           !hasRowDisc ? 'text-emerald-400' : (diff > 0 || kgDiff > 0) ? 'text-amber-400' : 'text-rose-400'
                         }`}>
-                          <div>{diff > 0 ? `+${diff}` : diff} {it.product_uom}</div>
+                          <div>{diff > 0 ? `+${diff}` : diff} {rowUom}</div>
                           {hasKgDisc && <div className="text-[10px]">{kgDiff > 0 ? `+${kgDiff}` : kgDiff} kg</div>}
+                          {hasBatchDisc && <div className="text-[10px] text-rose-300">Lotto variato</div>}
+                          {hasExpDisc && <div className="text-[10px] text-purple-300">Scadenza variata</div>}
                         </td>
                       </tr>
                     );

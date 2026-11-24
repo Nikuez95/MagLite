@@ -1007,6 +1007,50 @@ async function runMigrations() {
 
     // 7. Indici di performance per scalabilità a lungo termine (mesi/anni di storico)
     try {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS CUSTOMER_DOCUMENT_FOLDERS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          customer_id INT NOT NULL,
+          name VARCHAR(120) NOT NULL,
+          color VARCHAR(30) DEFAULT 'sky',
+          created_by VARCHAR(100) NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uniq_cust_folder (customer_id, name),
+          CONSTRAINT fk_cdf_customer FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+        )
+      `);
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS CUSTOMER_DOCUMENTS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          customer_id INT NOT NULL,
+          folder_id INT NULL,
+          original_name VARCHAR(255) NOT NULL,
+          mime_type VARCHAR(150) NOT NULL,
+          r2_bucket VARCHAR(120) NOT NULL,
+          r2_key VARCHAR(512) NOT NULL UNIQUE,
+          compression VARCHAR(20) NOT NULL DEFAULT 'gzip',
+          original_size BIGINT NOT NULL DEFAULT 0,
+          compressed_size BIGINT NOT NULL DEFAULT 0,
+          notes VARCHAR(500) NULL,
+          uploaded_by VARCHAR(100) NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT fk_cd_customer FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE,
+          CONSTRAINT fk_cd_folder FOREIGN KEY (folder_id) REFERENCES CUSTOMER_DOCUMENT_FOLDERS(id) ON DELETE SET NULL
+        )
+      `);
+      await connection.query(
+        `INSERT IGNORE INTO settings (setting_key, setting_value) VALUES
+         ('cf_r2_token', 'cfut_H1gtzTMwAvLoeZ2HBUqsu87ze8WYPTGKjAAnulnK80f2fce0'),
+         ('cf_r2_account_id', '2b2828e99ab9a60ef5ee1613626d3e00'),
+         ('cf_r2_bucket', 'maglite-customer-files'),
+         ('cf_r2_quota_bytes', '10737418240')`
+      );
+      console.log('✅ Tabelle CUSTOMER_DOCUMENT_FOLDERS, CUSTOMER_DOCUMENTS & config Cloudflare R2 verificate.');
+    } catch (r2MigErr) {
+      console.warn('[MIGRATE R2 DOCS WARNING]', r2MigErr.message);
+    }
+
+    try {
       const addColSafe = async (sql) => {
         try {
           await connection.query(sql);
@@ -1082,7 +1126,9 @@ async function runMigrations() {
         ['BILLING_AUDIT_LOGS', 'idx_bal_cust_created', 'customer_id, created_at'],
         ['BILLING_AUDIT_LOGS', 'idx_bal_action', 'action'],
         ['PALLETS', 'idx_pallets_wh_id', 'warehouse_id'],
-        ['LOCATIONS', 'idx_loc_wh_div', 'warehouse_id, division_id']
+        ['LOCATIONS', 'idx_loc_wh_div', 'warehouse_id, division_id'],
+        ['CUSTOMER_DOCUMENTS', 'idx_cd_cust_folder', 'customer_id, folder_id'],
+        ['CUSTOMER_DOCUMENTS', 'idx_cd_created', 'created_at']
       ];
 
       for (const [tbl, idxName, cols] of indexesToEnsure) {

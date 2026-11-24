@@ -1204,7 +1204,7 @@ const Outbound = () => {
       </div>
 
       {/* Cruscotto Interattivo Stati Spedizione (5 Card KPI) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2.5 sm:gap-3 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-6">
         <button
           type="button"
           onClick={() => setStatusFilter('')}
@@ -1305,8 +1305,8 @@ const Outbound = () => {
 
       {/* Barra Filtri Avanzata */}
       {/* Search & Filters Bar */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 shadow-xl">
-        <div className="w-full sm:flex-1 sm:min-w-[230px] relative">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 items-center gap-3 shadow-xl">
+        <div className="sm:col-span-2 lg:col-span-4 relative min-w-0">
           <input 
             type="text" 
             placeholder="Cerca ordine, cliente, DDT, lotto, articolo o op..."
@@ -1322,7 +1322,7 @@ const Outbound = () => {
           )}
         </div>
 
-        <div className="w-full sm:w-[205px]">
+        <div className="lg:col-span-3 min-w-0">
           <select
             value={customerFilter}
             onChange={e => setCustomerFilter(e.target.value)}
@@ -1335,28 +1335,30 @@ const Outbound = () => {
           </select>
         </div>
 
-        <div className="w-full lg:w-auto flex flex-wrap items-center gap-2 text-xs">
-          <Calendar size={15} className="text-brand-blue ml-1 shrink-0" />
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="flex-1 sm:flex-none min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="Da data" />
-          <span className="text-slate-500">-</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="flex-1 sm:flex-none min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2.5 py-2 [color-scheme:dark]" title="A data" />
+        <div className="sm:col-span-2 lg:col-span-5 flex flex-wrap items-center justify-between lg:justify-end gap-2 text-xs min-w-0">
+          <div className="flex items-center gap-1.5 flex-1 sm:flex-none min-w-0">
+            <Calendar size={15} className="text-brand-blue shrink-0 hidden sm:block" />
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="flex-1 sm:w-32 min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2 [color-scheme:dark]" title="Da data" />
+            <span className="text-slate-500">-</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="flex-1 sm:w-32 min-w-0 bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2 [color-scheme:dark]" title="A data" />
+          </div>
 
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 shrink-0">
             <button type="button" onClick={() => applyDatePreset('TODAY')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">Oggi</button>
             <button type="button" onClick={() => applyDatePreset('WEEK')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">7 gg</button>
             <button type="button" onClick={() => applyDatePreset('MONTH')} className="px-2 py-1 rounded-lg text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800">Mese</button>
           </div>
-        </div>
 
-        {hasActiveFilters && (
-          <button
-            type="button"
-            onClick={resetAllFilters}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors"
-          >
-            <RotateCcw size={13} /> Reset
-          </button>
-        )}
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={resetAllFilters}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors shrink-0"
+            >
+              <RotateCcw size={13} /> Reset
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Orders Table & Responsive Mobile Cards */}
@@ -1754,7 +1756,7 @@ const Outbound = () => {
                     )}
                   </td>
                   <td className="px-4 py-3.5 text-right">
-                    <div className="flex justify-end items-center gap-1.5">
+                    <div className="flex justify-end items-center gap-1.5 flex-wrap">
                       <button 
                         onClick={() => setTimelineModal(o)}
                         className="p-2 bg-slate-800 hover:bg-slate-700 text-brand-blue rounded-xl transition-colors"
@@ -1848,22 +1850,22 @@ const Outbound = () => {
 
       {/* Modale Crea / Modifica Spedizione (Workspace Split-Screen) */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 max-w-7xl w-full shadow-2xl flex flex-col max-h-[94vh] overflow-y-auto lg:overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-brand-black/95 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl p-3 sm:p-6 max-w-7xl w-full shadow-2xl flex flex-col max-h-[96dvh] overflow-y-auto lg:overflow-hidden">
             
             {/* Header Modale */}
-            <div className="flex justify-between items-center pb-4 mb-4 border-b border-slate-800">
-              <div>
-                <h3 className="text-2xl font-black text-brand-white flex items-center gap-2.5">
-                  <Truck className="text-brand-blue" size={26} />
-                  {newOrder.id ? 'Modifica Spedizione' : 'Nuova Spedizione (Picking Guidato)'}
+            <div className="flex justify-between items-start sm:items-center gap-2 pb-3 sm:pb-4 mb-3 sm:mb-4 border-b border-slate-800">
+              <div className="min-w-0">
+                <h3 className="text-lg sm:text-2xl font-black text-brand-white flex items-center gap-2">
+                  <Truck className="text-brand-blue shrink-0" size={24} />
+                  <span className="truncate">{newOrder.id ? 'Modifica Spedizione' : 'Nuova Spedizione (Picking Guidato)'}</span>
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
                   Seleziona i lotti dal catalogo a sinistra o usa <strong>Tutto il Lotto</strong> per aggiungerli con 1 click, e modifica le quantità inline a destra.
                 </p>
               </div>
-              <button onClick={() => setShowModal(false)} className="p-2 text-slate-500 hover:text-brand-white rounded-xl hover:bg-slate-800">
-                <X size={24} />
+              <button onClick={() => setShowModal(false)} className="p-2 text-slate-500 hover:text-brand-white rounded-xl hover:bg-slate-800 shrink-0">
+                <X size={22} />
               </button>
             </div>
             
@@ -1925,12 +1927,12 @@ const Outbound = () => {
 
             {/* Riga Compatta Destinazione & Bolla di Uscita */}
             <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 mb-4 space-y-2.5">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="flex-1 min-w-[230px]">
+              <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-end gap-2.5">
+                <div className="flex-1 min-w-0 sm:min-w-[230px]">
                   <label className="block text-sky-400 font-bold mb-1 text-[10px] uppercase tracking-wider flex items-center gap-1">
                     <MapPin size={11} /> Indirizzo di Consegna (Destinazione Bolla)
                   </label>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     {orderDeliveryAddresses.length > 0 && (
                       <select
                         value={newOrder.delivery_address_id || ''}
@@ -1950,7 +1952,7 @@ const Outbound = () => {
                             }));
                           }
                         }}
-                        className="bg-slate-900 border border-slate-700 text-white rounded-xl px-2.5 py-1.5 text-xs font-bold max-w-[220px] focus:border-brand-blue outline-none"
+                        className="w-full sm:w-auto sm:max-w-[220px] bg-slate-900 border border-slate-700 text-white rounded-xl px-2.5 py-1.5 text-xs font-bold focus:border-brand-blue outline-none"
                       >
                         <option value="">Indirizzo personalizzato / sede</option>
                         {orderDeliveryAddresses.map(a => (
@@ -1965,12 +1967,12 @@ const Outbound = () => {
                       value={newOrder.delivery_address_text || ''}
                       onChange={e => setNewOrder(prev => ({ ...prev, delivery_address_id: '', delivery_address_text: e.target.value }))}
                       placeholder="Indirizzo completo di consegna (es. Via Roma 10, Milano)"
-                      className="flex-1 bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 text-xs focus:border-brand-blue outline-none"
+                      className="flex-1 min-w-0 bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 text-xs focus:border-brand-blue outline-none"
                     />
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 pt-3.5">
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 lg:pt-0">
                   <button
                     type="button"
                     onClick={() => setNewOrder(prev => ({ ...prev, is_container: !prev.is_container }))}
@@ -2121,7 +2123,7 @@ const Outbound = () => {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 overflow-visible lg:overflow-hidden">
               
               {/* SINISTRA: Catalogo Lotti & Articoli del Cliente */}
-              <div className="lg:col-span-7 bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col min-h-0">
+              <div className="lg:col-span-7 bg-slate-950 p-3 sm:p-4 rounded-2xl border border-slate-800 flex flex-col min-h-[280px] max-h-[420px] lg:max-h-none lg:min-h-0">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <h4 className="text-brand-white font-bold text-sm flex items-center gap-2">
                     <PackageSearch size={18} className="text-brand-blue" />
@@ -2161,7 +2163,7 @@ const Outbound = () => {
                   )}
                 </div>
 
-                <div className="overflow-y-auto flex-1 border border-slate-800 rounded-xl bg-slate-900/40">
+                <div className="overflow-y-auto overflow-x-auto flex-1 border border-slate-800 rounded-xl bg-slate-900/40">
                   {!newOrder.customer_id ? (
                     <div className="h-full flex flex-col items-center justify-center p-8 text-slate-500 text-center">
                       <User size={36} className="text-slate-700 mb-2" />
@@ -2316,7 +2318,7 @@ const Outbound = () => {
               </div>
 
               {/* DESTRA: Lista Prelievo Spedizione con Modifica Inline (5/12) */}
-              <div className="lg:col-span-5 bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col min-h-0">
+              <div className="lg:col-span-5 bg-slate-950 p-3 sm:p-4 rounded-2xl border border-slate-800 flex flex-col min-h-[280px] max-h-[420px] lg:max-h-none lg:min-h-0">
                 <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
                   <div className="flex items-center gap-2">
                     <Layers size={18} className="text-brand-blue" />

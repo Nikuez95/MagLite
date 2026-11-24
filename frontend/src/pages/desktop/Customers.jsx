@@ -8,9 +8,10 @@ import {
   GitBranch, Coins, ReceiptText, Search, Layers, Package, Boxes,
   X, CheckCircle2, Folder, FolderOpen, StickyNote, Loader2,
   LayoutGrid, PanelLeft, Sparkles, ArrowRight, Pin, PinOff, Send, Clock, User,
-  FileText, Star, Truck
+  FileText, Star, Truck, Cloud
 } from 'lucide-react';
 import CustomerTariffEditor from '../../components/CustomerTariffEditor';
+import CustomerDocumentsTab from '../../components/CustomerDocumentsTab';
 import { GlobalPlansModal, NewGlobalServiceModal } from '../../components/GlobalTariffModals';
 
 const CustomersManagement = () => {
@@ -1150,6 +1151,18 @@ Note: ${customer.notes || 'Nessuna'}`;
                         <GitBranch size={14} />
                         Frammentazioni ({folderFragments.length})
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setFolderTab('FILES')}
+                        className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 ${
+                          folderTab === 'FILES'
+                            ? 'bg-sky-500 text-brand-black shadow'
+                            : 'bg-slate-950/60 text-slate-400 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        <Cloud size={14} />
+                        File & Documenti (R2)
+                      </button>
                     </div>
                   </div>
 
@@ -1642,6 +1655,13 @@ Note: ${customer.notes || 'Nessuna'}`;
                           </div>
                         )}
                       </div>
+                    )}
+
+                    {folderTab === 'FILES' && (
+                      <CustomerDocumentsTab
+                        customer={activeEntity}
+                        canManage={canManageCustomers}
+                      />
                     )}
                   </div>
                 </>

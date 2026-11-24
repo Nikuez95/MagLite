@@ -13,6 +13,13 @@ fastify.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 });
 
+// 1b. Supporto upload multipart (file clienti compressi su R2)
+fastify.register(require('@fastify/multipart'), {
+  limits: {
+    fileSize: 150 * 1024 * 1024 // 150 MB per file prima della compressione
+  }
+});
+
 // 2. Configurazione JWT
 fastify.register(jwt, {
   secret: process.env.JWT_SECRET || 'super_secret_jwt_key_maglite_2026'
@@ -66,6 +73,7 @@ fastify.register(require('./routes/customForms'), { prefix: '/api/custom-forms' 
 fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
 fastify.register(require('./routes/tickets'), { prefix: '/api/tickets' });
 fastify.register(require('./routes/changelogs'), { prefix: '/api/changelogs' });
+fastify.register(require('./routes/customerFiles'), { prefix: '/api/customer-files' });
 
 // Health check endpoint (non protetto)
 fastify.get('/api/health', async () => {

@@ -1,11 +1,27 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import jsPDF from 'jspdf';
 import {
   Signpost, Printer, Download, Sparkles, Layers, QrCode, Palette,
-  Maximize2, Copy, CheckCircle2, Image as ImageIcon, Plus
+  Maximize2, Copy, CheckCircle2, Image as ImageIcon, Plus,
+  Type, Save, RotateCcw, Sliders
 } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
+
+const SIGN_DEFAULTS_STORAGE_KEY = 'maglite_warehouse_sign_defaults_v1';
+
+const DEFAULT_SIGN_SCALES = {
+  logoScale: 100,
+  titleScale: 100,
+  subtitleScale: 100,
+  badgeScale: 100
+};
+
+const clampScaleVal = (val, fallback = 100) => {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(200, Math.max(40, Math.round(n)));
+};
 
 const FORMAT_OPTIONS = [
   { id: 'A4_L', label: 'A4 Orizzontale', sizeLabel: '297 × 210 mm', format: 'a4', orientation: 'landscape', ratio: '297 / 210', wMm: 297, hMm: 210 },
@@ -118,7 +134,11 @@ const drawSignToCanvas = async ({
   showLogo,
   showBarcode,
   barcodeDataUrl,
-  logoDataUrl
+  logoDataUrl,
+  logoScale = 100,
+  titleScale = 100,
+  subtitleScale = 100,
+  badgeScale = 100
 }) => {
   const canvas = document.createElement('canvas');
   canvas.width = wPx;
@@ -164,8 +184,9 @@ const drawSignToCanvas = async ({
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const maxLogoH = Math.round(hPx * 0.21);
-        const maxLogoW = Math.round(wPx * 0.34);
+        const lFactor = clampScaleVal(logoScale, 100) / 100;
+        const maxLogoH = Math.min(Math.round(hPx * 0.40), Math.round(hPx * 0.21 * lFactor));
+        const maxLogoW = Math.min(Math.round(wPx * 0.60), Math.round(wPx * 0.34 * lFactor));
         const ratio = Math.min(maxLogoW / img.width, maxLogoH / img.height);
         const lw = img.width * ratio;
         const lh = img.height * ratio;
@@ -180,9 +201,10 @@ const drawSignToCanvas = async ({
 
   const badgeText = (eyebrow || companySettings.company_name || 'MAGAZZINO LOGISTICA').toUpperCase();
   if (badgeText) {
-    const badgeFont = Math.round(Math.min(wPx, hPx) * 0.028);
+    const bFactor = clampScaleVal(badgeScale, 100) / 100;
+    const badgeFont = Math.round(Math.min(wPx, hPx) * 0.028 * bFactor);
     ctx.font = `900 ${badgeFont}px sans-serif`;
-    const bw = Math.min(wPx * 0.50, ctx.measureText(badgeText).width + badgeFont * 2.2);
+    const bw = Math.min(wPx * 0.62, ctx.measureText(badgeText).width + badgeFont * 2.2);
     const bh = badgeFont * 2.1;
     const bx = wPx - innerPad - bw;
     const by = innerPad + 4;
@@ -194,66 +216,81 @@ const drawSignToCanvas = async ({
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeText, bx + bw / 2, by + bh / 2, bw - badgeFont);
+    topContentBottom = Math.max(topContentBottom, by + bh + 16);
   }
 
   // Center Title & Subtitle
   const safeTitle = (title || 'AREA 1').trim();
   const safeSub = (subtitle || '').trim();
-  const centerZoneTop = topContentBottom + Math.round(hPx * 0.04);
-  const footerReserve = showBarcode && barcodeDataUrl ? Math.round(hPx * 0.22) : Math.round(hPx * 0.1);
+  const centerZoneTop = topContentBottom + Math.round(hPx * 0.03);
+  const footerReserve = showBarcode && barcodeDataUrl ? Math.round(hPx * 0.22) : Math.round(hPx * 0.09);
   const centerZoneBottom = hPx - innerPad - footerReserve;
+  const maxAvailableH = Math.max(120, centerZoneBottom - centerZoneTop);
   const centerY = (centerZoneTop + centerZoneBottom) / 2;
   const maxTextW = wPx - innerPad * 2 - 40;
 
-  let titleFontSize = Math.round(Math.min(wPx * 0.16, hPx * 0.24));
-  const minTitleFont = Math.round(Math.min(wPx, hPx) * 0.055);
-  ctx.font = `900 ${titleFontSize}px sans-serif`;
-  while (titleFontSize > minTitleFont && ctx.measureText(safeTitle).width > maxTextW) {
-    titleFontSize -= 4;
-    ctx.font = `900 ${titleFontSize}px sans-serif`;
-  }
+  const tFactor = clampScaleVal(titleScale, 100) / 100;
+  const sFactor = clampScaleVal(subtitleScale, 100) / 100;
 
-  // Wrap title if still wider than maxTextW
-  const words = safeTitle.split(/\s+/);
-  const titleLines = [];
-  let curLine = '';
-  for (const w of words) {
-    const test = curLine ? `${curLine} ${w}` : w;
-    if (ctx.measureText(test).width <= maxTextW) {
-      curLine = test;
-    } else {
-      if (curLine) titleLines.push(curLine);
-      curLine = w;
+  const wrapWords = (text, fontStr, maxWidth) => {
+    ctx.font = fontStr;
+    const wList = text.split(/\s+/).filter(Boolean);
+    const out = [];
+    let cur = '';
+    for (const w of wList) {
+      const test = cur ? `${cur} ${w}` : w;
+      if (ctx.measureText(test).width <= maxWidth) {
+        cur = test;
+      } else {
+        if (cur) out.push(cur);
+        cur = w;
+      }
     }
+    if (cur) out.push(cur);
+    return out.length > 0 ? out : [text];
+  };
+
+  let titleFontSize = Math.round(Math.min(wPx * 0.16, hPx * 0.24) * tFactor);
+  const minTitleFont = Math.max(18, Math.round(Math.min(wPx, hPx) * 0.04));
+  let titleLines = wrapWords(safeTitle, `900 ${titleFontSize}px sans-serif`, maxTextW);
+
+  let subFontSize = Math.round(Math.min(wPx * 0.045, hPx * 0.065) * sFactor);
+  const minSubFont = Math.max(12, Math.round(minTitleFont * 0.45));
+  let subLines = safeSub ? wrapWords(safeSub, `700 ${subFontSize}px sans-serif`, maxTextW) : [];
+
+  const longestWordW = (lines, fontStr) => {
+    ctx.font = fontStr;
+    let mx = 0;
+    for (const l of lines) {
+      mx = Math.max(mx, ctx.measureText(l).width);
+    }
+    return mx;
+  };
+
+  // Shrink slightly only if text overflows width or available vertical area cleanly
+  for (let guard = 0; guard < 60; guard++) {
+    const tW = longestWordW(titleLines, `900 ${titleFontSize}px sans-serif`);
+    const tH = titleLines.length * (titleFontSize * 1.12);
+    const gapB = safeSub ? Math.round(hPx * 0.035) : 0;
+    const divH = safeSub ? 8 : 0;
+    const sH = subLines.length * (subFontSize * 1.24);
+    const totH = tH + gapB + divH + sH;
+    if (tW <= maxTextW && totH <= maxAvailableH) break;
+    if (titleFontSize > minTitleFont && (tW > maxTextW || totH > maxAvailableH)) {
+      titleFontSize = Math.max(minTitleFont, titleFontSize - 4);
+      titleLines = wrapWords(safeTitle, `900 ${titleFontSize}px sans-serif`, maxTextW);
+    }
+    if (safeSub && subFontSize > minSubFont && totH > maxAvailableH) {
+      subFontSize = Math.max(minSubFont, subFontSize - 2);
+      subLines = wrapWords(safeSub, `700 ${subFontSize}px sans-serif`, maxTextW);
+    }
+    if (titleFontSize <= minTitleFont && (!safeSub || subFontSize <= minSubFont)) break;
   }
-  if (curLine) titleLines.push(curLine);
 
   const lineH = titleFontSize * 1.12;
   const totalTitleH = titleLines.length * lineH;
-
-  let subLines = [];
-  let subFontSize = Math.round(Math.min(wPx * 0.045, hPx * 0.065));
-  if (safeSub) {
-    ctx.font = `700 ${subFontSize}px sans-serif`;
-    while (subFontSize > Math.round(minTitleFont * 0.55) && ctx.measureText(safeSub).width > maxTextW * 1.7) {
-      subFontSize -= 2;
-      ctx.font = `700 ${subFontSize}px sans-serif`;
-    }
-    const subWords = safeSub.split(/\s+/);
-    let sCur = '';
-    for (const sw of subWords) {
-      const test = sCur ? `${sCur} ${sw}` : sw;
-      if (ctx.measureText(test).width <= maxTextW) {
-        sCur = test;
-      } else {
-        if (sCur) subLines.push(sCur);
-        sCur = sw;
-      }
-    }
-    if (sCur) subLines.push(sCur);
-  }
   const subLineH = subFontSize * 1.25;
-  const gapBetween = safeSub ? Math.round(hPx * 0.04) : 0;
+  const gapBetween = safeSub ? Math.round(hPx * 0.035) : 0;
   const dividerH = safeSub ? 8 : 0;
   const totalBlockH = totalTitleH + gapBetween + dividerH + (subLines.length * subLineH);
 
@@ -323,13 +360,31 @@ const drawSignToCanvas = async ({
 };
 
 const WarehouseSigns = () => {
+  const loadLocalSignDefaults = () => {
+    try {
+      const raw = localStorage.getItem(SIGN_DEFAULTS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      return {};
+    }
+  };
+  const initialLocal = loadLocalSignDefaults();
+
   const [title, setTitle] = useState('AREA 1');
   const [subtitle, setSubtitle] = useState('Stoccaggio Merce Secca');
   const [eyebrow, setEyebrow] = useState('');
-  const [formatId, setFormatId] = useState('A4_L');
-  const [themeId, setThemeId] = useState('BRAND_LIGHT');
-  const [showLogo, setShowLogo] = useState(true);
-  const [showBarcode, setShowBarcode] = useState(false);
+  const [formatId, setFormatId] = useState(initialLocal.formatId || 'A4_L');
+  const [themeId, setThemeId] = useState(initialLocal.themeId || 'BRAND_LIGHT');
+  const [showLogo, setShowLogo] = useState(initialLocal.showLogo !== undefined ? Boolean(initialLocal.showLogo) : true);
+  const [showBarcode, setShowBarcode] = useState(Boolean(initialLocal.showBarcode));
+
+  // Dimensioni personalizzabili (% rispetto allo standard) persistenti
+  const [logoScale, setLogoScale] = useState(clampScaleVal(initialLocal.logoScale, DEFAULT_SIGN_SCALES.logoScale));
+  const [titleScale, setTitleScale] = useState(clampScaleVal(initialLocal.titleScale, DEFAULT_SIGN_SCALES.titleScale));
+  const [subtitleScale, setSubtitleScale] = useState(clampScaleVal(initialLocal.subtitleScale, DEFAULT_SIGN_SCALES.subtitleScale));
+  const [badgeScale, setBadgeScale] = useState(clampScaleVal(initialLocal.badgeScale, DEFAULT_SIGN_SCALES.badgeScale));
+  const [isSavingStandard, setIsSavingStandard] = useState(false);
+  const [standardSavedToast, setStandardSavedToast] = useState(false);
 
   // Modalità serie multipla
   const [batchMode, setBatchMode] = useState(false);
@@ -342,6 +397,10 @@ const WarehouseSigns = () => {
   const [barcodePreviewUrl, setBarcodePreviewUrl] = useState('');
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
+  // Dimensione contenitore anteprima live per proporzionamento responsive 1:1 con il PDF
+  const previewCardRef = useRef(null);
+  const [previewDims, setPreviewDims] = useState({ width: 640, height: 452 });
+
   const token = localStorage.getItem('maglite_token');
   const activeFormat = FORMAT_OPTIONS.find(f => f.id === formatId) || FORMAT_OPTIONS[0];
   const activeTheme = THEMES[themeId] || THEMES.BRAND_LIGHT;
@@ -351,9 +410,97 @@ const WarehouseSigns = () => {
       .get(`http://${window.location.hostname}:3000/api/settings`, {
         headers: { Authorization: `Bearer ${token}` }
       })
-      .then(res => setCompanySettings(res.data || {}))
+      .then(res => {
+        const data = res.data || {};
+        setCompanySettings(data);
+        if (data.warehouse_sign_defaults) {
+          try {
+            const saved = typeof data.warehouse_sign_defaults === 'string'
+              ? JSON.parse(data.warehouse_sign_defaults)
+              : data.warehouse_sign_defaults;
+            if (saved && typeof saved === 'object') {
+              if (saved.logoScale !== undefined) setLogoScale(clampScaleVal(saved.logoScale, 100));
+              if (saved.titleScale !== undefined) setTitleScale(clampScaleVal(saved.titleScale, 100));
+              if (saved.subtitleScale !== undefined) setSubtitleScale(clampScaleVal(saved.subtitleScale, 100));
+              if (saved.badgeScale !== undefined) setBadgeScale(clampScaleVal(saved.badgeScale, 100));
+              if (saved.formatId && FORMAT_OPTIONS.some(f => f.id === saved.formatId)) setFormatId(saved.formatId);
+              if (saved.themeId && THEMES[saved.themeId]) setThemeId(saved.themeId);
+              if (saved.showLogo !== undefined) setShowLogo(Boolean(saved.showLogo));
+              if (saved.showBarcode !== undefined) setShowBarcode(Boolean(saved.showBarcode));
+              localStorage.setItem(SIGN_DEFAULTS_STORAGE_KEY, JSON.stringify(saved));
+            }
+          } catch (_) {}
+        }
+      })
       .catch(() => {});
   }, [token]);
+
+  // Salvataggio locale automatico ad ogni regolazione per non perdere mai lo standard
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIGN_DEFAULTS_STORAGE_KEY, JSON.stringify({
+        logoScale,
+        titleScale,
+        subtitleScale,
+        badgeScale,
+        formatId,
+        themeId,
+        showLogo,
+        showBarcode
+      }));
+    } catch (_) {}
+  }, [logoScale, titleScale, subtitleScale, badgeScale, formatId, themeId, showLogo, showBarcode]);
+
+  // Osserva la larghezza/altezza reale della card di anteprima per scalare testi e logo in modo perfettamente responsive
+  useEffect(() => {
+    const el = previewCardRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const updateDims = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setPreviewDims({ width: rect.width, height: rect.height });
+      }
+    };
+    updateDims();
+    const ro = new ResizeObserver(updateDims);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [formatId]);
+
+  const handleSaveStandard = async () => {
+    const payload = {
+      logoScale: clampScaleVal(logoScale, 100),
+      titleScale: clampScaleVal(titleScale, 100),
+      subtitleScale: clampScaleVal(subtitleScale, 100),
+      badgeScale: clampScaleVal(badgeScale, 100),
+      formatId,
+      themeId,
+      showLogo,
+      showBarcode
+    };
+    setIsSavingStandard(true);
+    try {
+      localStorage.setItem(SIGN_DEFAULTS_STORAGE_KEY, JSON.stringify(payload));
+      await axios.put(
+        `http://${window.location.hostname}:3000/api/settings/warehouse-sign-defaults`,
+        payload,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setStandardSavedToast(true);
+      setTimeout(() => setStandardSavedToast(false), 3000);
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Standard salvato localmente (errore sync server).', 'Attenzione', 'warning');
+    } finally {
+      setIsSavingStandard(false);
+    }
+  };
+
+  const handleResetScales = () => {
+    setLogoScale(100);
+    setTitleScale(100);
+    setSubtitleScale(100);
+    setBadgeScale(100);
+  };
 
   // Barcode live preview quando attivo
   useEffect(() => {
@@ -429,7 +576,11 @@ const WarehouseSigns = () => {
           showLogo,
           showBarcode,
           barcodeDataUrl: bUrl,
-          logoDataUrl
+          logoDataUrl,
+          logoScale,
+          titleScale,
+          subtitleScale,
+          badgeScale
         });
 
         if (!isTiled) {
@@ -733,6 +884,88 @@ const WarehouseSigns = () => {
               <QrCode size={14} className="text-emerald-400" /> Includi Barcode Code128
             </label>
           </div>
+
+          {/* Dimensioni Testi & Logo (Responsive & Salvabili come Standard) */}
+          <div className="bg-slate-950/75 border border-slate-800 rounded-2xl p-4 space-y-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-black uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                <Sliders size={14} /> Dimensioni Testi &amp; Logo (%)
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleResetScales}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-300 flex items-center gap-1 transition-colors"
+                  title="Riporta tutte le dimensioni al 100%"
+                >
+                  <RotateCcw size={11} /> 100%
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingStandard}
+                  onClick={handleSaveStandard}
+                  className={`px-3 py-1 rounded-lg text-[11px] font-black flex items-center gap-1.5 transition-all ${
+                    standardSavedToast
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'bg-brand-blue hover:bg-sky-400 text-brand-black'
+                  } disabled:opacity-50`}
+                  title="Salva queste dimensioni come standard aziendale per tutti i prossimi cartelli"
+                >
+                  {standardSavedToast ? <CheckCircle2 size={12} /> : <Save size={12} />}
+                  {standardSavedToast ? 'Standard Salvato!' : (isSavingStandard ? 'Salvataggio...' : 'Salva Standard')}
+                </button>
+              </div>
+            </div>
+
+            {[
+              { label: 'Dimensione Logo Aziendale', value: logoScale, setter: setLogoScale, icon: ImageIcon, color: 'text-sky-400', disabled: !showLogo },
+              { label: 'Dimensione Titolo Centrale', value: titleScale, setter: setTitleScale, icon: Type, color: 'text-emerald-400', disabled: false },
+              { label: 'Dimensione Sottotitolo', value: subtitleScale, setter: setSubtitleScale, icon: Type, color: 'text-amber-300', disabled: !subtitle.trim() },
+              { label: 'Dimensione Etichetta Intestazione', value: badgeScale, setter: setBadgeScale, icon: Sparkles, color: 'text-violet-300', disabled: false }
+            ].map((ctrl) => {
+              const IconComp = ctrl.icon;
+              return (
+                <div key={ctrl.label} className={`space-y-1 ${ctrl.disabled ? 'opacity-45' : ''}`}>
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-bold text-slate-300 flex items-center gap-1.5 truncate">
+                      <IconComp size={12} className={ctrl.color} /> {ctrl.label}
+                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => ctrl.setter(prev => clampScaleVal(prev - 10, 100))}
+                        className="w-6 h-6 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-black flex items-center justify-center"
+                      >
+                        -
+                      </button>
+                      <span className="w-11 text-center font-mono font-black text-brand-blue text-xs">
+                        {ctrl.value}%
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => ctrl.setter(prev => clampScaleVal(prev + 10, 100))}
+                        className="w-6 h-6 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-black flex items-center justify-center"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="40"
+                    max="200"
+                    step="5"
+                    value={ctrl.value}
+                    onChange={(e) => ctrl.setter(clampScaleVal(e.target.value, 100))}
+                    className="w-full accent-sky-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
+                  />
+                </div>
+              );
+            })}
+            <p className="text-[10px] text-slate-500 leading-snug">
+              Le dimensioni si salvano automaticamente in locale; clicca <strong className="text-slate-300">Salva Standard</strong> per renderle predefinite per tutte le postazioni.
+            </p>
+          </div>
         </div>
 
         {/* Colonna Destra: Anteprima Live Responsive */}
@@ -749,94 +982,111 @@ const WarehouseSigns = () => {
           </div>
 
           <div className="w-full flex items-center justify-center bg-slate-950/80 border border-slate-800 rounded-2xl p-3 sm:p-6 overflow-hidden">
-            <div
-              className="w-full max-w-[680px] rounded-xl shadow-2xl relative overflow-hidden flex flex-col justify-between p-5 sm:p-8 transition-all"
-              style={{
-                aspectRatio: activeFormat.ratio,
-                backgroundColor: activeTheme.bgHex,
-                border: `4px solid ${activeTheme.frameHex}`
-              }}
-            >
-              {/* Top & Bottom accent bars */}
-              <div
-                className="absolute top-0 left-0 right-0 h-2.5"
-                style={{ backgroundColor: activeTheme.accentHex }}
-              />
-              <div
-                className="absolute bottom-0 left-0 right-0 h-1.5"
-                style={{ backgroundColor: activeTheme.accentHex }}
-              />
-
-              {/* Header */}
-              <div className="flex items-start justify-between gap-3 pt-1">
-                {showLogo ? (
-                  <img
-                    src={logoSrc}
-                    alt="Logo Azienda"
-                    className="h-12 sm:h-20 w-auto object-contain max-w-[220px]"
-                  />
-                ) : (
-                  <div />
-                )}
-                <span
-                  className="px-3 py-1 rounded-full text-[10px] sm:text-xs font-black uppercase tracking-widest truncate max-w-[60%]"
-                  style={{
-                    backgroundColor: activeTheme.badgeBgHex,
-                    color: activeTheme.badgeTextHex
-                  }}
-                >
-                  {(eyebrow || companySettings.company_name || 'MAGAZZINO LOGISTICA').toUpperCase()}
-                </span>
-              </div>
-
-              {/* Center Title & Optional Subtitle */}
-              <div className="flex-1 flex flex-col items-center justify-center text-center px-2 my-2">
+            {(() => {
+              const pW = previewDims.width || 640;
+              const pH = previewDims.height || 452;
+              const minSide = Math.min(pW, pH);
+              const logoMaxH = Math.min(Math.round(pH * 0.40), Math.round(pH * 0.21 * (logoScale / 100)));
+              const logoMaxW = Math.min(Math.round(pW * 0.60), Math.round(pW * 0.34 * (logoScale / 100)));
+              const badgeFontPx = Math.max(8, Math.round(minSide * 0.028 * (badgeScale / 100)));
+              const titleFontPx = Math.max(14, Math.round(Math.min(pW * 0.16, pH * 0.24) * (titleScale / 100)));
+              const subFontPx = Math.max(10, Math.round(Math.min(pW * 0.045, pH * 0.065) * (subtitleScale / 100)));
+              return (
                 <div
-                  className="font-black uppercase tracking-tight leading-none break-words max-w-full"
+                  ref={previewCardRef}
+                  className="w-full max-w-[680px] rounded-xl shadow-2xl relative overflow-hidden flex flex-col justify-between p-4 sm:p-8 transition-all"
                   style={{
-                    color: activeTheme.titleHex,
-                    fontSize: 'clamp(1.75rem, 6vw, 4.25rem)'
+                    aspectRatio: activeFormat.ratio,
+                    backgroundColor: activeTheme.bgHex,
+                    border: `4px solid ${activeTheme.frameHex}`
                   }}
                 >
-                  {previewTitle}
-                </div>
+                  {/* Top & Bottom accent bars */}
+                  <div
+                    className="absolute top-0 left-0 right-0 h-2.5"
+                    style={{ backgroundColor: activeTheme.accentHex }}
+                  />
+                  <div
+                    className="absolute bottom-0 left-0 right-0 h-1.5"
+                    style={{ backgroundColor: activeTheme.accentHex }}
+                  />
 
-                {subtitle.trim() && (
-                  <>
-                    <div
-                      className="w-24 sm:w-36 h-1.5 rounded-full my-3 sm:my-4"
-                      style={{ backgroundColor: activeTheme.accentHex }}
-                    />
-                    <div
-                      className="font-bold leading-snug break-words max-w-[90%]"
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-2 pt-1 min-w-0">
+                    {showLogo ? (
+                      <img
+                        src={logoSrc}
+                        alt="Logo Azienda"
+                        className="w-auto object-contain shrink-0 transition-all"
+                        style={{ maxHeight: `${logoMaxH}px`, maxWidth: `${logoMaxW}px` }}
+                      />
+                    ) : (
+                      <div />
+                    )}
+                    <span
+                      className="px-3 py-1 rounded-full font-black uppercase tracking-widest truncate max-w-[62%] transition-all"
                       style={{
-                        color: activeTheme.subHex,
-                        fontSize: 'clamp(0.85rem, 2.2vw, 1.5rem)'
+                        backgroundColor: activeTheme.badgeBgHex,
+                        color: activeTheme.badgeTextHex,
+                        fontSize: `${badgeFontPx}px`
                       }}
                     >
-                      {subtitle}
-                    </div>
-                  </>
-                )}
-              </div>
+                      {(eyebrow || companySettings.company_name || 'MAGAZZINO LOGISTICA').toUpperCase()}
+                    </span>
+                  </div>
 
-              {/* Footer + Optional Barcode */}
-              <div className="flex flex-col items-center gap-2">
-                {showBarcode && barcodePreviewUrl && (
-                  <div className="bg-white px-4 py-1.5 rounded-xl shadow border border-slate-200">
-                    <img src={barcodePreviewUrl} alt="Barcode" className="h-8 sm:h-11 w-auto object-contain" />
+                  {/* Center Title & Optional Subtitle */}
+                  <div className="flex-1 flex flex-col items-center justify-center text-center px-2 my-2 min-h-0 overflow-hidden">
+                    <div
+                      className="font-black uppercase tracking-tight leading-none break-words max-w-full transition-all"
+                      style={{
+                        color: activeTheme.titleHex,
+                        fontSize: `${titleFontPx}px`,
+                        overflowWrap: 'anywhere'
+                      }}
+                    >
+                      {previewTitle}
+                    </div>
+
+                    {subtitle.trim() && (
+                      <>
+                        <div
+                          className="w-24 sm:w-36 h-1.5 rounded-full my-2.5 sm:my-4 shrink-0"
+                          style={{ backgroundColor: activeTheme.accentHex }}
+                        />
+                        <div
+                          className="font-bold leading-snug break-words max-w-[92%] transition-all"
+                          style={{
+                            color: activeTheme.subHex,
+                            fontSize: `${subFontPx}px`,
+                            overflowWrap: 'anywhere'
+                          }}
+                        >
+                          {subtitle}
+                        </div>
+                      </>
+                    )}
                   </div>
-                )}
-                {(companySettings.company_name || companySettings.company_address) && (
-                  <div
-                    className="w-full text-right text-[9px] sm:text-[11px] font-semibold truncate"
-                    style={{ color: activeTheme.subHex }}
-                  >
-                    {[companySettings.company_name, companySettings.company_address].filter(Boolean).join(' • ')}
+
+                  {/* Footer + Optional Barcode */}
+                  <div className="flex flex-col items-center gap-2 shrink-0">
+                    {showBarcode && barcodePreviewUrl && (
+                      <div className="bg-white px-4 py-1.5 rounded-xl shadow border border-slate-200">
+                        <img src={barcodePreviewUrl} alt="Barcode" className="h-7 sm:h-11 w-auto object-contain" />
+                      </div>
+                    )}
+                    {(companySettings.company_name || companySettings.company_address) && (
+                      <div
+                        className="w-full text-right text-[9px] sm:text-[11px] font-semibold truncate"
+                        style={{ color: activeTheme.subHex }}
+                      >
+                        {[companySettings.company_name, companySettings.company_address].filter(Boolean).join(' • ')}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>

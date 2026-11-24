@@ -984,15 +984,21 @@ const Inbound = () => {
             }
           }
 
+          const baseProdUom = existingProd?.raw?.uom || 'Pezzi';
+          const resolvedCsvUom = entryUom === 'Base' ? baseProdUom : (entryUom || 'Pezzi');
           let actualQty = qty;
           let pallet_uom = null;
           
           if (entryUom === 'Scatole') {
             actualQty *= upb;
           } else if (entryUom === 'Bancali') {
-            actualQty *= (upb * bpp);
-          } else if (entryUom === 'Metro Cubo') {
-            pallet_uom = 'Metro Cubo';
+            if (baseProdUom !== 'Bancali' && (upb * bpp) > 1) {
+              actualQty *= (upb * bpp);
+            } else {
+              pallet_uom = 'Bancali';
+            }
+          } else if (resolvedCsvUom === 'Bancali' || resolvedCsvUom === 'Metro Cubo' || resolvedCsvUom === 'KG') {
+            pallet_uom = resolvedCsvUom;
           }
 
           const rawKgNetti = getCol(
@@ -1089,7 +1095,9 @@ const Inbound = () => {
             boxes_per_pallet: bpp,
             kg_per_unit: csvKgPerUnit,
             pallet_uom: pallet_uom,
-            uom: entryUom === 'Base' ? 'Pezzi' : (entryUom || 'Pezzi'),
+            uom: (entryUom === 'Bancali' && (existingProd?.raw?.uom || 'Pezzi') !== 'Bancali' && (upb * bpp) > 1)
+              ? 'Pezzi'
+              : (entryUom === 'Scatole' ? 'Pezzi' : resolvedCsvUom),
             net_weight_kg: parsedNetKg,
             gross_weight_kg: parsedGrossKg,
             tariff_plan_id: resolvedPlanId,
@@ -1248,15 +1256,28 @@ const Inbound = () => {
     let actualQty = parseFloat(formData.quantity);
     const upb = parseFloat(formData.units_per_box) || 1;
     const bpp = parseFloat(formData.boxes_per_pallet) || 1;
+    const baseProdUom = formData.isNewProduct
+      ? 'Pezzi'
+      : (products.find(p => p.value === formData.product_id)?.raw?.uom || 'Pezzi');
+    const resolvedEntryUom = formData.entry_uom === 'Base' ? baseProdUom : (formData.entry_uom || 'Pezzi');
 
     let pallet_uom = null;
+    let storedUom = resolvedEntryUom;
 
     if (formData.entry_uom === 'Scatole') {
       actualQty *= upb;
+      storedUom = 'Pezzi';
     } else if (formData.entry_uom === 'Bancali') {
-      actualQty *= (upb * bpp);
-    } else if (formData.entry_uom === 'Metro Cubo') {
-      pallet_uom = 'Metro Cubo';
+      if (baseProdUom !== 'Bancali' && (upb * bpp) > 1) {
+        actualQty *= (upb * bpp);
+        storedUom = 'Pezzi';
+      } else {
+        pallet_uom = 'Bancali';
+        storedUom = 'Bancali';
+      }
+    } else if (resolvedEntryUom === 'Bancali' || resolvedEntryUom === 'Metro Cubo' || resolvedEntryUom === 'KG') {
+      pallet_uom = resolvedEntryUom;
+      storedUom = resolvedEntryUom;
     }
 
     const cleanLocation = (formData.location || '').trim().toUpperCase();
@@ -1288,7 +1309,7 @@ const Inbound = () => {
       boxes_per_pallet: bpp,
       kg_per_unit: parseOptNum(formData.kg_per_unit),
       pallet_uom: pallet_uom,
-      uom: formData.entry_uom === 'Base' ? 'Pezzi' : (formData.entry_uom || 'Pezzi'),
+      uom: storedUom,
       net_weight_kg: parseOptNum(formData.net_weight_kg),
       gross_weight_kg: parseOptNum(formData.gross_weight_kg),
       tariff_plan_id: effectivePlanId ? Number(effectivePlanId) : null,
@@ -2516,9 +2537,9 @@ const Inbound = () => {
                       <div className="grid grid-cols-2 sm:grid-cols-12 gap-2 pl-2 items-center">
                         
                         {/* 1. Quantità Inline */}
-                        <div className="sm:col-span-3">
+                        <div className="sm:col-span-2">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
-                            Quantità ({item.pallet_uom || item.uom || 'Pezzi'})
+                            Quantità
                           </label>
                           <input
                             type="number"
@@ -2527,12 +2548,36 @@ const Inbound = () => {
                             onWheel={(e) => e.target.blur()}
                             value={item.quantity}
                             onChange={(e) => updateCartItem(item.id, { quantity: e.target.value === '' ? '' : parseFloat(e.target.value) || 0 })}
-                            className="w-full bg-slate-900 border border-slate-700 focus:border-emerald-400 text-emerald-400 font-black text-sm rounded-lg px-2.5 py-1.5 focus:outline-none"
+                            className="w-full bg-slate-900 border border-slate-700 focus:border-emerald-400 text-emerald-400 font-black text-sm rounded-lg px-2 py-1.5 focus:outline-none"
                           />
                         </div>
 
+                        {/* 1b. UDM Inline */}
+                        <div className="sm:col-span-2">
+                          <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
+                            UDM
+                          </label>
+                          <select
+                            value={item.pallet_uom || item.uom || 'Pezzi'}
+                            onChange={(e) => {
+                              const nextUom = e.target.value;
+                              updateCartItem(item.id, {
+                                uom: nextUom,
+                                pallet_uom: nextUom === 'Pezzi' ? null : nextUom
+                              });
+                            }}
+                            className="w-full bg-slate-900 border border-slate-700 focus:border-brand-blue text-brand-white font-bold text-xs rounded-lg px-2 py-1.5 focus:outline-none"
+                          >
+                            <option value="Pezzi">Pezzi</option>
+                            <option value="Scatole">Scatole</option>
+                            <option value="Bancali">Bancali</option>
+                            <option value="KG">KG</option>
+                            <option value="Metro Cubo">Metro Cubo</option>
+                          </select>
+                        </div>
+
                         {/* 2. KG Netti & KG Lordi Inline */}
-                        <div className="sm:col-span-3">
+                        <div className="sm:col-span-2">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             KG Netti
                           </label>
@@ -2544,11 +2589,11 @@ const Inbound = () => {
                             onWheel={(e) => e.target.blur()}
                             value={item.net_weight_kg ?? ''}
                             onChange={(e) => updateCartItem(item.id, { net_weight_kg: e.target.value === '' ? null : (parseFloat(e.target.value) ?? null) })}
-                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none placeholder-slate-600"
+                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2 py-1.5 focus:outline-none placeholder-slate-600"
                           />
                         </div>
 
-                        <div className="sm:col-span-3">
+                        <div className="sm:col-span-2">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             KG Lordi
                           </label>
@@ -2560,12 +2605,12 @@ const Inbound = () => {
                             onWheel={(e) => e.target.blur()}
                             value={item.gross_weight_kg ?? ''}
                             onChange={(e) => updateCartItem(item.id, { gross_weight_kg: e.target.value === '' ? null : (parseFloat(e.target.value) ?? null) })}
-                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2.5 py-1.5 focus:outline-none placeholder-slate-600"
+                            className="w-full bg-slate-900 border border-slate-800 focus:border-brand-blue text-slate-200 font-bold text-xs rounded-lg px-2 py-1.5 focus:outline-none placeholder-slate-600"
                           />
                         </div>
 
                         {/* 3. Lotto Inline */}
-                        <div className="sm:col-span-3">
+                        <div className="col-span-2 sm:col-span-4">
                           <label className="block text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-0.5">
                             Lotto
                           </label>

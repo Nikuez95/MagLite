@@ -6,6 +6,27 @@ const { findExistingLocationBarcode, consolidateLocationPallets } = require('../
 const { withNamedLock } = require('../utils/concurrency');
 const { createNotification } = require('../utils/notifications');
 
+function formatDateISO(val) {
+  if (!val) return '';
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(val).trim();
+  const match = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return '';
+}
+
 async function inboundRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -246,12 +267,17 @@ async function inboundRoutes(fastify, options) {
         }
 
         for (const r of rows) {
-          const dItems = itemsByDdt.get(r.id) || [];
+          const dItems = (itemsByDdt.get(r.id) || []).map(it => ({
+            ...it,
+            expiration_date: formatDateISO(it.expiration_date) || null,
+            actual_expiration_date: formatDateISO(it.actual_expiration_date) || null
+          }));
+          const snapRes = buildDdtDiscrepancySnapshot(dItems);
           r.items = dItems;
           r.discrepancy_logs = logsByDdt.get(r.id) || [];
           r.total_items = dItems.length;
           r.completed_items = dItems.filter(i => parseFloat(i.actual_quantity || 0) >= parseFloat(i.expected_quantity || 0)).length;
-          r.discrepant_items_count = dItems.filter(i => parseFloat(i.actual_quantity || 0) !== parseFloat(i.expected_quantity || 0)).length;
+          r.discrepant_items_count = snapRes.itemsSnapshot.filter(x => x.discrepancy_reasons && x.discrepancy_reasons.length > 0).length;
           r.total_expected_qty = dItems.reduce((s, i) => s + (parseFloat(i.expected_quantity) || 0), 0);
           r.total_actual_qty = dItems.reduce((s, i) => s + (parseFloat(i.actual_quantity) || 0), 0);
         }
@@ -343,7 +369,14 @@ async function inboundRoutes(fastify, options) {
         WHERE i.inbound_ddt_id = ?
       `, [ddt.id]);
       
-      return { ddt, items };
+      return {
+        ddt,
+        items: items.map(it => ({
+          ...it,
+          expiration_date: formatDateISO(it.expiration_date) || null,
+          actual_expiration_date: formatDateISO(it.actual_expiration_date) || null
+        }))
+      };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore fetch DDT details' });
@@ -407,11 +440,35 @@ async function inboundRoutes(fastify, options) {
           const parseOptNumScan = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
           const scannedNetKg = parseOptNumScan(net_weight_kg);
           const effectivePalletNetKg = scannedNetKg !== null ? scannedNetKg : (item.net_weight_kg ?? null);
-          const scannedBatch = batch !== undefined && batch !== null && String(batch).trim() ? String(batch).trim() : null;
-          const effectivePalletBatch = scannedBatch || item.batch || null;
+          const hasBatchParam = batch !== undefined;
+          const scannedBatchTrimmed = hasBatchParam ? String(batch ?? '').trim() : null;
+          const scannedBatch = hasBatchParam ? scannedBatchTrimmed : null;
+          const effectivePalletBatch = hasBatchParam ? (scannedBatchTrimmed || null) : (item.batch || null);
           const scannedExp = expiration_date ? sanitizeExpirationDate(expiration_date) : null;
           const effectivePalletExp = scannedExp || sanitizeExpirationDate(item.expiration_date);
           const effectiveKgPerUnit = item.kg_per_unit ?? prodRowScan?.kg_per_unit ?? null;
+
+          // Se la riga a Bancali è già stata completamente spuntata (actual_quantity >= expected_quantity), aggiorna i metadati rettificati senza duplicare bancali
+          if (isBancaliUom && remItemQty <= 0 && actItemQty > 0) {
+            await connection.query(
+              `UPDATE PALLETS
+               SET net_weight_kg = COALESCE(?, net_weight_kg),
+                   batch = CASE WHEN ? THEN ? ELSE batch END,
+                   expiration_date = COALESCE(?, expiration_date)
+               WHERE inbound_ddt_id = ? AND product_id = ?`,
+              [scannedNetKg, hasBatchParam ? 1 : 0, effectivePalletBatch, scannedExp, ddt_id, item.product_id]
+            );
+            await connection.query(
+              `UPDATE INBOUND_DDT_ITEMS
+               SET actual_net_weight_kg = COALESCE(?, actual_net_weight_kg),
+                   actual_batch = CASE WHEN ? THEN ? ELSE actual_batch END,
+                   actual_expiration_date = COALESCE(?, actual_expiration_date)
+               WHERE id = ?`,
+              [scannedNetKg, hasBatchParam ? 1 : 0, scannedBatch, scannedExp, item_id]
+            );
+            await connection.commit();
+            return { status: 200, body: { success: true, updated_metadata: true } };
+          }
 
           // Generate or use existing pallet code based on location or pallet_group
           let palletCode = null;
@@ -492,10 +549,10 @@ async function inboundRoutes(fastify, options) {
             `UPDATE INBOUND_DDT_ITEMS
              SET actual_quantity = actual_quantity + ?,
                  actual_net_weight_kg = CASE WHEN ? IS NOT NULL THEN COALESCE(actual_net_weight_kg, 0) + ? ELSE actual_net_weight_kg END,
-                 actual_batch = COALESCE(?, actual_batch),
+                 actual_batch = CASE WHEN ? THEN ? ELSE actual_batch END,
                  actual_expiration_date = COALESCE(?, actual_expiration_date)
              WHERE id = ?`,
-            [effectiveQty, scannedNetKg, scannedNetKg, scannedBatch, scannedExp, item_id]
+            [effectiveQty, scannedNetKg, scannedNetKg, hasBatchParam ? 1 : 0, scannedBatch, scannedExp, item_id]
           );
 
           await connection.commit();
@@ -546,12 +603,13 @@ async function inboundRoutes(fastify, options) {
       const hasWeightDisc = actNetKg !== null && (expNetKg === null || Math.abs(actNetKg - expNetKg) > 0.001);
 
       const expBatch = (item.batch || '').trim();
-      const actBatch = (item.actual_batch || '').trim();
-      const hasBatchDisc = Boolean(actBatch && actBatch !== expBatch);
+      const hasActualBatchCol = item.actual_batch !== null && item.actual_batch !== undefined;
+      const actBatch = hasActualBatchCol ? String(item.actual_batch).trim() : null;
+      const hasBatchDisc = hasActualBatchCol && actBatch !== expBatch;
 
-      const expExp = item.expiration_date ? String(item.expiration_date).slice(0, 10) : '';
-      const actExp = item.actual_expiration_date ? String(item.actual_expiration_date).slice(0, 10) : '';
-      const hasExpDisc = Boolean(actExp && expExp && actExp !== expExp);
+      const expExp = formatDateISO(item.expiration_date);
+      const actExp = formatDateISO(item.actual_expiration_date);
+      const hasExpDisc = Boolean(actExp && actExp !== expExp);
 
       const reasons = [];
       if (hasQtyDisc) {
@@ -561,15 +619,15 @@ async function inboundRoutes(fastify, options) {
       }
       if (hasWeightDisc) {
         totalWeightDiff = Number((totalWeightDiff + weightDiff).toFixed(3));
-        reasons.push(`KG Netti (${weightDiff > 0 ? '+' : ''}${weightDiff} kg)`);
+        reasons.push(`KG Netti (${expNetKg ?? '-'} → ${actNetKg} kg)`);
         summaryTags.add('KG Netti');
       }
       if (hasBatchDisc) {
-        reasons.push(`Lotto (${expBatch || '-'} → ${actBatch})`);
+        reasons.push(`Lotto (${expBatch || '-'} → ${actBatch || '[vuoto]'})`);
         summaryTags.add('Lotto');
       }
       if (hasExpDisc) {
-        reasons.push(`Scadenza (${expExp} → ${actExp})`);
+        reasons.push(`Scadenza (${expExp || '-'} → ${actExp})`);
         summaryTags.add('Scadenza');
       }
       if (reasons.length > 0) discrepancy = true;
@@ -758,9 +816,54 @@ async function inboundRoutes(fastify, options) {
         WHERE i.inbound_ddt_id = ?
       `, [ddtId]);
 
-      const { itemsSnapshot } = buildDdtDiscrepancySnapshot(items);
+      const { itemsSnapshot, summaryLabel } = buildDdtDiscrepancySnapshot(items);
 
-      const resolvedNote = `Discrepanza accettata da ${username}: ${cleanReason}`;
+      // Applica allo stock (PALLETS) le rettifiche accettate rilevate dal terminale Zebra (KG Netti, Lotto, Scadenza)
+      const appliedChanges = [];
+      for (const item of items) {
+        const hasActualBatch = item.actual_batch !== null && item.actual_batch !== undefined;
+        const acceptedBatch = hasActualBatch ? (String(item.actual_batch).trim() || null) : (item.batch || null);
+        const acceptedExp = formatDateISO(item.actual_expiration_date) || formatDateISO(item.expiration_date) || null;
+        const hasActualNetKg = item.actual_net_weight_kg !== null && item.actual_net_weight_kg !== undefined;
+        const acceptedNetKg = hasActualNetKg ? parseFloat(item.actual_net_weight_kg) : null;
+
+        const sameProductItemsCount = items.filter(x => Number(x.product_id) === Number(item.product_id)).length;
+        const [palRows] = sameProductItemsCount === 1
+          ? await connection.query(
+              'SELECT id, quantity, batch FROM PALLETS WHERE inbound_ddt_id = ? AND product_id = ?',
+              [ddtId, item.product_id]
+            )
+          : await connection.query(
+              'SELECT id, quantity, batch FROM PALLETS WHERE inbound_ddt_id = ? AND product_id = ? AND COALESCE(batch, "") IN (?, ?)',
+              [ddtId, item.product_id, item.batch || '', acceptedBatch || '']
+            );
+
+        if (palRows.length > 0) {
+          const totalPalQty = palRows.reduce((acc, r) => acc + (parseFloat(r.quantity) || 0), 0);
+          for (const pr of palRows) {
+            const propWeight = hasActualNetKg
+              ? (palRows.length === 1 || totalPalQty <= 0
+                  ? acceptedNetKg
+                  : Number(((acceptedNetKg * (parseFloat(pr.quantity) || 0)) / totalPalQty).toFixed(3)))
+              : null;
+            await connection.query(
+              `UPDATE PALLETS
+               SET net_weight_kg = CASE WHEN ? THEN ? ELSE net_weight_kg END,
+                   batch = CASE WHEN ? THEN ? ELSE batch END,
+                   expiration_date = COALESCE(?, expiration_date)
+               WHERE id = ?`,
+              [hasActualNetKg ? 1 : 0, propWeight, hasActualBatch ? 1 : 0, acceptedBatch, acceptedExp, pr.id]
+            );
+          }
+        }
+
+        const snapItem = itemsSnapshot.find(s => Number(s.item_id) === Number(item.id));
+        if (snapItem && Array.isArray(snapItem.discrepancy_reasons) && snapItem.discrepancy_reasons.length > 0) {
+          appliedChanges.push(`${item.product_name || item.sku}: ${snapItem.discrepancy_reasons.join(', ')}`);
+        }
+      }
+
+      const resolvedNote = `Discrepanza accettata da ${username}: ${cleanReason}${summaryLabel ? ` [${summaryLabel}]` : ''}`;
 
       await connection.query(
         `UPDATE INBOUND_DDTS 
@@ -784,7 +887,7 @@ async function inboundRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         [
           'ACCEPT_DISCREPANCY',
-          `Accettata discrepanza DDT ${ddt.ddt_number} — Motivo: "${cleanReason}". Merce caricata in inventario.`,
+          `Accettata discrepanza DDT ${ddt.ddt_number} — Motivo: "${cleanReason}". Applicate rettifiche stock: ${appliedChanges.join(' | ') || summaryLabel}.`,
           'Gestionale',
           username
         ]

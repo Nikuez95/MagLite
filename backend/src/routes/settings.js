@@ -137,6 +137,49 @@ async function settingsRoutes(fastify, options) {
       conn.release();
     }
   });
+
+  fastify.put('/warehouse-sign-defaults', async (request, reply) => {
+    const canSaveSigns =
+      hasPermission(request.user, 'view_warehouse_signs') ||
+      hasPermission(request.user, 'settings_manage') ||
+      hasPermission(request.user, 'pallet_move') ||
+      hasPermission(request.user, 'locations_manage') ||
+      hasPermission(request.user, 'view_locations');
+    if (!canSaveSigns) {
+      return reply.code(403).send({ error: 'Accesso negato: permesso Cartelli Magazzino richiesto per salvare lo standard.' });
+    }
+
+    const body = request.body || {};
+    const clampScale = (val, fallback = 100) => {
+      const n = Number(val);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(220, Math.max(40, Math.round(n)));
+    };
+    const sanitized = {
+      logoScale: clampScale(body.logoScale, 100),
+      titleScale: clampScale(body.titleScale, 100),
+      subtitleScale: clampScale(body.subtitleScale, 100),
+      badgeScale: clampScale(body.badgeScale, 100),
+      formatId: typeof body.formatId === 'string' && body.formatId ? body.formatId.slice(0, 30) : 'A4_L',
+      themeId: typeof body.themeId === 'string' && body.themeId ? body.themeId.slice(0, 40) : 'BRAND_LIGHT',
+      showLogo: body.showLogo !== false,
+      showBarcode: Boolean(body.showBarcode),
+      updatedBy: request.user?.username || 'Operatore',
+      updatedAt: new Date().toISOString()
+    };
+
+    try {
+      const jsonStr = JSON.stringify(sanitized);
+      await db.query(
+        'INSERT INTO settings (setting_key, setting_value) VALUES ("warehouse_sign_defaults", ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        [jsonStr, jsonStr]
+      );
+      return { success: true, defaults: sanitized };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore salvataggio standard cartelli' });
+    }
+  });
 }
 
 module.exports = settingsRoutes;
