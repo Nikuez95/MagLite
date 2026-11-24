@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
+import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
 const scoreTheme = (score) => {
   if (score >= 90) return { text: 'text-emerald-400', bar: 'bg-emerald-500', badge: 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300' };
@@ -15,6 +16,7 @@ const scoreTheme = (score) => {
 };
 
 const OptimizationZebra = () => {
+  const workspace = useZebraWorkspace();
   const [tasks, setTasks] = useState([]);
   const [warehouseScore, setWarehouseScore] = useState(100);
   const [zoneScores, setZoneScores] = useState([]);
@@ -45,7 +47,8 @@ const OptimizationZebra = () => {
   const fetchTasks = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks`, {
+      const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks${whQ}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       setTasks(res.data?.tasks || []);
@@ -62,7 +65,7 @@ const OptimizationZebra = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [workspace?.warehouseId]);
 
   useEffect(() => {
     fetchTasks();

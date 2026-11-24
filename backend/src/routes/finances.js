@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { logBillingAudit } = require('../utils/billingAudit');
 
 async function financesRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -41,6 +42,20 @@ async function financesRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['SAVE_INVOICE', `Salvata proforma #${res.insertId} per cliente ID: ${custIdNum}, Periodo: ${monthNum}/${yearNum}`, 'Gestionale Finanza', request.user.username]
       );
+
+      const discountCount = Array.isArray(invoice_data?.customAdjustments)
+        ? invoice_data.customAdjustments.filter(a => Number(a.price) < 0 || String(a.type || '').includes('DISCOUNT')).length
+        : 0;
+      await logBillingAudit(db, {
+        action: 'CREATE_PROFORMA',
+        customer_id: custIdNum,
+        customer_name: invoice_data?.clientName || null,
+        entity_ref: `PROFORMA-#${res.insertId} (${String(monthNum).padStart(2, '0')}/${yearNum})`,
+        details: `Emessa proforma #${res.insertId} (${String(monthNum).padStart(2, '0')}/${yearNum}) — Imponibile: €${baseVal.toFixed(2)}, IVA: €${vatVal.toFixed(2)}, Totale: €${grandVal.toFixed(2)}${discountCount > 0 ? ` • ${discountCount} sconti/rettifiche` : ''}`,
+        metadata: { invoice_id: res.insertId, period_month: monthNum, period_year: yearNum, base_total: baseVal, vat_amount: vatVal, grand_total: grandVal },
+        username: request.user.username,
+        source: 'Pre-Fatturazione'
+      });
 
       if (fastify.io) {
         fastify.io.emit('finances_updated');
@@ -118,11 +133,20 @@ async function financesRoutes(fastify, options) {
     }
 
     try {
+      const [[invRow]] = await db.query('SELECT id, customer_id, period_month, period_year, grand_total FROM invoices WHERE id = ?', [request.params.id]);
       await db.query('DELETE FROM invoices WHERE id = ?', [request.params.id]);
       await db.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['DELETE_INVOICE', `Eliminata proforma ID: ${request.params.id}`, 'Gestionale Finanza', request.user.username]
       );
+      await logBillingAudit(db, {
+        action: 'DELETE_PROFORMA',
+        customer_id: invRow?.customer_id || null,
+        entity_ref: `PROFORMA-#${request.params.id}`,
+        details: `Eliminata proforma #${request.params.id}${invRow ? ` (${invRow.period_month}/${invRow.period_year} • €${Number(invRow.grand_total || 0).toFixed(2)})` : ''}`,
+        username: request.user.username,
+        source: 'Archivio Proforme'
+      });
       if (fastify.io) {
         fastify.io.emit('finances_updated');
         fastify.io.emit('dashboard_update');
@@ -142,7 +166,7 @@ async function financesRoutes(fastify, options) {
     }
 
     try {
-      const [rows] = await db.query('SELECT is_paid FROM invoices WHERE id = ?', [request.params.id]);
+      const [rows] = await db.query('SELECT customer_id, period_month, period_year, grand_total, is_paid FROM invoices WHERE id = ?', [request.params.id]);
       if (rows.length === 0) return reply.code(404).send({ error: 'Fattura non trovata' });
       
       const newStatus = rows[0].is_paid ? 0 : 1;
@@ -152,6 +176,14 @@ async function financesRoutes(fastify, options) {
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
         ['TOGGLE_PAYMENT', `Impostato stato ${newStatus ? 'PAGATO' : 'DA PAGARE'} su proforma ID: ${request.params.id}`, 'Gestionale Finanza', request.user.username]
       );
+      await logBillingAudit(db, {
+        action: 'PAYMENT_STATUS',
+        customer_id: rows[0].customer_id,
+        entity_ref: `PROFORMA-#${request.params.id}`,
+        details: `Proforma #${request.params.id} (${rows[0].period_month}/${rows[0].period_year} • €${Number(rows[0].grand_total || 0).toFixed(2)}) contrassegnata come ${newStatus ? 'PAGATA' : 'DA PAGARE'}`,
+        username: request.user.username,
+        source: 'Finanza'
+      });
       
       if (fastify.io) {
         fastify.io.emit('finances_updated');

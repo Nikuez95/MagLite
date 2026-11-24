@@ -24,10 +24,13 @@ import {
   ShieldAlert,
   Thermometer,
   Truck,
-  Scale
+  Scale,
+  ArrowRightLeft
 } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
+import Handling from './Handling';
+import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
 // Calcola la visualizzazione prioritaria per il Picking: prima SCATOLE (cosa prendere fisicamente), poi l'equivalente in PEZZI
 export const getPickQuantityInfo = (item) => {
@@ -180,7 +183,9 @@ const formatLocationLabel = (item) => {
 const OutboundZebra = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspace = useZebraWorkspace();
   const token = localStorage.getItem('maglite_token');
+  const [quickHandlingOpen, setQuickHandlingOpen] = useState(false);
 
   const [order, setOrder] = useState(null);
   const [allOrderItems, setAllOrderItems] = useState([]);
@@ -439,7 +444,7 @@ const OutboundZebra = () => {
 
   const handleScan = async (rawBarcode) => {
     const barcode = String(rawBarcode || '').trim();
-    if (!barcode || isProcessing || step === 'FINISHED' || joinConfirmData) return;
+    if (!barcode || isProcessing || step === 'FINISHED' || joinConfirmData || quickHandlingOpen) return;
 
     // Se siamo sulla schermata di conferma post-prelievo e l'operatore spara già la paletta del prelievo successivo
     if (step === 'PICK_CONFIRMED') {
@@ -533,7 +538,8 @@ const OutboundZebra = () => {
     setIsProcessing(true);
     setError(null);
     try {
-      const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/zebra/${cleanCode}`, {
+      const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/zebra/${cleanCode}${whQ}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -1450,6 +1456,14 @@ const OutboundZebra = () => {
             {order.notes}
           </div>
         )}
+        {order?.wrong_warehouse_count > 0 && (
+          <div className="bg-orange-500/15 border border-orange-500/50 px-3 py-2 rounded-2xl text-orange-200 text-xs font-bold shrink-0 flex items-center gap-2">
+            <AlertTriangle size={16} className="text-orange-400 shrink-0" />
+            <span>
+              Attenzione: {order.wrong_warehouse_count} righe di questo ordine appartengono ad un magazzino diverso da <strong>{workspace?.warehouseName}</strong>.
+            </span>
+          </div>
+        )}
         {error && (
           <div className="bg-rose-500/15 border-2 border-rose-500 p-3 rounded-2xl flex gap-2.5 items-center text-rose-300 shadow-lg shrink-0 animate-[shake_0.4s_ease-in-out]">
             <AlertTriangle size={22} className="shrink-0 text-rose-400" />
@@ -1607,6 +1621,17 @@ const OutboundZebra = () => {
             4. AREA AZIONE: SCAN PALETTA / SELEZIONE MISTA / CONFERMA Q.TÀ
            ================================================================ */}
         <div className="mt-auto shrink-0">
+          {/* Tasto rapido Sposta / Handling senza uscire dal picking */}
+          {(step === 'SCAN_PIN' || step === 'SCAN_PALLET' || step === 'INPUT_QTY') && (
+            <button
+              type="button"
+              onClick={() => setQuickHandlingOpen(true)}
+              className="w-full py-2.5 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-2xl font-black text-xs flex items-center justify-center gap-2 active:scale-[0.98] shrink-0"
+            >
+              <ArrowRightLeft size={15} /> Sposta Paletta (Handling Rapido) &amp; Torna Qui
+            </button>
+          )}
+
           {(step === 'SCAN_PIN' || step === 'SCAN_PALLET') && (
             <div className="bg-slate-900 border-2 border-brand-blue rounded-3xl p-3.5 shadow-lg">
               <div className="flex items-center justify-between mb-2">
@@ -1952,6 +1977,31 @@ const OutboundZebra = () => {
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Overlay Handling Rapido durante Picking — conserva esattamente posizione & stato del Picking */}
+      {quickHandlingOpen && (
+        <div className="fixed inset-0 z-50 bg-brand-black overflow-y-auto flex flex-col">
+          <Handling
+            embedded
+            onCancel={() => setQuickHandlingOpen(false)}
+            onComplete={async () => {
+              setQuickHandlingOpen(false);
+              if (order?.order_code) {
+                try {
+                  const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+                  const res = await axios.get(`http://${window.location.hostname}:3000/api/outbound/zebra/${order.order_code}${whQ}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                  });
+                  if (res.data?.items) {
+                    setAllOrderItems(res.data.items);
+                    setItems(prev => prev.map(oldItem => res.data.items.find(ni => ni.id === oldItem.id) || oldItem));
+                  }
+                } catch (_) {}
+              }
+            }}
+          />
         </div>
       )}
     </div>

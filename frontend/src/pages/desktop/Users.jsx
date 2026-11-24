@@ -228,13 +228,13 @@ const UsersManagement = () => {
       if (tplName === 'full') {
         map[k] = true;
       } else if (tplName === 'view_only') {
-        map[k] = k === 'access_desktop' || (k.startsWith('view_') && k !== 'view_finances' && k !== 'view_billing' && k !== 'view_users' && k !== 'view_settings');
+        map[k] = k === 'access_desktop' || k === 'non_conformities_manage' || (k.startsWith('view_') && k !== 'view_finances' && k !== 'view_billing' && k !== 'view_users' && k !== 'view_settings');
       } else if (tplName === 'quality') {
         map[k] = [
           'access_desktop', 'access_zebra', 'view_dashboard', 'view_inbound', 'view_documents',
-          'view_outbound', 'view_products', 'view_inventory', 'view_quarantine', 'view_customers',
+          'view_outbound', 'view_products', 'view_inventory', 'view_quarantine', 'view_non_conformities', 'view_customers',
           'view_locations', 'view_custom_forms', 'view_audit', 'inbound_create', 'pallet_edit', 'pallet_move',
-          'product_manage', 'quarantine_manage', 'approve_custom_forms', 'outbound_return'
+          'product_manage', 'quarantine_manage', 'non_conformities_manage', 'approve_custom_forms', 'outbound_return'
         ].includes(k);
       } else if (tplName === 'operator') {
         map[k] = ['access_zebra', 'inbound_create', 'pallet_move', 'outbound_pick'].includes(k);

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import {
-  Save, Loader2, Copy, RotateCcw, Layers, Plus, Sparkles, CheckCircle2, Lock
+  Save, Loader2, Copy, RotateCcw, Layers, Plus, Sparkles, CheckCircle2, Lock, TrendingUp, TrendingDown, CheckSquare, Square
 } from 'lucide-react';
 import { appAlert, appConfirm } from '../utils/alerts';
 
@@ -64,6 +64,9 @@ const CustomerTariffEditor = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isApplyingPlan, setIsApplyingPlan] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [selectedRuleCodes, setSelectedRuleCodes] = useState([]);
+  const [bulkPercent, setBulkPercent] = useState('10');
+  const [pendingAuditNote, setPendingAuditNote] = useState('');
 
   const getToken = () => localStorage.getItem('maglite_token');
 
@@ -93,6 +96,8 @@ const CustomerTariffEditor = ({
       setTariffs(tList);
       setViewingPlanId(targetPlanId);
       setHasUnsavedChanges(false);
+      setSelectedRuleCodes([]);
+      setPendingAuditNote('');
     } catch (err) {
       console.error(err);
       appAlert('Errore caricamento listino cliente');
@@ -135,6 +140,34 @@ const CustomerTariffEditor = ({
     setTariffs(prev =>
       prev.map(t => (t.rule_code === ruleCode ? { ...t, final_price: newPrice, source: 'custom' } : t))
     );
+  };
+
+  const toggleRuleSelected = (ruleCode) => {
+    if (!canManageFinance) return;
+    setSelectedRuleCodes(prev =>
+      prev.includes(ruleCode) ? prev.filter(c => c !== ruleCode) : [...prev, ruleCode]
+    );
+  };
+
+  const applyBulkPercent = (direction) => {
+    if (!canManageFinance || selectedRuleCodes.length === 0) return;
+    const pct = parseFloat(String(bulkPercent).replace(',', '.'));
+    if (isNaN(pct) || pct <= 0) {
+      return appAlert('Inserisci una percentuale maggiore di zero.');
+    }
+    const mult = direction === 'UP' ? (1 + pct / 100) : Math.max(0, 1 - pct / 100);
+    const selSet = new Set(selectedRuleCodes);
+    setTariffs(prev =>
+      prev.map(t => {
+        if (!selSet.has(t.rule_code)) return t;
+        const curr = parseFloat(t.final_price) || 0;
+        const nextVal = Math.max(0, Math.round(curr * mult * 100) / 100);
+        return { ...t, final_price: nextVal, source: 'custom' };
+      })
+    );
+    setHasUnsavedChanges(true);
+    const sign = direction === 'UP' ? '+' : '-';
+    setPendingAuditNote(`Variazione massiva ${sign}${pct}% su ${selectedRuleCodes.length} voci selezionate (${selectedRuleCodes.join(', ')})`);
   };
 
   const handleSelectPlanTab = async (newPlanId) => {
@@ -231,6 +264,7 @@ const CustomerTariffEditor = ({
     try {
       const payload = {
         plan_id: viewingPlanId ? Number(viewingPlanId) : null,
+        audit_note: pendingAuditNote || undefined,
         tariffs: tariffs.map(t => ({
           rule_code: t.rule_code,
           custom_price: parseFloat(t.final_price) || 0
@@ -242,6 +276,7 @@ const CustomerTariffEditor = ({
         { headers: { Authorization: `Bearer ${getToken()}` } }
       );
       setHasUnsavedChanges(false);
+      setPendingAuditNote('');
       await fetchData(viewingPlanId || null);
       onUpdated?.();
       const currentPlanName = plans.find(p => String(p.id) === String(viewingPlanId))?.name;
@@ -425,6 +460,59 @@ const CustomerTariffEditor = ({
         </div>
       ) : (
         <div className="space-y-4">
+          {canManageFinance && (
+            <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const allCodes = tariffs.map(t => t.rule_code);
+                    setSelectedRuleCodes(selectedRuleCodes.length === allCodes.length ? [] : allCodes);
+                  }}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold flex items-center gap-1.5"
+                >
+                  {selectedRuleCodes.length === tariffs.length && tariffs.length > 0 ? <CheckSquare size={14} className="text-brand-blue" /> : <Square size={14} />}
+                  {selectedRuleCodes.length === tariffs.length && tariffs.length > 0 ? 'Deseleziona Tutto' : 'Seleziona Tutte le Voci'}
+                </button>
+                <span className="text-xs text-slate-400">
+                  {selectedRuleCodes.length > 0
+                    ? <><b className="text-brand-blue">{selectedRuleCodes.length}</b> voci selezionate</>
+                    : 'Spunta una o più voci per variare i prezzi in %'}
+                </span>
+              </div>
+
+              {selectedRuleCodes.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={bulkPercent}
+                      onChange={e => setBulkPercent(e.target.value)}
+                      className="w-14 bg-transparent text-white text-right text-xs font-black outline-none"
+                    />
+                    <span className="text-xs font-bold text-slate-400">%</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => applyBulkPercent('UP')}
+                    className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-brand-black border border-emerald-500/40 rounded-lg text-xs font-black flex items-center gap-1.5 transition-all"
+                  >
+                    <TrendingUp size={13} /> Aumenta in percentuale (+{bulkPercent || 0}%)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBulkPercent('DOWN')}
+                    className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 rounded-lg text-xs font-black flex items-center gap-1.5 transition-all"
+                  >
+                    <TrendingDown size={13} /> Diminuisci in percentuale (-{bulkPercent || 0}%)
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {TARIFF_GROUPS.map(grp => {
             const groupTariffs = tariffs.filter(t => t.rule_type === grp.type);
             if (groupTariffs.length === 0) return null;
@@ -442,17 +530,29 @@ const CustomerTariffEditor = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {groupTariffs.map(t => {
                     const isDepositRule = t.rule_code === 'DEPOSITO_PALLET';
+                    const isSelected = selectedRuleCodes.includes(t.rule_code);
                     const badge = SOURCE_BADGES[t.source] || SOURCE_BADGES.default;
                     return (
                       <div
                         key={t.rule_code}
                         className={`p-3.5 rounded-xl flex items-center justify-between gap-3 border transition-all ${
-                          isDepositRule
-                            ? 'bg-emerald-950/20 border-emerald-500/40'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
+                          isSelected
+                            ? 'bg-sky-950/35 border-brand-blue shadow-[0_0_12px_rgba(14,165,233,0.18)]'
+                            : isDepositRule
+                              ? 'bg-emerald-950/20 border-emerald-500/40'
+                              : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
                         }`}
                       >
-                        <div className="min-w-0">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          {canManageFinance && (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleRuleSelected(t.rule_code)}
+                              className="mt-1 rounded border-slate-600 bg-slate-800 text-brand-blue cursor-pointer shrink-0"
+                            />
+                          )}
+                          <div className="min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-bold text-sm text-slate-100">{t.description}</span>
                             <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${badge.cls}`}>
@@ -466,6 +566,7 @@ const CustomerTariffEditor = ({
                           </div>
                           <div className="text-[11px] text-slate-500 font-mono mt-1">
                             {t.rule_code} • Base: {grp.type === 'DISCOUNT_PERCENT' ? `${parseFloat(t.default_price || 0).toFixed(2)}%` : `€ ${parseFloat(t.default_price || 0).toFixed(2)}`}
+                          </div>
                           </div>
                         </div>
 

@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
 const { createNotification } = require('../utils/notifications');
@@ -72,6 +73,20 @@ async function inboundRoutes(fastify, options) {
           const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
           const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
 
+          const [whLookupRows] = await connection.query('SELECT id, name FROM WAREHOUSES');
+          const resolveWh = (whIdArg, whNameArg) => {
+            if (whIdArg) {
+              const m = whLookupRows.find(w => Number(w.id) === Number(whIdArg));
+              if (m) return { id: m.id, name: m.name };
+            }
+            if (whNameArg) {
+              const m = whLookupRows.find(w => String(w.name).trim().toLowerCase() === String(whNameArg).trim().toLowerCase());
+              if (m) return { id: m.id, name: m.name };
+              return { id: 1, name: String(whNameArg).trim() };
+            }
+            return { id: 1, name: whLookupRows[0]?.name || 'Settala' };
+          };
+
           for (const item of cart) {
             const [[prodRow]] = await connection.query('SELECT sku, name FROM PRODUCTS WHERE id = ?', [item.product_id]);
             const itemSku = item.sku || item.client_article_number || prodRow?.sku || null;
@@ -84,14 +99,18 @@ async function inboundRoutes(fastify, options) {
             const itemFlagsJson = Array.isArray(item.flags) && item.flags.length > 0
               ? JSON.stringify(item.flags)
               : (typeof item.flags === 'string' && item.flags.trim() ? item.flags : null);
+            const whPair = resolveWh(item.warehouse_id, item.warehouse);
+            const itemTemp = normalizeTempRegime(item.temp_regime);
+            const itemAdrFlag = Boolean(item.is_adr);
+            const itemAdrData = itemAdrFlag ? parseAdrData(item.adr_data) : null;
             let itemArrivalDt = null;
             if (item.arrival_date) {
               const parsedArr = new Date(item.arrival_date);
               if (!isNaN(parsedArr.getTime())) itemArrivalDt = parsedArr;
             }
             await connection.query(
-              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, arrival_date, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemArrivalDt, itemLocation]
+              'INSERT INTO INBOUND_DDT_ITEMS (inbound_ddt_id, product_id, sku, product_name, product_uom, expected_quantity, batch, units_per_box, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, pallet_group, flags, arrival_date, location, warehouse, warehouse_id, temp_regime, is_adr, adr_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [ddtId, item.product_id, itemSku, itemName, item.uom || item.product_uom || 'Pezzi', item.quantity, item.batch, item.units_per_box, item.client_pallet_number, item.client_article_number, sanitizeExpirationDate(item.expiration_date), item.pallet_uom || item.uom || 'Pezzi', itemNetKg, itemGrossKg, itemPlanId, itemGroup, itemFlagsJson, itemArrivalDt, itemLocation, whPair.name, whPair.id, itemTemp, itemAdrFlag ? 1 : 0, itemAdrData ? JSON.stringify(itemAdrData) : null]
             );
           }
 
@@ -381,18 +400,24 @@ async function inboundRoutes(fastify, options) {
             palletCode = `${basePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
           }
 
-          // Insert Pallet (eredita client_ddt e check-in dal DDT entrata, oltre a listino, flag, data arrivo e pesi)
+          // Insert Pallet (eredita client_ddt, check-in, listino, flag, data arrivo, pesi, magazzino, temperatura e ADR)
           const itemFlagsVal = item.flags
             ? (typeof item.flags === 'string' ? item.flags : JSON.stringify(item.flags))
             : null;
           const itemArrivalVal = item.arrival_date ? new Date(item.arrival_date) : null;
+          const resolvedWhName = warehouse || item.warehouse || 'Settala';
+          const [[whRowScan]] = await connection.query('SELECT id, name FROM WAREHOUSES WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1', [resolvedWhName]);
+          const resolvedWhId = whRowScan?.id || item.warehouse_id || 1;
+          const itemAdrVal = item.adr_data ? (typeof item.adr_data === 'string' ? item.adr_data : JSON.stringify(item.adr_data)) : null;
+
           await connection.query(`
             INSERT INTO PALLETS 
-            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, created_at, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)
+            (pallet_code, customer_id, product_id, quantity, units_per_box, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, client_pallet_number, client_article_number, expiration_date, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, flags, created_at, inbound_ddt_id, client_ddt, checkin_id, checkin_session_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)
           `, [
             palletCode, ddts[0].customer_id, item.product_id, quantity, item.units_per_box, item.batch,
-            warehouse || 'Settala', locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
+            whRowScan?.name || resolvedWhName, resolvedWhId, item.temp_regime || 'NONE', item.is_adr ? 1 : 0, itemAdrVal,
+            locStr ? 'STOCKED' : 'PENDING', locStr || null, item.client_pallet_number, item.client_article_number,
             sanitizeExpirationDate(expiration_date || item.expiration_date), item.pallet_uom,
             item.net_weight_kg ?? null, item.gross_weight_kg ?? null, item.tariff_plan_id ?? null, itemFlagsVal,
             itemArrivalVal,

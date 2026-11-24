@@ -1,4 +1,6 @@
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { logBillingAudit } = require('../utils/billingAudit');
+const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 const db = require('../config/db');
 const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
@@ -58,12 +60,25 @@ async function palletRoutes(fastify, options) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   fastify.get('/', async (request, reply) => {
+    const { warehouse_id, warehouse } = request.query || {};
     try {
+      const whereExtra = [];
+      const params = [];
+      if (warehouse_id) {
+        whereExtra.push('p.warehouse_id = ?');
+        params.push(parseInt(warehouse_id, 10));
+      } else if (warehouse) {
+        whereExtra.push('LOWER(TRIM(p.warehouse)) = LOWER(TRIM(?))');
+        params.push(warehouse);
+      }
+      const extraSql = whereExtra.length > 0 ? ` AND ${whereExtra.join(' AND ')}` : '';
+
       const [rows] = await db.query(`
         SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
                p.net_weight_kg, p.gross_weight_kg, p.tariff_plan_id,
-               p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
+               p.batch, p.warehouse, p.warehouse_id, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
                p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
+               p.temp_regime, p.is_adr, p.adr_data,
                p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
                pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
                c.business_name as customer_name, c.parent_id as customer_parent_id,
@@ -83,9 +98,9 @@ async function palletRoutes(fastify, options) {
           HAVING COUNT(*) > 1
         ) mx ON mx.pallet_code = p.pallet_code
         WHERE p.status != 'SHIPPED'
-          AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED')
+          AND (p.inbound_ddt_id IS NULL OR d.status = 'COMPLETED')${extraSql}
         ORDER BY p.created_at DESC
-      `);
+      `, params);
       return rows;
     } catch (err) {
       fastify.log.error(err);
@@ -98,8 +113,9 @@ async function palletRoutes(fastify, options) {
       const [rows] = await db.query(`
         SELECT p.id, p.pallet_code, p.customer_id, p.product_id, p.quantity, p.units_per_box, p.pallet_uom,
                p.net_weight_kg, p.gross_weight_kg, p.tariff_plan_id,
-               p.batch, p.warehouse, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
+               p.batch, p.warehouse, p.warehouse_id, p.status, p.inbound_ddt_id, p.client_ddt, p.checkin_id, p.checkin_session_code,
                p.location, p.notes, p.client_pallet_number, p.client_article_number, p.expiration_date, p.flags,
+               p.temp_regime, p.is_adr, p.adr_data,
                p.is_quarantined, p.quarantine_reason, p.quarantined_at, p.quarantined_by, p.quarantine_notes, p.created_at,
                pr.sku as sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom, pr.notes as product_notes,
                c.business_name as customer_name, c.parent_id as customer_parent_id,
@@ -111,7 +127,7 @@ async function palletRoutes(fastify, options) {
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
         LEFT JOIN tariff_plans tp ON tp.id = p.tariff_plan_id
-        LEFT JOIN LOCATIONS l ON p.location = l.barcode
+        LEFT JOIN LOCATIONS l ON p.location = l.barcode AND (p.warehouse_id IS NULL OR p.warehouse_id = l.warehouse_id)
         LEFT JOIN INBOUND_DDTS d ON d.id = p.inbound_ddt_id
         LEFT JOIN (
           SELECT pallet_code
@@ -200,6 +216,19 @@ async function palletRoutes(fastify, options) {
         
         const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
         const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
+        const [whLookupRows] = await connection.query('SELECT id, name FROM WAREHOUSES');
+        const resolveWarehousePair = (whIdArg, whNameArg) => {
+          if (whIdArg) {
+            const m = whLookupRows.find(w => Number(w.id) === Number(whIdArg));
+            if (m) return { id: m.id, name: m.name };
+          }
+          if (whNameArg) {
+            const m = whLookupRows.find(w => String(w.name).trim().toLowerCase() === String(whNameArg).trim().toLowerCase());
+            if (m) return { id: m.id, name: m.name };
+            return { id: null, name: String(whNameArg).trim() };
+          }
+          return { id: 1, name: whLookupRows[0]?.name || 'Settala' };
+        };
 
         for (const item of cart) {
           const { customer_id, product_id, quantity, batch, warehouse, notes, client_pallet_number, client_article_number, expiration_date, arrival_date, num_pallets } = item;
@@ -209,10 +238,14 @@ async function palletRoutes(fastify, options) {
           const itemPlanId = parseOptInt(item.tariff_plan_id);
           const itemNetKg = parseOptNum(item.net_weight_kg);
           const itemGrossKg = parseOptNum(item.gross_weight_kg);
+          const whPair = resolveWarehousePair(item.warehouse_id, warehouse);
+          const itemTempRegime = normalizeTempRegime(item.temp_regime);
+          const itemIsAdr = Boolean(item.is_adr);
+          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data) : null;
           
           await connection.query(
-            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+            'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+            [code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, finalStatus, finalLocation, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
           );
           
           if (item.units_per_box || item.boxes_per_pallet) {
@@ -287,6 +320,19 @@ async function palletRoutes(fastify, options) {
         // Se più righe condividono la stessa identica posizione, si frammentano/unificano nel barcode di quella posizione.
         const parseOptNum = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseFloat(v)) ? parseFloat(v) : null);
         const parseOptInt = (v) => (v === null || v === undefined || v === '') ? null : (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : null);
+        const [whLookupRows] = await connection.query('SELECT id, name FROM WAREHOUSES');
+        const resolveWarehousePair = (whIdArg, whNameArg) => {
+          if (whIdArg) {
+            const m = whLookupRows.find(w => Number(w.id) === Number(whIdArg));
+            if (m) return { id: m.id, name: m.name };
+          }
+          if (whNameArg) {
+            const m = whLookupRows.find(w => String(w.name).trim().toLowerCase() === String(whNameArg).trim().toLowerCase());
+            if (m) return { id: m.id, name: m.name };
+            return { id: null, name: String(whNameArg).trim() };
+          }
+          return { id: 1, name: whLookupRows[0]?.name || 'Settala' };
+        };
 
         const orderedSlots = [];
         const locSlotMap = new Map();
@@ -300,6 +346,10 @@ async function palletRoutes(fastify, options) {
           const itemPlanId = parseOptInt(item.tariff_plan_id);
           const itemNetKg = parseOptNum(item.net_weight_kg);
           const itemGrossKg = parseOptNum(item.gross_weight_kg);
+          const whPair = resolveWarehousePair(item.warehouse_id, warehouse);
+          const itemTempRegime = normalizeTempRegime(item.temp_regime);
+          const itemIsAdr = Boolean(item.is_adr);
+          const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data) : null;
           
           const [[product]] = await connection.query('SELECT name FROM PRODUCTS WHERE id = ?', [product_id]);
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
@@ -324,8 +374,8 @@ async function palletRoutes(fastify, options) {
             const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
 
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'STOCKED', itemLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
@@ -338,7 +388,7 @@ async function palletRoutes(fastify, options) {
               product_name: product.name,
               quantity: totalQtyForRow,
               batch,
-              warehouse,
+              warehouse: whPair.name,
               client_pallet_number,
               client_article_number,
               expiration_date: cleanExpDate
@@ -356,8 +406,8 @@ async function palletRoutes(fastify, options) {
             const totalQtyForRow = (parseFloat(quantity) || 0) * countPallets;
 
             await connection.query(
-              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
@@ -370,7 +420,7 @@ async function palletRoutes(fastify, options) {
               product_name: product.name,
               quantity: totalQtyForRow,
               batch,
-              warehouse,
+              warehouse: whPair.name,
               client_pallet_number,
               client_article_number,
               expiration_date: cleanExpDate
@@ -381,8 +431,8 @@ async function palletRoutes(fastify, options) {
               const code = nextPalletCode();
               
               await connection.query(
-                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, warehouse, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+                'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
+                [code, customer_id, product_id, quantity, item.units_per_box || null, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
               );
               
               await connection.query(
@@ -398,7 +448,7 @@ async function palletRoutes(fastify, options) {
                   product_name: product.name,
                   quantity,
                   batch,
-                  warehouse,
+                  warehouse: whPair.name,
                   client_pallet_number,
                   client_article_number,
                   expiration_date: cleanExpDate,
@@ -779,7 +829,8 @@ async function palletRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato ai punteggi di ottimizzazione.' });
     }
     try {
-      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user);
+      const whId = request.query?.warehouse_id ? Number(request.query.warehouse_id) : null;
+      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user, whId);
       return {
         warehouseScore: result.warehouseScore,
         zoneScores: result.zoneScores,
@@ -797,7 +848,8 @@ async function palletRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: permesso Task Ottimizzazione Zebra richiesto.' });
     }
     try {
-      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user);
+      const whId = request.query?.warehouse_id ? Number(request.query.warehouse_id) : null;
+      const result = await computeOptimizationTasks(db, canAccessCustomer, request.user, whId);
       const zoneFilter = request.query?.zone ? String(request.query.zone).trim().toUpperCase() : null;
       const tasks = zoneFilter
         ? result.tasks.filter(t => String(t.zone || '').toUpperCase() === zoneFilter)
@@ -990,12 +1042,17 @@ async function palletRoutes(fastify, options) {
   // GET /api/pallets/by-location/:locName - Restituisce tutti gli articoli attivi in una posizione (anche FREE_LOCATIONS)
   fastify.get('/by-location/:locName', async (request, reply) => {
     const cleanLoc = decodeURIComponent(request.params.locName || '').trim().toUpperCase();
+    const whId = request.query?.warehouse_id ? Number(request.query.warehouse_id) : null;
     if (!cleanLoc) {
       return reply.code(400).send({ error: 'Nome posizione mancante' });
     }
     try {
-      const [[freeRow]] = await db.query('SELECT id, name FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [cleanLoc]);
-      const [[locRow]] = await db.query('SELECT id, zone, col, pos, barcode FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ?', [cleanLoc]);
+      const [[freeRow]] = whId
+        ? await db.query('SELECT id, name, warehouse_id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ? AND warehouse_id = ?', [cleanLoc, whId])
+        : await db.query('SELECT id, name, warehouse_id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ? LIMIT 1', [cleanLoc]);
+      const [[locRow]] = whId
+        ? await db.query('SELECT id, zone, col, pos, barcode, warehouse_id, division_id FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ? AND warehouse_id = ?', [cleanLoc, whId])
+        : await db.query('SELECT id, zone, col, pos, barcode, warehouse_id, division_id FROM LOCATIONS WHERE UPPER(TRIM(barcode)) = ? LIMIT 1', [cleanLoc]);
 
       const [rows] = await db.query(`
         SELECT p.*, pr.sku, pr.name as product_name, COALESCE(p.pallet_uom, pr.uom) as uom,
@@ -1004,9 +1061,9 @@ async function palletRoutes(fastify, options) {
         FROM PALLETS p
         JOIN PRODUCTS pr ON p.product_id = pr.id
         JOIN CUSTOMERS c ON p.customer_id = c.id
-        WHERE UPPER(TRIM(p.location)) = ? AND p.status = 'STOCKED' AND p.quantity > 0
+        WHERE UPPER(TRIM(p.location)) = ? AND p.status = 'STOCKED' AND p.quantity > 0${whId ? ' AND COALESCE(p.warehouse_id, 1) = ?' : ''}
         ORDER BY p.id ASC
-      `, [cleanLoc]);
+      `, whId ? [cleanLoc, whId] : [cleanLoc]);
 
       const visibleRows = rows.filter(r => canAccessCustomer(request.user, r.customer_id));
 
@@ -1577,11 +1634,30 @@ async function palletRoutes(fastify, options) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di modificare le palette.' });
     }
     const { code } = request.params;
-    const { notes, client_pallet_number, client_article_number, expiration_date, net_weight_kg, gross_weight_kg } = request.body;
+    const {
+      notes,
+      client_pallet_number,
+      client_article_number,
+      expiration_date,
+      net_weight_kg,
+      gross_weight_kg,
+      tariff_plan_id,
+      temp_regime,
+      is_adr,
+      adr_data,
+      warehouse_id,
+      warehouse
+    } = request.body;
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
-      const [checkRows] = await connection.query('SELECT id, customer_id, is_quarantined FROM PALLETS WHERE pallet_code = ? FOR UPDATE', [code]);
+      const [checkRows] = await connection.query(
+        `SELECT p.id, p.customer_id, p.is_quarantined, p.tariff_plan_id, tp.name AS tariff_plan_name
+         FROM PALLETS p
+         LEFT JOIN tariff_plans tp ON tp.id = p.tariff_plan_id
+         WHERE p.pallet_code = ? FOR UPDATE`,
+        [code]
+      );
       if (checkRows.length === 0) {
         await connection.rollback();
         return reply.code(404).send({ error: 'Paletta non trovata' });
@@ -1597,6 +1673,28 @@ async function palletRoutes(fastify, options) {
       const parseOptWeight = (w) => (w === undefined || w === null || w === '') ? null : (Number.isFinite(parseFloat(w)) ? parseFloat(w) : null);
       const netVal = net_weight_kg !== undefined ? parseOptWeight(net_weight_kg) : undefined;
       const grossVal = gross_weight_kg !== undefined ? parseOptWeight(gross_weight_kg) : undefined;
+
+      let resolvedPlanId;
+      let nextPlanName = null;
+      if (tariff_plan_id !== undefined) {
+        if (tariff_plan_id === null || tariff_plan_id === '') {
+          resolvedPlanId = null;
+          nextPlanName = 'Predefinito Cliente';
+        } else {
+          const parsedPid = parseInt(tariff_plan_id, 10);
+          if (!Number.isFinite(parsedPid) || parsedPid <= 0) {
+            await connection.rollback();
+            return reply.code(400).send({ error: 'Listino prezzi selezionato non valido.' });
+          }
+          const [[planRow]] = await connection.query('SELECT id, name FROM tariff_plans WHERE id = ? LIMIT 1', [parsedPid]);
+          if (!planRow) {
+            await connection.rollback();
+            return reply.code(404).send({ error: 'Listino prezzi non trovato.' });
+          }
+          resolvedPlanId = planRow.id;
+          nextPlanName = planRow.name;
+        }
+      }
 
       if (netVal !== undefined || grossVal !== undefined) {
         await connection.query(
@@ -1617,10 +1715,55 @@ async function palletRoutes(fastify, options) {
           [notes || null, client_pallet_number || null, client_article_number || null, sanitizeExpirationDate(expiration_date), code]
         );
       }
+
+      let tariffAuditSuffix = '';
+      if (resolvedPlanId !== undefined && Number(checkRows[0].tariff_plan_id || 0) !== Number(resolvedPlanId || 0)) {
+        await connection.query('UPDATE PALLETS SET tariff_plan_id = ? WHERE pallet_code = ?', [resolvedPlanId, code]);
+        const prevPlanLabel = checkRows[0].tariff_plan_name || 'Predefinito Cliente';
+        tariffAuditSuffix = ` (Listino: ${prevPlanLabel} → ${nextPlanName})`;
+        await logBillingAudit(connection, {
+          action: 'CHANGE_PALLET_TARIFF',
+          customer_id: checkRows[0].customer_id,
+          entity_ref: code,
+          details: `Cambiato listino paletta ${code}: ${prevPlanLabel} → ${nextPlanName}`,
+          metadata: { pallet_code: code, from_plan_id: checkRows[0].tariff_plan_id, to_plan_id: resolvedPlanId },
+          username: request.user.username,
+          source: 'Stock'
+        });
+      }
+
+      if (temp_regime !== undefined || is_adr !== undefined || adr_data !== undefined) {
+        const nextTemp = temp_regime !== undefined ? normalizeTempRegime(temp_regime) : undefined;
+        const nextAdrFlag = is_adr !== undefined ? (is_adr ? 1 : 0) : undefined;
+        const parsedAdr = adr_data !== undefined ? (is_adr === false ? null : parseAdrData(adr_data)) : undefined;
+        const setParts = [];
+        const setVals = [];
+        if (nextTemp !== undefined) { setParts.push('temp_regime = ?'); setVals.push(nextTemp); }
+        if (nextAdrFlag !== undefined) { setParts.push('is_adr = ?'); setVals.push(nextAdrFlag); }
+        if (parsedAdr !== undefined) { setParts.push('adr_data = ?'); setVals.push(parsedAdr ? JSON.stringify(parsedAdr) : null); }
+        if (setParts.length > 0) {
+          await connection.query(`UPDATE PALLETS SET ${setParts.join(', ')} WHERE pallet_code = ?`, [...setVals, code]);
+        }
+      }
+
+      if (warehouse_id !== undefined || warehouse !== undefined) {
+        let resolvedWhId = warehouse_id ? parseInt(warehouse_id, 10) : null;
+        let resolvedWhName = warehouse ? String(warehouse).trim() : null;
+        if (resolvedWhId && !resolvedWhName) {
+          const [[wRow]] = await connection.query('SELECT id, name FROM WAREHOUSES WHERE id = ?', [resolvedWhId]);
+          if (wRow) resolvedWhName = wRow.name;
+        } else if (resolvedWhName && !resolvedWhId) {
+          const [[wRow]] = await connection.query('SELECT id, name FROM WAREHOUSES WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))', [resolvedWhName]);
+          if (wRow) { resolvedWhId = wRow.id; resolvedWhName = wRow.name; }
+        }
+        if (resolvedWhId && resolvedWhName) {
+          await connection.query('UPDATE PALLETS SET warehouse_id = ?, warehouse = ? WHERE pallet_code = ?', [resolvedWhId, resolvedWhName, code]);
+        }
+      }
       
       await connection.query(
         'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
-        ['UPDATE', `Aggiornati metadati paletta ${code}`, 'Gestionale', request.user.username]
+        ['UPDATE', `Aggiornati metadati paletta ${code}${tariffAuditSuffix}`, 'Gestionale', request.user.username]
       );
       await connection.commit();
       
@@ -1628,6 +1771,7 @@ async function palletRoutes(fastify, options) {
         fastify.io.emit('inventory_updated');
         fastify.io.emit('stow_updated');
         fastify.io.emit('dashboard_update');
+        if (resolvedPlanId !== undefined) fastify.io.emit('billing_updated');
       }
       
       return { success: true };
@@ -1773,7 +1917,7 @@ async function palletRoutes(fastify, options) {
     if (!hasPermission(request.user, 'pallet_move')) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di spostare o stivare palette.' });
     }
-    const { pallet_code, location, pin, source = 'Zebra', force = false } = request.body;
+    const { pallet_code, location, pin, source = 'Zebra', force = false, active_warehouse_id = null } = request.body;
     
     fastify.log.info(`[STOW] Received stow request: pallet=${pallet_code}, location=${location}, force=${force}`);
 
@@ -1787,9 +1931,13 @@ async function palletRoutes(fastify, options) {
         await connection.beginTransaction();
         try {
           const [qRows] = await connection.query(
-            'SELECT id, customer_id, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED" FOR UPDATE',
+            'SELECT id, customer_id, warehouse_id, warehouse, is_quarantined, quarantine_reason FROM PALLETS WHERE pallet_code = ? AND status != "SHIPPED" FOR UPDATE',
             [pallet_code]
           );
+          if (active_warehouse_id && qRows.length > 0 && qRows[0].warehouse_id && Number(qRows[0].warehouse_id) !== Number(active_warehouse_id)) {
+            await connection.rollback();
+            return { status: 403, body: { error: `Paletta appartenente al magazzino ${qRows[0].warehouse || '#' + qRows[0].warehouse_id}. Cambia magazzino dal selettore rapido.` } };
+          }
           if (qRows.some(r => r.is_quarantined)) {
             await connection.rollback();
             const qReason = qRows.find(r => r.is_quarantined)?.quarantine_reason || 'Blocco qualità';
@@ -1823,8 +1971,11 @@ async function palletRoutes(fastify, options) {
             fastify.log.info(`[STOW] Force is true! Bypassing occupied check.`);
           }
 
-          const [[freeDest]] = await connection.query('SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))', [location]);
-          const [[loc]] = freeDest ? [[null]] : await connection.query('SELECT * FROM LOCATIONS WHERE barcode = ?', [location]);
+          const whFilterSql = active_warehouse_id ? ' AND warehouse_id = ?' : '';
+          const freeParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
+          const locParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
+          const [[freeDest]] = await connection.query(`SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))${whFilterSql}`, freeParams);
+          const [[loc]] = freeDest ? [[null]] : await connection.query(`SELECT * FROM LOCATIONS WHERE barcode = ?${whFilterSql}`, locParams);
           
           if (freeDest) {
             // Posizione Libera: non creare mai una riga fantasma in LOCATIONS
@@ -1839,10 +1990,11 @@ async function palletRoutes(fastify, options) {
             const col = parts[1] || '00';
             const pos = parts[2] || '00';
             const finalPin = pin || Math.floor(10 + Math.random() * 90).toString(); 
+            const targetWhForLoc = active_warehouse_id ? parseInt(active_warehouse_id, 10) : (qRows[0]?.warehouse_id || 1);
             
             await connection.query(
-              'INSERT IGNORE INTO LOCATIONS (zone, col, pos, barcode, pin) VALUES (?, ?, ?, ?, ?)',
-              [zone, col, pos, location, finalPin]
+              'INSERT IGNORE INTO LOCATIONS (warehouse_id, zone, col, pos, barcode, pin) VALUES (?, ?, ?, ?, ?, ?)',
+              [targetWhForLoc, zone, col, pos, location, finalPin]
             );
             await connection.query(
               'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',

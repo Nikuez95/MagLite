@@ -22,6 +22,7 @@ const PERMISSION_CATALOG = [
       { key: 'view_products', label: 'Visualizza Prodotti & Stock', desc: 'Accesso al catalogo articoli e alle palette in giacenza.' },
       { key: 'view_inventory', label: 'Visualizza Inventario Globale', desc: 'Accesso alla tabella inventario avanzata ed esportazioni PDF.' },
       { key: 'view_quarantine', label: 'Visualizza Registro Quarantene', desc: 'Accesso alla sezione merce bloccata e storico motivi di blocco/sblocco.' },
+      { key: 'view_non_conformities', label: 'Visualizza Non Conformità', desc: 'Accesso alla sezione dedicata alle segnalazioni di Non Conformità e storico.' },
       { key: 'view_customers', label: 'Visualizza Anagrafica Clienti', desc: 'Accesso alla scheda clienti e sottoreparti.' },
       { key: 'view_locations', label: 'Visualizza Mappa Magazzino', desc: 'Accesso alla mappa scaffali, corridoi e posizioni.' },
       { key: 'view_tms', label: 'Visualizza TMS (Trasporti)', desc: 'Accesso alla pianificazione trasporti e autisti.' },
@@ -57,6 +58,7 @@ const PERMISSION_CATALOG = [
     description: 'Gestione del blocco cautelativo merce e relativo sblocco con tracciamento motivi.',
     items: [
       { key: 'quarantine_manage', label: 'Bloccare e Sbloccare Merce in Quarantena', desc: 'Permette di mettere prodotti/palette in quarantena e di sbloccarli.' },
+      { key: 'non_conformities_manage', label: 'Gestire e Correggere Non Conformità', desc: 'Permette di accettare/rifiutare le segnalazioni di Non Conformità e correggere direttamente i dati della paletta.' },
       { key: 'approve_custom_forms', label: 'Sblocco Standby QA / GDP', desc: 'Permette di autorizzare e sbloccare le sequenze guidate in standby (es. sigillo mancante o controlli QA).' }
     ]
   },
@@ -109,6 +111,8 @@ const VIEW_ONLY_PERMISSIONS = buildPermMap([
   'view_products',
   'view_inventory',
   'view_quarantine',
+  'view_non_conformities',
+  'non_conformities_manage',
   'view_customers',
   'view_locations',
   'view_tms',
@@ -126,6 +130,8 @@ const QUALITY_PERMISSIONS = buildPermMap([
   'view_products',
   'view_inventory',
   'view_quarantine',
+  'view_non_conformities',
+  'non_conformities_manage',
   'view_customers',
   'view_locations',
   'view_custom_forms',
@@ -153,7 +159,9 @@ const TARIFF_ADMIN_PERMISSIONS = buildPermMap([
   'customer_manage',
   'view_billing',
   'tariff_plans_manage',
-  'client_tariffs_manage'
+  'client_tariffs_manage',
+  'view_non_conformities',
+  'non_conformities_manage'
 ]);
 
 const DEFAULT_ROLES = [
@@ -198,6 +206,17 @@ async function seedDefaultRoles(connection = db) {
   await connection.query(
     `UPDATE ROLES SET name = 'Software Engineer', hierarchy_level = 10000, is_system = 1 WHERE code = 'developer'`
   );
+
+  // Default per tutti i ruoli esistenti con accesso al gestionale desktop: abilita Non Conformità se non ancora configurato esplicitamente
+  const [allDbRoles] = await connection.query('SELECT id, permissions FROM ROLES');
+  for (const dbRole of allDbRoles) {
+    const parsedPerms = parseJsonSafe(dbRole.permissions, {});
+    if (parsedPerms.access_desktop === true && (parsedPerms.view_non_conformities === undefined || parsedPerms.non_conformities_manage === undefined)) {
+      if (parsedPerms.view_non_conformities === undefined) parsedPerms.view_non_conformities = true;
+      if (parsedPerms.non_conformities_manage === undefined) parsedPerms.non_conformities_manage = true;
+      await connection.query('UPDATE ROLES SET permissions = ? WHERE id = ?', [JSON.stringify(parsedPerms), dbRole.id]);
+    }
+  }
 
   // Normalizza i livelli dei ruoli sotto il Software Engineer se ci sono duplicati o valori >= 10000
   const [otherRoles] = await connection.query(
@@ -288,6 +307,8 @@ async function resolveUserAccess(userIdOrUsername, connection = db) {
   for (const key of ALL_PERMISSION_KEYS) {
     if (isDeveloper) {
       effectivePermissions[key] = typeof rawRolePerms[key] === 'boolean' ? rawRolePerms[key] : true;
+    } else if ((key === 'view_non_conformities' || key === 'non_conformities_manage') && rawRolePerms[key] === undefined && Boolean(rawRolePerms.access_desktop)) {
+      effectivePermissions[key] = true;
     } else {
       effectivePermissions[key] = Boolean(rawRolePerms[key]);
     }

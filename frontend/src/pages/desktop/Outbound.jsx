@@ -7,10 +7,13 @@ import { io } from 'socket.io-client';
 import {
   Truck, Search, Plus, Trash2, Printer, CheckCircle, Clock, Eye, XCircle,
   PackageSearch, X, History, User, Package, RotateCcw, Calendar, ArrowUpDown,
-  AlertTriangle, Edit3, Zap, Layers, FileText, MapPin, ShieldAlert, Thermometer, SlidersHorizontal
+  AlertTriangle, Edit3, Zap, Layers, FileText, MapPin, ShieldAlert, Thermometer, SlidersHorizontal,
+  Container, ShieldCheck, ClipboardCheck, Warehouse
 } from 'lucide-react';
 import { jwtDecode } from 'jwt-decode';
 import { useNavigate } from 'react-router-dom';
+import LogisticsMetaFields, { DEFAULT_ADR_DRAFT } from '../../components/LogisticsMetaFields';
+import { TEMP_REGIME_MAP, normalizeTempRegime, parseAdrData, formatAdrDescription } from '../../utils/logisticsMeta';
 
 const DEFAULT_BOLLA_OPTIONS = {
   is_adr: false,
@@ -20,7 +23,7 @@ const DEFAULT_BOLLA_OPTIONS = {
   legal_intact_goods: true,
   legal_driver_check: true,
   legal_transport_norm: true,
-  causale: 'Trasporto / Consegna Merce',
+  causale: 'C/FINE DEPOSITO',
   porto: 'Franco',
   aspetto_beni: 'Bancali / Colli Imballati',
   carrier_name: '',
@@ -46,7 +49,7 @@ const formatDeliveryAddrOption = (a) => {
   return contact ? `${main} | ${contact}` : main;
 };
 
-function TimelineModal({ order, onClose, token, onOpenReturn }) {
+function TimelineModal({ order, onClose, token, onOpenReturn, onEditPalletMeta }) {
   const [details, setDetails] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -66,6 +69,7 @@ function TimelineModal({ order, onClose, token, onOpenReturn }) {
     loadDetails();
     const socket = io(`http://${window.location.hostname}:3000`);
     socket.on('outbound_updated', loadDetails);
+    socket.on('inventory_updated', loadDetails);
     socket.on('dashboard_update', loadDetails);
     return () => socket.disconnect();
   }, [order.id, token]);
@@ -74,21 +78,59 @@ function TimelineModal({ order, onClose, token, onOpenReturn }) {
 
   const ordData = details?.order || order;
   const items = details?.items || [];
+  const loadCheckin = details?.load_checkin || null;
+  const compliance = details?.compliance || { tempRegimes: [], isAdr: false, adrDescriptions: [], mixedColdWarning: false };
+  let checkinAnswers = {};
+  if (loadCheckin?.answers) {
+    try { checkinAnswers = typeof loadCheckin.answers === 'string' ? JSON.parse(loadCheckin.answers) : loadCheckin.answers; } catch (_) {}
+  }
   const pickedCount = items.filter(i => i.status === 'PICKED').length;
   const pct = items.length > 0 ? Math.round((pickedCount / items.length) * 100) : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-7 max-w-2xl w-full shadow-2xl relative animate-fade-in-up">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-7 max-w-2xl w-full shadow-2xl relative animate-fade-in-up max-h-[92vh] overflow-y-auto">
         <button onClick={onClose} className="absolute top-6 right-6 text-slate-500 hover:text-brand-white transition-colors">
           <XCircle size={24} />
         </button>
-        <h2 className="text-2xl font-bold text-brand-white mb-1 flex items-center gap-3">
-          <Clock className="text-brand-blue" /> Dettaglio & Tempistiche Spedizione
+        <h2 className="text-2xl font-bold text-brand-white mb-1 flex items-center gap-3 pr-8">
+          <Clock className="text-brand-blue shrink-0" /> Dettaglio &amp; Tempistiche Spedizione
         </h2>
-        <p className="text-slate-400 font-mono mb-5 text-sm">
-          {ordData.order_code} {ordData.client_ddt && `• DDT Cliente: ${ordData.client_ddt}`} • <span className="text-brand-blue font-bold">{ordData.customer_name || order.customer_name}</span>
+        <p className="text-slate-400 font-mono mb-3 text-sm">
+          {ordData.order_code} {ordData.bolla_number && `• Bolla: ${ordData.bolla_number}`} {ordData.client_ddt && `• DDT: ${ordData.client_ddt}`} • <span className="text-brand-blue font-bold">{ordData.customer_name || order.customer_name}</span>
         </p>
+        <div className="flex flex-wrap gap-1.5 mb-4">
+          <span className={`px-2 py-0.5 rounded-lg text-[11px] font-black border ${ordData.is_container ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-800 text-slate-300 border-slate-700'}`}>
+            {ordData.is_container ? 'CARICO CONTAINER' : 'CARICO CAMION'}
+          </span>
+          {ordData.origin_warehouse_name && (
+            <span className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              Origine: {ordData.origin_warehouse_name}
+            </span>
+          )}
+          {Boolean(ordData.require_load_recheck) && (
+            <span className="px-2 py-0.5 rounded-lg text-[11px] font-black bg-violet-500/20 text-violet-300 border border-violet-500/40">
+              Ri-Verifica Carico Zebra
+            </span>
+          )}
+          {compliance.tempRegimes?.map(tr => (
+            <span key={tr} className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/35">
+              {TEMP_REGIME_MAP[tr]?.shortLabel || tr}
+            </span>
+          ))}
+          {compliance.isAdr && (
+            <span className="px-2 py-0.5 rounded-lg text-[11px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40">
+              ADR ({compliance.adrDescriptions.join('; ')})
+            </span>
+          )}
+        </div>
+
+        {compliance.mixedColdWarning && (
+          <div className="bg-orange-950/40 border border-orange-500/50 rounded-2xl p-3 mb-4 text-xs text-orange-200 font-bold flex items-center gap-2">
+            <AlertTriangle size={16} className="text-orange-400 shrink-0" />
+            ATTENZIONE: Presenti bancali a temperatura 2/8°C e 15/25°C nello stesso ordine!
+          </div>
+        )}
 
         {/* Barra progresso live dentro la modale */}
         {ordData.notes && (
@@ -137,9 +179,21 @@ function TimelineModal({ order, onClose, token, onOpenReturn }) {
             </h3>
             <div className="max-h-64 overflow-y-auto pr-1 space-y-2">
               {items.map(item => (
-                <div key={item.id} className="flex justify-between items-center p-3 bg-slate-950 rounded-xl border border-slate-800">
-                  <div>
-                    <p className="text-xs font-bold text-brand-white">{item.product_name}</p>
+                <div key={item.id} className="flex justify-between items-center p-3 bg-slate-950 rounded-xl border border-slate-800 gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="text-xs font-bold text-brand-white">{item.product_name}</p>
+                      {normalizeTempRegime(item.temp_regime) !== 'NONE' && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 text-[9px] font-bold">
+                          {TEMP_REGIME_MAP[normalizeTempRegime(item.temp_regime)]?.shortLabel}
+                        </span>
+                      )}
+                      {Boolean(item.is_adr) && (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[9px] font-black">
+                          ADR {parseAdrData(item.adr_data)?.un_number || ''}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-[11px] text-slate-400 font-mono mt-0.5">
                       {item.pallet_code ? `Paletta: ${item.pallet_code} • ` : ''}
                       {item.client_pallet_number ? `Rif. Pal. Cl: ${item.client_pallet_number} • ` : ''}
@@ -147,15 +201,71 @@ function TimelineModal({ order, onClose, token, onOpenReturn }) {
                       Q.tà: <strong className="text-brand-white">{parseFloat(item.quantity_required)} {item.requested_uom || item.base_uom || 'Pezzi'}</strong>
                     </p>
                   </div>
-                  <div className="text-right shrink-0 ml-3">
-                    <p className="text-xs font-mono text-brand-blue">{item.picked_at ? new Date(item.picked_at).toLocaleTimeString('it-IT') : 'In attesa'}</p>
-                    <span className={`inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${item.status === 'PICKED' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400'}`}>
-                      {item.status === 'PICKED' ? 'Prelevato' : 'Da prelevare'}
-                    </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {onEditPalletMeta && item.pallet_code && (
+                      <button
+                        type="button"
+                        onClick={() => onEditPalletMeta(item, loadDetails)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded-lg text-[10px] font-bold border border-slate-700"
+                        title="Modifica Temperatura o ADR di questa paletta"
+                      >
+                        Temp/ADR
+                      </button>
+                    )}
+                    <div className="text-right">
+                      <p className="text-xs font-mono text-brand-blue">{item.picked_at ? new Date(item.picked_at).toLocaleTimeString('it-IT') : 'In attesa'}</p>
+                      <span className={`inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${item.status === 'PICKED' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400'}`}>
+                        {item.status === 'PICKED' ? 'Prelevato' : 'Da prelevare'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))}
-            
+            </div>
+
+          {/* Registro permanente Modulo Carico Camion / Container (CARICO_USCITA) */}
+          {(ordData.load_completed_at || loadCheckin) && (
+            <div className="mt-4 bg-emerald-950/25 border border-emerald-500/35 rounded-2xl p-4 space-y-2">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-xs font-black uppercase tracking-wider text-emerald-300 flex items-center gap-1.5">
+                  <ClipboardCheck size={15} /> Log Ufficiale Carico Mezzo ({ordData.load_checkin_session_code || loadCheckin?.session_code})
+                </span>
+                <span className="text-[11px] font-mono text-slate-300">
+                  {ordData.load_completed_at ? new Date(ordData.load_completed_at).toLocaleString('it-IT') : ''} • Op: {ordData.load_completed_by || loadCheckin?.operator_name || '-'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800">
+                  <div className="text-[9px] text-slate-500 uppercase font-bold">Mezzo &amp; Targa</div>
+                  <div className="font-bold text-white font-mono">{checkinAnswers.vehicle_type || (ordData.is_container ? 'CONTAINER' : 'CAMION')} • {ordData.load_vehicle_plate || checkinAnswers.vehicle_plate || '-'}</div>
+                </div>
+                <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800">
+                  <div className="text-[9px] text-slate-500 uppercase font-bold">Igienico-Sanitario</div>
+                  <div className="font-bold text-emerald-300">{ordData.load_hygiene_ok !== false ? 'CONFORME ✓' : 'NON CONFORME'}</div>
+                </div>
+                <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800">
+                  <div className="text-[9px] text-slate-500 uppercase font-bold">Temp. Rilevata / Strisciata</div>
+                  <div className="font-bold text-cyan-300">
+                    {ordData.load_recorded_temp ? `${ordData.load_recorded_temp}°C` : (checkinAnswers.needs_temp_check ? 'N/D' : 'Non rich.')}
+                    {ordData.load_strisciata_taken ? ' • Strisciata OK' : ''}
+                  </div>
+                </div>
+                <div className="bg-slate-950/80 p-2 rounded-xl border border-slate-800">
+                  <div className="text-[9px] text-slate-500 uppercase font-bold">Ri-Verifica Barcode</div>
+                  <div className="font-bold text-slate-200">
+                    {checkinAnswers.require_load_recheck ? `${checkinAnswers.recheck_count || 0}/${checkinAnswers.expected_barcodes_count || 0} scansionati` : 'Non richiesta'}
+                  </div>
+                </div>
+              </div>
+              {(checkinAnswers.seal_number || checkinAnswers.hygiene_notes || checkinAnswers.notes) && (
+                <p className="text-[11px] text-slate-300 pt-1">
+                  {checkinAnswers.seal_number ? `Sigillo: ${checkinAnswers.seal_number} • ` : ''}
+                  {checkinAnswers.hygiene_notes ? `Igiene: ${checkinAnswers.hygiene_notes} • ` : ''}
+                  {checkinAnswers.notes || ''}
+                </p>
+              )}
+            </div>
+          )}
           {/* Pulsante Reso per ordini spediti */}
           {ordData.status === 'SHIPPED' && onOpenReturn && (
             <div className="pt-3">
@@ -172,7 +282,6 @@ function TimelineModal({ order, onClose, token, onOpenReturn }) {
               </button>
             </div>
           )}
-</div>
           </div>
         </div>
       </div>
@@ -211,6 +320,8 @@ const Outbound = () => {
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [customerRecords, setCustomerRecords] = useState([]);
+  const [warehouses, setWarehouses] = useState([{ id: 1, name: 'Settala', address: '' }, { id: 2, name: 'Caleppio', address: '' }]);
+  const [metaEditModal, setMetaEditModal] = useState({ show: false, palletCode: '', temp_regime: 'NONE', is_adr: false, adr_data: { ...DEFAULT_ADR_DRAFT }, onSaved: null });
   const [isProcessing, setIsProcessing] = useState(false);
   
   // Modale nuova spedizione
@@ -221,6 +332,9 @@ const Outbound = () => {
     client_ddt: '',
     notes: '',
     generate_exit_ddt: true,
+    is_container: false,
+    require_load_recheck: false,
+    origin_warehouse_id: '1',
     delivery_address_id: '',
     delivery_label: '',
     delivery_address_text: '',
@@ -234,9 +348,14 @@ const Outbound = () => {
   const [bollaModal, setBollaModal] = useState({
     show: false,
     order: null,
+    items: [],
+    compliance: { tempRegimes: [], isAdr: false, adrDescriptions: [], mixedColdWarning: false },
     addresses: [],
     saving: false,
     generate_exit_ddt: true,
+    is_container: false,
+    require_load_recheck: false,
+    origin_warehouse_id: '1',
     delivery_address_id: '',
     delivery_label: '',
     delivery_address_text: '',
@@ -419,6 +538,9 @@ const Outbound = () => {
         client_ddt: order.client_ddt || '',
         notes: order.notes || '',
         generate_exit_ddt: order.generate_exit_ddt !== undefined && order.generate_exit_ddt !== null ? Boolean(order.generate_exit_ddt) : true,
+        is_container: Boolean(order.is_container),
+        require_load_recheck: Boolean(order.require_load_recheck),
+        origin_warehouse_id: order.origin_warehouse_id ? String(order.origin_warehouse_id) : String(warehouses[0]?.id || '1'),
         delivery_address_id: order.delivery_address_id ? String(order.delivery_address_id) : '',
         delivery_label: order.delivery_label || '',
         delivery_address_text: order.delivery_address_text || '',
@@ -433,7 +555,10 @@ const Outbound = () => {
         requested_uom: i.requested_uom || 'Pezzi',
         product_name: i.product_name,
         locStr: i.location || 'NO POS.',
-        batch: i.batch || 'Nessun lotto'
+        batch: i.batch || 'Nessun lotto',
+        temp_regime: i.temp_regime || 'NONE',
+        is_adr: Boolean(i.is_adr),
+        adr_data: i.adr_data || null
       })));
       searchPalletsByCustomer(order.customer_id, order.id, includePending);
       setShowModal(true);
@@ -444,9 +569,15 @@ const Outbound = () => {
 
   const fetchBaseData = async () => {
     try {
-      const resC = await axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers: { Authorization: `Bearer ${token}` }});
+      const [resC, resWh] = await Promise.all([
+        axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers: { Authorization: `Bearer ${token}` }}),
+        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers: { Authorization: `Bearer ${token}` }}).catch(() => ({ data: [] }))
+      ]);
       setCustomerRecords(resC.data || []);
       setCustomers((resC.data || []).map(c => ({ value: c.id, label: c.business_name })));
+      if (Array.isArray(resWh.data) && resWh.data.length > 0) {
+        setWarehouses(resWh.data);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -545,6 +676,9 @@ const Outbound = () => {
         client_ddt: newOrder.client_ddt || null,
         notes: newOrder.notes ? newOrder.notes.trim() : null,
         generate_exit_ddt: newOrder.generate_exit_ddt !== false,
+        is_container: Boolean(newOrder.is_container),
+        require_load_recheck: Boolean(newOrder.require_load_recheck),
+        origin_warehouse_id: newOrder.origin_warehouse_id ? Number(newOrder.origin_warehouse_id) : null,
         delivery_address_id: newOrder.delivery_address_id ? Number(newOrder.delivery_address_id) : null,
         delivery_label: newOrder.delivery_label || null,
         delivery_address_text: newOrder.delivery_address_text || null,
@@ -575,6 +709,9 @@ const Outbound = () => {
         client_ddt: '',
         notes: '',
         generate_exit_ddt: true,
+        is_container: false,
+        require_load_recheck: false,
+        origin_warehouse_id: String(warehouses[0]?.id || '1'),
         delivery_address_id: '',
         delivery_label: '',
         delivery_address_text: '',
@@ -591,15 +728,84 @@ const Outbound = () => {
     }
   };
 
+  const openPalletMetaEditor = (itemOrPallet, onSavedCallback = null) => {
+    const code = itemOrPallet.pallet_code;
+    if (!code) return;
+    setMetaEditModal({
+      show: true,
+      palletCode: code,
+      temp_regime: normalizeTempRegime(itemOrPallet.temp_regime),
+      is_adr: Boolean(itemOrPallet.is_adr),
+      adr_data: parseAdrData(itemOrPallet.adr_data) || { ...DEFAULT_ADR_DRAFT },
+      onSaved: onSavedCallback
+    });
+  };
+
+  const handleSavePalletMeta = async (e) => {
+    e.preventDefault();
+    if (!metaEditModal.palletCode || isProcessing) return;
+    setIsProcessing(true);
+    try {
+      const adrPayload = metaEditModal.is_adr
+        ? { ...metaEditModal.adr_data, formatted_description: formatAdrDescription(metaEditModal.adr_data) }
+        : null;
+      await axios.put(
+        `http://${window.location.hostname}:3000/api/pallets/${encodeURIComponent(metaEditModal.palletCode)}`,
+        {
+          temp_regime: metaEditModal.temp_regime || 'NONE',
+          is_adr: Boolean(metaEditModal.is_adr),
+          adr_data: adrPayload
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setMetaEditModal(prev => ({ ...prev, show: false }));
+      if (newOrder.customer_id) searchPalletsByCustomer(newOrder.customer_id, newOrder.id, includePending);
+      await fetchOrders();
+      if (metaEditModal.onSaved) await metaEditModal.onSaved();
+      appAlert(`Metadata Temp/ADR aggiornati per paletta ${metaEditModal.palletCode}`, 'Aggiornato', 'success');
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Errore aggiornamento metadata paletta');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const refreshBollaModalCompliance = async (orderId) => {
+    try {
+      const dRes = await axios.get(`http://${window.location.hostname}:3000/api/outbound/${orderId}/details`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setBollaModal(prev => ({
+        ...prev,
+        items: dRes.data?.items || [],
+        compliance: dRes.data?.compliance || { tempRegimes: [], isAdr: false, adrDescriptions: [], mixedColdWarning: false }
+      }));
+    } catch (_) {}
+  };
+
   const openBollaModal = async (order) => {
-    const addrs = await fetchCustomerDeliveryAddresses(order.customer_id);
+    const [addrs, detailsRes] = await Promise.all([
+      fetchCustomerDeliveryAddresses(order.customer_id),
+      axios.get(`http://${window.location.hostname}:3000/api/outbound/${order.id}/details`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(() => ({ data: null }))
+    ]);
     const custObj = customerRecords.find(c => Number(c.id) === Number(order.customer_id));
+    const detailItems = detailsRes.data?.items || [];
+    const firstPalWh = detailItems.find(it => it.warehouse_id)?.warehouse_id;
     setBollaModal({
       show: true,
       order,
+      items: detailItems,
+      compliance: detailsRes.data?.compliance || { tempRegimes: [], isAdr: false, adrDescriptions: [], mixedColdWarning: false },
       addresses: addrs,
       saving: false,
       generate_exit_ddt: order.generate_exit_ddt !== undefined && order.generate_exit_ddt !== null ? Boolean(order.generate_exit_ddt) : true,
+      is_container: Boolean(order.is_container),
+      require_load_recheck: Boolean(order.require_load_recheck),
+      origin_warehouse_id: order.origin_warehouse_id
+        ? String(order.origin_warehouse_id)
+        : (firstPalWh ? String(firstPalWh) : String(warehouses[0]?.id || '1')),
       delivery_address_id: order.delivery_address_id ? String(order.delivery_address_id) : '',
       delivery_label: order.delivery_label || (custObj?.address ? 'Sede Cliente' : ''),
       delivery_address_text: order.delivery_address_text || custObj?.address || '',
@@ -611,10 +817,19 @@ const Outbound = () => {
     if (!bollaModal.order || bollaModal.saving) return;
     setBollaModal(prev => ({ ...prev, saving: true }));
     try {
+      const selWh = warehouses.find(w => String(w.id) === String(bollaModal.origin_warehouse_id)) || null;
+      const whAddr = selWh
+        ? [selWh.address, [selWh.cap, selWh.city, selWh.province ? `(${selWh.province})` : ''].filter(Boolean).join(' ')].filter(Boolean).join(' - ')
+        : null;
       const res = await axios.put(
         `http://${window.location.hostname}:3000/api/outbound/${bollaModal.order.id}/bolla-settings`,
         {
           generate_exit_ddt: bollaModal.generate_exit_ddt,
+          is_container: Boolean(bollaModal.is_container),
+          require_load_recheck: Boolean(bollaModal.require_load_recheck),
+          origin_warehouse_id: bollaModal.origin_warehouse_id ? Number(bollaModal.origin_warehouse_id) : null,
+          origin_warehouse_name: selWh?.name || null,
+          origin_warehouse_address: whAddr,
           delivery_address_id: bollaModal.delivery_address_id ? Number(bollaModal.delivery_address_id) : null,
           delivery_label: bollaModal.delivery_label || null,
           delivery_address_text: bollaModal.delivery_address_text || null,
@@ -962,6 +1177,9 @@ const Outbound = () => {
                 client_ddt: '',
                 notes: '',
                 generate_exit_ddt: true,
+                is_container: false,
+                require_load_recheck: false,
+                origin_warehouse_id: String(warehouses[0]?.id || '1'),
                 delivery_address_id: '',
                 delivery_label: '',
                 delivery_address_text: '',
@@ -1421,6 +1639,26 @@ const Outbound = () => {
                             Rif. Pal: {o.client_pallets}
                           </span>
                         )}
+                        {Boolean(o.is_container) && (
+                          <span className="text-[10px] font-black bg-amber-500/20 border border-amber-500/40 text-amber-300 px-2 py-0.5 rounded-md">
+                            CONTAINER
+                          </span>
+                        )}
+                        {Boolean(o.has_adr) && (
+                          <span className="text-[10px] font-black bg-rose-500/20 border border-rose-500/40 text-rose-300 px-2 py-0.5 rounded-md">
+                            ADR
+                          </span>
+                        )}
+                        {String(o.temp_regimes || '').split(',').filter(t => t && t !== 'NONE').map(t => (
+                          <span key={t} className="text-[10px] font-bold bg-cyan-500/15 border border-cyan-500/35 text-cyan-300 px-2 py-0.5 rounded-md">
+                            {TEMP_REGIME_MAP[normalizeTempRegime(t)]?.shortLabel || t}
+                          </span>
+                        ))}
+                        {Boolean(o.load_completed_at) && (
+                          <span className="text-[10px] font-bold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 px-2 py-0.5 rounded-md">
+                            Carico: {o.load_vehicle_plate || 'OK'}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -1600,6 +1838,7 @@ const Outbound = () => {
           onClose={() => setTimelineModal(null)} 
           token={token}
           onOpenReturn={openReturnModal}
+          onEditPalletMeta={(it, reload) => openPalletMetaEditor(it, reload)}
         />
       )}
 
@@ -1728,6 +1967,30 @@ const Outbound = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 pt-3.5">
+                  <button
+                    type="button"
+                    onClick={() => setNewOrder(prev => ({ ...prev, is_container: !prev.is_container }))}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
+                      newOrder.is_container
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                        : 'bg-slate-900 text-slate-300 border-slate-700 hover:text-white'
+                    }`}
+                    title="Se Container: fattura Carico Container una tantum anziché Out Paletta"
+                  >
+                    <Container size={12} /> {newOrder.is_container ? 'Carico Container' : 'Camion Standard'}
+                  </button>
+
+                  <select
+                    value={newOrder.origin_warehouse_id || ''}
+                    onChange={e => setNewOrder(prev => ({ ...prev, origin_warehouse_id: e.target.value }))}
+                    className="bg-slate-900 border border-slate-700 text-emerald-300 rounded-xl px-2.5 py-1.5 text-[11px] font-bold focus:border-brand-blue outline-none"
+                    title="Località inizio trasporto (Sede magazzino di partenza)"
+                  >
+                    {warehouses.map(w => (
+                      <option key={w.id} value={w.id}>Partenza: {w.name}</option>
+                    ))}
+                  </select>
+
                   {(() => {
                     const selCust = customerRecords.find(c => Number(c.id) === Number(newOrder.customer_id));
                     const custDdtOn = selCust ? Number(selCust.generate_exit_ddt ?? 1) !== 0 : true;
@@ -1753,52 +2016,22 @@ const Outbound = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setNewOrder(prev => ({
-                            ...prev,
-                            bolla_options: { ...prev.bolla_options, is_adr: !prev.bolla_options?.is_adr }
-                          }))}
+                          onClick={() => setNewOrder(prev => ({ ...prev, require_load_recheck: !prev.require_load_recheck }))}
                           className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                            newOrder.bolla_options?.is_adr
-                              ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                            newOrder.require_load_recheck
+                              ? 'bg-violet-500/20 text-violet-300 border-violet-500/50'
                               : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
                           }`}
+                          title="Richiedi nuova scansione barcode Zebra durante il carico mezzo"
                         >
-                          <ShieldAlert size={12} /> ADR
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setNewOrder(prev => ({
-                            ...prev,
-                            bolla_options: { ...prev.bolla_options, temp_6_8: !prev.bolla_options?.temp_6_8 }
-                          }))}
-                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                            newOrder.bolla_options?.temp_6_8
-                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
-                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                          }`}
-                        >
-                          <Thermometer size={12} /> 6-8°C
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setNewOrder(prev => ({
-                            ...prev,
-                            bolla_options: { ...prev.bolla_options, temp_15_25: !prev.bolla_options?.temp_15_25 }
-                          }))}
-                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition-all flex items-center gap-1 ${
-                            newOrder.bolla_options?.temp_15_25
-                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                          }`}
-                        >
-                          <Thermometer size={12} /> 15-25°C
+                          <ShieldCheck size={12} /> Ri-verifica carico: {newOrder.require_load_recheck ? 'SÌ' : 'NO'}
                         </button>
                         <button
                           type="button"
                           onClick={() => setShowAdvancedBollaCreate(v => !v)}
                           className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1"
                         >
-                          <SlidersHorizontal size={12} /> {showAdvancedBollaCreate ? 'Chiudi Legali' : 'Dettagli Legali'}
+                          <SlidersHorizontal size={12} /> {showAdvancedBollaCreate ? 'Chiudi Vettore' : 'Vettore / Note'}
                         </button>
                       </>
                     );
@@ -1806,17 +2039,48 @@ const Outbound = () => {
                 </div>
               </div>
 
+              {/* Avviso automatico Temperatura mista 2-8°C + 15-25°C o ADR dal carrello */}
+              {(() => {
+                const temps = new Set();
+                let hasAdrCart = false;
+                cart.forEach(c => {
+                  const matched = availablePallets.find(p =>
+                    (c.pallet_id && Number(p.id) === Number(c.pallet_id)) ||
+                    (String(p.product_id) === String(c.product_id) && (!c.batch || c.batch === 'TUTTI' || String(p.batch || 'Nessun lotto') === c.batch))
+                  );
+                  const t = normalizeTempRegime(matched?.temp_regime || c.temp_regime);
+                  if (t !== 'NONE') temps.add(t);
+                  if (matched?.is_adr || c.is_adr) hasAdrCart = true;
+                });
+                const mixedCold = temps.has('2_8') && temps.has('15_25');
+                if (!mixedCold && temps.size === 0 && !hasAdrCart) return null;
+                return (
+                  <div className="space-y-1.5 pt-1">
+                    {mixedCold && (
+                      <div className="bg-orange-950/60 border border-orange-500/60 text-orange-200 rounded-xl px-3 py-2 text-xs font-black flex items-center gap-2">
+                        <AlertTriangle size={15} className="text-orange-400 shrink-0" />
+                        ATTENZIONE: Stai caricando insieme bancali 2/8°C e 15/25°C nella stessa bolla! Verifica l&apos;idoneità del trasporto.
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-400 font-bold">Diciture automatiche Bolla da palette:</span>
+                      {Array.from(temps).map(tr => (
+                        <span key={tr} className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 font-bold">
+                          {TEMP_REGIME_MAP[tr]?.shortLabel}
+                        </span>
+                      ))}
+                      {hasAdrCart && (
+                        <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-black">
+                          ADR (automatico su Bolla)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {showAdvancedBollaCreate && (customerRecords.find(c => Number(c.id) === Number(newOrder.customer_id))?.generate_exit_ddt ?? 1) !== 0 && (
-                <div className="pt-2.5 border-t border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
-                  {newOrder.bolla_options?.is_adr && (
-                    <input
-                      type="text"
-                      value={newOrder.bolla_options?.adr_note || ''}
-                      onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, adr_note: e.target.value } }))}
-                      placeholder="Classe / UN / Dettagli ADR..."
-                      className="bg-slate-900 border border-rose-500/40 text-rose-200 rounded-xl px-3 py-1.5 outline-none"
-                    />
-                  )}
+                <div className="pt-2.5 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
                   <input
                     type="text"
                     value={newOrder.bolla_options?.carrier_name || ''}
@@ -1831,7 +2095,7 @@ const Outbound = () => {
                     placeholder="Targa Mezzo (opz.)"
                     className="bg-slate-900 border border-slate-800 text-white rounded-xl px-3 py-1.5 outline-none font-mono uppercase"
                   />
-                  <div className="md:col-span-3 flex flex-wrap gap-4 pt-1 text-[11px] text-slate-300">
+                  <div className="md:col-span-2 flex flex-wrap gap-4 pt-1 text-[11px] text-slate-300">
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={Boolean(newOrder.bolla_options?.legal_intact_goods)} onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_intact_goods: e.target.checked } }))} />
                       Integrità colli e imballaggio
@@ -1842,7 +2106,7 @@ const Outbound = () => {
                     </label>
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={Boolean(newOrder.bolla_options?.legal_transport_norm)} onChange={e => setNewOrder(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_transport_norm: e.target.checked } }))} />
-                      Clausola D.P.R. 472/96 &amp; D.Lgs. 286/2005
+                      Clausola D.P.R. 472/96 &amp; D.Lgs. 286/2005 (C/FINE DEPOSITO)
                     </label>
                   </div>
                 </div>
@@ -2719,61 +2983,107 @@ const Outbound = () => {
                 </div>
               </div>
 
-              {/* Spunta Normative ADR & Temperatura Controllata */}
+              {/* Avviso automatico Diciture Bolla da Palette + Località Origine + Container + Ri-Verifica */}
               <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
-                <div className="text-xs font-black uppercase tracking-wider text-amber-400">
-                  Note Legali Spuntabili &amp; Condizioni Trasporto
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
-                    bollaModal.bolla_options?.is_adr
-                      ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
-                      : 'bg-slate-900 border-slate-800 text-slate-300'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(bollaModal.bolla_options?.is_adr)}
-                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, is_adr: e.target.checked } }))}
-                    />
-                    <ShieldAlert size={14} /> Merce ADR
-                  </label>
-
-                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
-                    bollaModal.bolla_options?.temp_6_8
-                      ? 'bg-cyan-500/15 border-cyan-500/50 text-cyan-300'
-                      : 'bg-slate-900 border-slate-800 text-slate-300'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(bollaModal.bolla_options?.temp_6_8)}
-                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, temp_6_8: e.target.checked } }))}
-                    />
-                    <Thermometer size={14} /> Temp. 6–8 °C
-                  </label>
-
-                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs font-black transition-all ${
-                    bollaModal.bolla_options?.temp_15_25
-                      ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
-                      : 'bg-slate-900 border-slate-800 text-slate-300'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(bollaModal.bolla_options?.temp_15_25)}
-                      onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, temp_15_25: e.target.checked } }))}
-                    />
-                    <Thermometer size={14} /> Temp. 15–25 °C
-                  </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-black uppercase tracking-wider text-emerald-400 mb-1.5 flex items-center gap-1.5">
+                      <Warehouse size={13} /> Località Inizio Trasporto (Depositario)
+                    </label>
+                    <select
+                      value={bollaModal.origin_warehouse_id || ''}
+                      onChange={e => setBollaModal(prev => ({ ...prev, origin_warehouse_id: e.target.value }))}
+                      className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold"
+                    >
+                      {warehouses.map(w => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}{w.address ? ` — ${w.address}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1.5">
+                      <Container size={13} /> Modalità Carico / Fatturazione
+                    </label>
+                    <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setBollaModal(prev => ({ ...prev, is_container: false }))}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${!bollaModal.is_container ? 'bg-brand-blue text-brand-black' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Camion (OUT/paletta)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBollaModal(prev => ({ ...prev, is_container: true }))}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${bollaModal.is_container ? 'bg-amber-500 text-brand-black' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Container (Carico Container)
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {bollaModal.bolla_options?.is_adr && (
+                <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer text-xs font-bold text-violet-200 hover:border-violet-500/40">
                   <input
-                    type="text"
-                    value={bollaModal.bolla_options?.adr_note || ''}
-                    onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, adr_note: e.target.value } }))}
-                    placeholder="Specifiche ADR (es. UN1993 Classe 3 Gruppo II, esenzione 1.1.3.6...)"
-                    className="w-full bg-slate-900 border border-rose-500/40 text-rose-200 rounded-xl px-3 py-2 text-xs outline-none"
+                    type="checkbox"
+                    checked={Boolean(bollaModal.require_load_recheck)}
+                    onChange={e => setBollaModal(prev => ({ ...prev, require_load_recheck: e.target.checked }))}
+                    className="rounded border-slate-600 bg-slate-800 text-violet-500"
                   />
+                  <ShieldCheck size={15} className="text-violet-400 shrink-0" />
+                  Richiedi di nuovo verifica del carico (l&apos;operatore Zebra dovrà scansionare nuovamente i barcode delle palette prima della partenza)
+                </label>
+
+                {bollaModal.compliance?.mixedColdWarning && (
+                  <div className="bg-orange-950/60 border border-orange-500/60 text-orange-200 rounded-xl px-3.5 py-2.5 text-xs font-black flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-orange-400 shrink-0" />
+                    ATTENZIONE: Presenti bancali a temperatura 2/8°C e 15/25°C insieme in questa bolla!
+                  </div>
                 )}
+
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 space-y-2">
+                  <div className="text-[11px] font-black uppercase tracking-wider text-sky-400">
+                    Diciture Temperatura &amp; ADR auto-rilevate dalle palette ({bollaModal.items?.length || 0} righe)
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(!bollaModal.compliance?.tempRegimes?.length && !bollaModal.compliance?.isAdr) ? (
+                      <span className="text-xs text-slate-400 italic">Nessuna temperatura controllata o ADR sui bancali di questa spedizione (Senza temperatura / Standard).</span>
+                    ) : (
+                      <>
+                        {bollaModal.compliance?.tempRegimes?.map(tr => (
+                          <span key={tr} className="px-2.5 py-1 rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 text-xs font-bold">
+                            {TEMP_REGIME_MAP[tr]?.label || tr}
+                          </span>
+                        ))}
+                        {bollaModal.compliance?.adrDescriptions?.map(desc => (
+                          <span key={desc} className="px-2.5 py-1 rounded-lg bg-rose-500/20 text-rose-200 border border-rose-500/40 text-xs font-bold">
+                            ADR: {desc}
+                          </span>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                  {(bollaModal.items || []).some(it => it.pallet_code) && (
+                    <div className="pt-2 border-t border-slate-800 space-y-1 max-h-28 overflow-y-auto">
+                      {bollaModal.items.filter(it => it.pallet_code).map(it => (
+                        <div key={it.id} className="flex items-center justify-between gap-2 text-[11px] text-slate-300">
+                          <span className="truncate font-mono">
+                            {it.pallet_code} • {it.product_name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => openPalletMetaEditor(it, () => refreshBollaModalCompliance(bollaModal.order.id))}
+                            className="px-2 py-0.5 bg-slate-800 hover:bg-brand-blue hover:text-brand-black text-sky-300 rounded font-bold shrink-0"
+                          >
+                            Modifica Temp/ADR
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="space-y-1.5 pt-1 text-xs text-slate-300">
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -2798,7 +3108,7 @@ const Outbound = () => {
                       checked={Boolean(bollaModal.bolla_options?.legal_transport_norm)}
                       onChange={e => setBollaModal(prev => ({ ...prev, bolla_options: { ...prev.bolla_options, legal_transport_norm: e.target.checked } }))}
                     />
-                    Validità documento di trasporto D.P.R. 472/96 &amp; normativa autotrasporto D.Lgs. 286/2005
+                    Validità documento di trasporto D.P.R. 472/96 (Causale C/FINE DEPOSITO) &amp; D.Lgs. 286/2005
                   </label>
                 </div>
               </div>
@@ -2888,6 +3198,35 @@ const Outbound = () => {
         </div>
       )}
 
+      {/* Modale Rapido Modifica Temperatura & ADR Paletta */}
+      {metaEditModal.show && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
+          <div className="bg-slate-900 border border-sky-500/40 rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-sky-400">Correzione Rapida Metadata Paletta</span>
+                <h3 className="text-lg font-black text-white font-mono">{metaEditModal.palletCode}</h3>
+              </div>
+              <button type="button" onClick={() => setMetaEditModal(p => ({ ...p, show: false }))} className="p-1.5 text-slate-400 hover:text-white"><X size={18} /></button>
+            </div>
+            <form onSubmit={handleSavePalletMeta} className="space-y-4">
+              <LogisticsMetaFields
+                compact
+                tempRegime={metaEditModal.temp_regime}
+                onTempChange={(val) => setMetaEditModal(p => ({ ...p, temp_regime: val }))}
+                isAdr={metaEditModal.is_adr}
+                onAdrToggle={(val) => setMetaEditModal(p => ({ ...p, is_adr: val }))}
+                adrData={metaEditModal.adr_data}
+                onAdrDataChange={(val) => setMetaEditModal(p => ({ ...p, adr_data: val }))}
+              />
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setMetaEditModal(p => ({ ...p, show: false }))} className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-bold text-xs">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-2.5 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-xs">Salva Temp / ADR</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

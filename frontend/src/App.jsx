@@ -26,6 +26,7 @@ const Outbound = lazy(() => import('./pages/desktop/Outbound'));
 const OutboundHistory = lazy(() => import('./pages/desktop/OutboundHistory'));
 const OutboundReturns = lazy(() => import('./pages/desktop/OutboundReturns'));
 const Quarantine = lazy(() => import('./pages/desktop/Quarantine'));
+const NonConformities = lazy(() => import('./pages/desktop/NonConformities'));
 const Inventory = lazy(() => import('./pages/desktop/Inventory'));
 const Locations = lazy(() => import('./pages/desktop/Locations'));
 const WarehouseSigns = lazy(() => import('./pages/desktop/WarehouseSigns'));
@@ -34,6 +35,7 @@ const ClientTariffManager = lazy(() => import('./pages/desktop/ClientTariffManag
 const Settings = lazy(() => import('./pages/desktop/Settings'));
 const RoutingManager = lazy(() => import('./pages/desktop/RoutingManager'));
 const BillingRulesManager = lazy(() => import('./pages/desktop/BillingRulesManager'));
+const BillingAuditLogs = lazy(() => import('./pages/desktop/BillingAuditLogs'));
 const PreBillingDashboard = lazy(() => import('./pages/desktop/PreBillingDashboard'));
 const FinancesDashboard = lazy(() => import('./pages/desktop/FinancesDashboard'));
 const TMSDashboard = lazy(() => import('./pages/desktop/TMSDashboard'));
@@ -455,6 +457,14 @@ function App() {
               }
             />
             <Route
+              path="non-conformities"
+              element={
+                <ProtectedSection perm={['view_non_conformities', 'non_conformities_manage', 'access_desktop']} sectionName="Non Conformità" {...guardProps}>
+                  <NonConformities />
+                </ProtectedSection>
+              }
+            />
+            <Route
               path="inventory"
               element={
                 <ProtectedSection perm="view_inventory" sectionName="Inventario Globale" {...guardProps}>
@@ -523,6 +533,14 @@ function App() {
               element={
                 <ProtectedSection perm={['view_billing', 'finance_manage', 'tariff_plans_manage']} sectionName="Regole Base Fatturazione" {...guardProps}>
                   <BillingRulesManager />
+                </ProtectedSection>
+              }
+            />
+            <Route
+              path="billing-audit"
+              element={
+                <ProtectedSection perm={['view_billing', 'finance_manage', 'view_finances']} sectionName="Storico Fatturazioni" {...guardProps}>
+                  <BillingAuditLogs />
                 </ProtectedSection>
               }
             />

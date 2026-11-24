@@ -9,6 +9,7 @@ import {
   Box,
   Map as MapIcon,
   History,
+  FileSpreadsheet,
   LogOut,
   Settings,
   FileText,
@@ -28,6 +29,7 @@ import {
   DollarSign,
   RotateCcw,
   ShieldAlert,
+  AlertTriangle,
   Activity,
   TrendingDown,
   Archive,
@@ -101,6 +103,7 @@ const DesktopLayout = () => {
   const [socketConnected, setSocketConnected] = useState(true);
   const [socketInstance, setSocketInstance] = useState(null);
   const [openTicketsCount, setOpenTicketsCount] = useState(0);
+  const [openNcCount, setOpenNcCount] = useState(0);
   const [sectionLocks, setSectionLocks] = useState({});
   const [showLockModal, setShowLockModal] = useState(false);
   const [lockDraftNote, setLockDraftNote] = useState('');
@@ -130,9 +133,9 @@ const DesktopLayout = () => {
   const [dragOverId, setDragOverId] = useState(null);
 
   const [openSubmenus, setOpenSubmenus] = useState({
-    cat_merce: ['/desktop/inbound', '/desktop/custom-forms', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine'].includes(location.pathname),
+    cat_merce: ['/desktop/inbound', '/desktop/custom-forms', '/desktop/outbound', '/desktop/inventory', '/desktop/products', '/desktop/outbound/history', '/desktop/outbound/returns', '/desktop/quarantine', '/desktop/non-conformities'].includes(location.pathname),
     cat_finanza: ['/desktop/finances', '/desktop/expenses', '/desktop/invoices-history'].includes(location.pathname),
-    cat_amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard'].includes(location.pathname),
+    cat_amministrazione: ['/desktop/billing-rules', '/desktop/billing-tariffs', '/desktop/billing-dashboard', '/desktop/billing-audit'].includes(location.pathname),
     cat_config: ['/desktop/settings', '/desktop/settings/routing'].includes(location.pathname)
   });
 
@@ -157,6 +160,7 @@ const DesktopLayout = () => {
         { id: 'outbound_returns', name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
         { id: 'products', name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
         { id: 'quarantine', name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
+        { id: 'non_conformities', name: 'Non Conformità', path: '/desktop/non-conformities', icon: AlertTriangle, perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'], badge: openNcCount },
         { id: 'inventory', name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' }
       ]
     },
@@ -185,7 +189,8 @@ const DesktopLayout = () => {
       submenu: [
         { id: 'billing_rules', name: 'Regole Base', path: '/desktop/billing-rules', icon: Settings2, perm: ['view_billing', 'finance_manage'] },
         { id: 'billing_tariffs', name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, perm: ['view_billing', 'finance_manage'] },
-        { id: 'billing_dashboard', name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: ['view_billing', 'finance_manage'] }
+        { id: 'billing_dashboard', name: 'Pre-Fatturazione', path: '/desktop/billing-dashboard', icon: ReceiptText, perm: ['view_billing', 'finance_manage'] },
+        { id: 'billing_audit', name: 'Storico Fatturazioni', path: '/desktop/billing-audit', icon: FileSpreadsheet, perm: ['view_billing', 'finance_manage', 'view_finances'] }
       ]
     },
     { id: 'users', name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, perm: ['view_users', 'users_manage'] },
@@ -202,7 +207,7 @@ const DesktopLayout = () => {
         { id: 'routing', name: 'Regole di Prelievo', path: '/desktop/settings/routing', icon: MapIcon, perm: ['view_settings', 'settings_manage', 'pallet_move'] }
       ]
     }
-  ], [openTicketsCount]);
+  ], [openTicketsCount, openNcCount]);
 
   useEffect(() => {
     setOpenSubmenus(prev => {
@@ -255,6 +260,17 @@ const DesktopLayout = () => {
     };
 
     fetchOpenTicketsCount();
+    const fetchOpenNcCount = () => {
+      const tk = localStorage.getItem('maglite_token');
+      if (!tk) return;
+      axios.get(`http://${window.location.hostname}:3000/api/non-conformities`, {
+        params: { status: 'OPEN' },
+        headers: { Authorization: `Bearer ${tk}` }
+      }).then(res => {
+        setOpenNcCount(Number(res.data?.stats?.open) || 0);
+      }).catch(() => {});
+    };
+    fetchOpenNcCount();
     const fetchLocks = () => {
       const tk = localStorage.getItem('maglite_token');
       if (!tk) return;
@@ -276,6 +292,7 @@ const DesktopLayout = () => {
     socket.on('disconnect', () => setSocketConnected(false));
     socket.on('connect_error', () => setSocketConnected(false));
     socket.on('ticket_updated', fetchOpenTicketsCount);
+    socket.on('non_conformity_updated', fetchOpenNcCount);
     socket.on('section_locks_updated', (locks) => {
       if (locks && typeof locks === 'object') setSectionLocks(locks);
       else fetchLocks();
@@ -519,6 +536,7 @@ const DesktopLayout = () => {
     { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: ['view_outbound', 'outbound_return'] },
     { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce', perm: 'view_products' },
     { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, group: 'Merce', perm: 'view_quarantine' },
+    { name: 'Non Conformità', path: '/desktop/non-conformities', icon: AlertTriangle, group: 'Merce', perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'] },
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },
     { name: 'Cartelle Clienti', path: '/desktop/customers', icon: Users, group: 'Anagrafiche', perm: 'view_customers' },
     { name: 'Mappa Magazzino & Scaffali', path: '/desktop/locations', icon: MapIcon, group: 'Magazzino', perm: 'view_locations' },
@@ -532,6 +550,7 @@ const DesktopLayout = () => {
     { name: 'Regole Base Fatturazione', path: '/desktop/billing-rules', icon: Settings2, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
     { name: 'Tariffe Clienti', path: '/desktop/billing-tariffs', icon: Coins, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
     { name: 'Pre-Fatturazione Mensile', path: '/desktop/billing-dashboard', icon: ReceiptText, group: 'Amministrazione', perm: ['view_billing', 'finance_manage'] },
+    { name: 'Storico Fatturazioni', path: '/desktop/billing-audit', icon: FileSpreadsheet, group: 'Amministrazione', perm: ['view_billing', 'finance_manage', 'view_finances'] },
     { name: 'Utenti (Team)', path: '/desktop/users', icon: UserCog, group: 'Sistema', perm: ['view_users', 'users_manage'] },
     { name: 'Audit Logs', path: '/desktop/audit', icon: History, group: 'Sistema', perm: 'view_audit' },
     { name: 'Supporto & Ticket', path: '/desktop/tickets', icon: TicketIcon, group: 'Sistema' },

@@ -9,9 +9,11 @@ import {
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { hasPerm } from '../utils/permissions';
 import ZebraErrorModal from './ZebraErrorModal';
+import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
 const VerifyBarcodeZebra = () => {
   const navigate = useNavigate();
+  const workspace = useZebraWorkspace();
   const [scanInput, setScanInput] = useState('');
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -45,6 +47,11 @@ const VerifyBarcodeZebra = () => {
       const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/inspect/${encodeURIComponent(code)}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
+      if (workspace?.warehouseId && res.data?.warehouse_id && Number(res.data.warehouse_id) !== Number(workspace.warehouseId)) {
+        setData(null);
+        setFeedback({ type: 'error', text: `Paletta appartenente ad un altro magazzino (${res.data.warehouse || 'Altra sede'}). Cambia sede dal selettore in alto.` });
+        return;
+      }
       setData(res.data);
     } catch (err) {
       setData(null);

@@ -1,4 +1,5 @@
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
+const { logBillingAudit } = require('../utils/billingAudit');
 const db = require('../config/db');
 
 async function billingRoutes(fastify, options) {
@@ -77,6 +78,14 @@ async function billingRoutes(fastify, options) {
         'INSERT INTO billing_rules (rule_code, description, default_price, rule_type) VALUES (?, ?, ?, ?)',
         [normalizedCode, cleanDesc, priceVal, finalType]
       );
+      await logBillingAudit(db, {
+        action: 'CREATE_RULE',
+        entity_ref: normalizedCode,
+        details: `Creata regola globale "${cleanDesc}" (${normalizedCode}) con prezzo base €${priceVal.toFixed(2)}`,
+        metadata: { rule_code: normalizedCode, description: cleanDesc, default_price: priceVal, rule_type: finalType },
+        username: request.user?.username,
+        source: 'Regole Base'
+      });
       if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true, id: result.insertId, rule_code: normalizedCode, description: cleanDesc, default_price: priceVal, rule_type: finalType };
     } catch (err) {
@@ -89,10 +98,19 @@ async function billingRoutes(fastify, options) {
   fastify.put('/rules/:id', async (request, reply) => {
     const { description, default_price, rule_type } = request.body;
     try {
+      const [[prevRule]] = await db.query('SELECT * FROM billing_rules WHERE id = ?', [request.params.id]);
       await db.query(
         'UPDATE billing_rules SET description = ?, default_price = ?, rule_type = ? WHERE id = ?',
         [description, default_price, rule_type, request.params.id]
       );
+      await logBillingAudit(db, {
+        action: 'UPDATE_RULE',
+        entity_ref: prevRule?.rule_code || `RULE-${request.params.id}`,
+        details: `Modificata regola "${description}" (${prevRule?.rule_code || request.params.id}): €${(parseFloat(prevRule?.default_price) || 0).toFixed(2)} → €${(parseFloat(default_price) || 0).toFixed(2)}`,
+        metadata: { prev: prevRule, next: { description, default_price, rule_type } },
+        username: request.user?.username,
+        source: 'Regole Base'
+      });
       if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true };
     } catch (err) {
@@ -104,7 +122,15 @@ async function billingRoutes(fastify, options) {
   // DELETE Rule
   fastify.delete('/rules/:id', async (request, reply) => {
     try {
+      const [[prevRule]] = await db.query('SELECT * FROM billing_rules WHERE id = ?', [request.params.id]);
       await db.query('DELETE FROM billing_rules WHERE id = ?', [request.params.id]);
+      await logBillingAudit(db, {
+        action: 'DELETE_RULE',
+        entity_ref: prevRule?.rule_code || `RULE-${request.params.id}`,
+        details: `Eliminata regola globale "${prevRule?.description || request.params.id}" (${prevRule?.rule_code || ''})`,
+        username: request.user?.username,
+        source: 'Regole Base'
+      });
       if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true };
     } catch (err) {
@@ -233,10 +259,10 @@ async function billingRoutes(fastify, options) {
     }
   });
 
-  // POST Tariffs (Upsert per listino globale specifico o legacy)
+  // POST Tariffs (Upsert per listino globale specifico o legacy + log storico fatturazione)
   fastify.post('/tariffs/:clientId', async (request, reply) => {
     const { clientId } = request.params;
-    const { tariffs, plan_id = null } = request.body || {}; // [{ rule_code, custom_price }]
+    const { tariffs, plan_id = null, audit_note = null } = request.body || {}; // [{ rule_code, custom_price }]
     
     if (!tariffs || !Array.isArray(tariffs)) {
       return reply.code(400).send({ error: 'Formato tariffe non valido' });
@@ -246,11 +272,24 @@ async function billingRoutes(fastify, options) {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-      const [[cust]] = await conn.query('SELECT tariff_plan_id FROM CUSTOMERS WHERE id = ?', [clientId]);
+      const [[cust]] = await conn.query('SELECT business_name, tariff_plan_id FROM CUSTOMERS WHERE id = ?', [clientId]);
+      const [[planRow]] = parsedPlanId
+        ? await conn.query('SELECT name FROM tariff_plans WHERE id = ?', [parsedPlanId])
+        : [[null]];
+
+      const [prevRows] = parsedPlanId
+        ? await conn.query('SELECT rule_code, custom_price FROM customer_plan_tariffs WHERE customer_id = ? AND plan_id = ?', [clientId, parsedPlanId])
+        : await conn.query('SELECT rule_code, custom_price FROM client_tariffs WHERE customer_id = ?', [clientId]);
+      const prevMap = new Map(prevRows.map(r => [r.rule_code, parseFloat(r.custom_price) || 0]));
+      const diffs = [];
 
       if (parsedPlanId) {
         for (const t of tariffs) {
           const val = parseFloat(t.custom_price) || 0;
+          const oldVal = prevMap.get(t.rule_code);
+          if (oldVal === undefined || Math.abs(oldVal - val) > 0.001) {
+            diffs.push(`${t.rule_code}: €${(oldVal ?? 0).toFixed(2)} → €${val.toFixed(2)}`);
+          }
           await conn.query(`
             INSERT INTO customer_plan_tariffs (customer_id, plan_id, rule_code, custom_price)
             VALUES (?, ?, ?, ?)
@@ -268,6 +307,10 @@ async function billingRoutes(fastify, options) {
       } else {
         for (const t of tariffs) {
           const val = parseFloat(t.custom_price) || 0;
+          const oldVal = prevMap.get(t.rule_code);
+          if (oldVal === undefined || Math.abs(oldVal - val) > 0.001) {
+            diffs.push(`${t.rule_code}: €${(oldVal ?? 0).toFixed(2)} → €${val.toFixed(2)}`);
+          }
           await conn.query(`
             INSERT INTO client_tariffs (customer_id, rule_code, custom_price) 
             VALUES (?, ?, ?)
@@ -275,6 +318,20 @@ async function billingRoutes(fastify, options) {
           `, [clientId, t.rule_code, val, val]);
         }
       }
+
+      if (diffs.length > 0 || audit_note) {
+        await logBillingAudit(conn, {
+          action: 'UPDATE_CLIENT_TARIFFS',
+          customer_id: Number(clientId),
+          customer_name: cust?.business_name || null,
+          entity_ref: planRow?.name || `Cliente #${clientId}`,
+          details: `Aggiornate tariffe "${planRow?.name || 'Standard'}" per ${cust?.business_name || `#${clientId}`}${audit_note ? ` [${audit_note}]` : ''}: ${diffs.slice(0, 12).join(' | ')}${diffs.length > 12 ? ` (+${diffs.length - 12} altre)` : ''}`,
+          metadata: { plan_id: parsedPlanId, diffs, audit_note },
+          username: request.user?.username,
+          source: 'Listini Clienti'
+        });
+      }
+
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated', { clientId });
       return { success: true };
@@ -294,6 +351,14 @@ async function billingRoutes(fastify, options) {
     if (!planId) return reply.code(400).send({ error: 'plan_id richiesto' });
     try {
       await db.query('DELETE FROM customer_plan_tariffs WHERE customer_id = ? AND plan_id = ?', [clientId, planId]);
+      await logBillingAudit(db, {
+        action: 'RESET_CLIENT_TARIFFS',
+        customer_id: clientId,
+        entity_ref: `Listino #${planId}`,
+        details: `Ripristinati prezzi originali del listino #${planId} per cliente #${clientId}`,
+        username: request.user?.username,
+        source: 'Listini Clienti'
+      });
       if (fastify.io) fastify.io.emit('billing_updated', { clientId });
       return { success: true };
     } catch (err) {
@@ -374,6 +439,15 @@ async function billingRoutes(fastify, options) {
         );
       }
 
+      await logBillingAudit(conn, {
+        action: 'CREATE_PLAN',
+        entity_ref: cleanName,
+        details: `Creato listino globale "${cleanName}" (Dicitura fattura: "${cleanInvoiceLabel}") con ${entries.length} voci configurate.`,
+        metadata: { planId, entries },
+        username: request.user?.username,
+        source: 'Listini Globali'
+      });
+
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated');
       return reply.code(201).send({ success: true, id: planId, name: cleanName, invoice_label: cleanInvoiceLabel });
@@ -423,8 +497,16 @@ async function billingRoutes(fastify, options) {
             ? items.map(i => [i.rule_code, parseFloat(i.price) || 0])
             : Object.entries(items || {}).map(([code, val]) => [code, parseFloat(val) || 0]));
 
+      const [prevPlanItems] = await conn.query('SELECT rule_code, price FROM tariff_plan_items WHERE plan_id = ?', [planId]);
+      const prevPlanMap = new Map(prevPlanItems.map(i => [i.rule_code, parseFloat(i.price) || 0]));
+      const planDiffs = [];
+
       for (const [ruleCode, price] of entries) {
         if (!ruleCode) continue;
+        const oldP = prevPlanMap.get(ruleCode);
+        if (oldP === undefined || Math.abs(oldP - price) > 0.001) {
+          planDiffs.push(`${ruleCode}: €${(oldP ?? 0).toFixed(2)} → €${price.toFixed(2)}`);
+        }
         await conn.query(
           'INSERT INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = ?',
           [planId, ruleCode, price, price]
@@ -447,6 +529,16 @@ async function billingRoutes(fastify, options) {
           }
         }
       }
+
+      const auditNote = request.body?.audit_note ? ` [${request.body.audit_note}]` : '';
+      await logBillingAudit(conn, {
+        action: 'UPDATE_PLAN',
+        entity_ref: cleanName,
+        details: `Aggiornato listino globale "${cleanName}"${sync_assigned ? ' (sincronizzato sui clienti)' : ''}${auditNote}${planDiffs.length > 0 ? `: ${planDiffs.slice(0, 12).join(' | ')}` : ''}`,
+        metadata: { planId, planDiffs, sync_assigned },
+        username: request.user?.username,
+        source: 'Listini Globali'
+      });
 
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated');
@@ -480,6 +572,13 @@ async function billingRoutes(fastify, options) {
       }
       await conn.query('UPDATE CUSTOMERS SET tariff_plan_id = NULL WHERE tariff_plan_id = ?', [planId]);
       await conn.query('DELETE FROM tariff_plans WHERE id = ?', [planId]);
+      await logBillingAudit(conn, {
+        action: 'DELETE_PLAN',
+        entity_ref: planRows[0].name,
+        details: `Eliminato listino globale "${planRows[0].name}"`,
+        username: request.user?.username,
+        source: 'Listini Globali'
+      });
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated');
       return { success: true };
@@ -539,6 +638,16 @@ async function billingRoutes(fastify, options) {
           );
         }
       }
+
+      await logBillingAudit(conn, {
+        action: 'APPLY_PLAN',
+        customer_id: clientId,
+        entity_ref: plan.name,
+        details: `Applicato listino globale "${plan.name}" come predefinito (${targetIds.length} entità aggiornate)`,
+        metadata: { planId, apply_to_fragments, targetIds },
+        username: request.user?.username,
+        source: 'Listini Clienti'
+      });
 
       await conn.commit();
       if (fastify.io) fastify.io.emit('billing_updated', { clientId });
@@ -835,7 +944,7 @@ async function billingRoutes(fastify, options) {
         const defaultEntityBundle = getTariffsForPlan(entity.tariff_plan_id || defaultGlobalPlan?.id || null);
         const tariffs = defaultEntityBundle.rules;
 
-        // Trovo le palette di questa specifica entità con tutti i dettagli prodotto, codice articolo, lotto, rif. paletta cliente, note, pesi, listino e quantità storica se spedita
+        // Trovo le palette di questa specifica entità con tutti i dettagli prodotto, codice articolo, lotto, rif. paletta cliente, note, pesi, listino, check-in container e uscita container
         const [pallets] = await db.query(`
           SELECT p.id, p.pallet_code,
                  p.tariff_plan_id,
@@ -864,10 +973,37 @@ async function billingRoutes(fastify, options) {
                  p.status,
                  pr.name as product_name,
                  pr.id as product_id,
-                 d.ddt_number as inbound_ddt_number
+                 d.ddt_number as inbound_ddt_number,
+                 COALESCE(p.checkin_id, d.checkin_id) AS effective_checkin_id,
+                 cfs.session_code AS inbound_session_code,
+                 COALESCE(
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cfs.answers, '$.tipo_mezzo')), 'null'),
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cfs.answers, '$.step_mezzo')), 'null'),
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cfs.answers, '$.vehicle_type')), 'null'),
+                   ''
+                 ) AS inbound_vehicle_type,
+                 (
+                   SELECT oo.id
+                   FROM OUTBOUND_ITEMS oi
+                   JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+                   WHERE (oi.pallet_id = p.id OR (oi.pallet_id IS NULL AND oi.pallet_code = p.pallet_code AND oi.product_id = p.product_id))
+                     AND oo.status = 'SHIPPED'
+                     AND COALESCE(oo.is_container, 0) = 1
+                   ORDER BY oo.shipped_at DESC LIMIT 1
+                 ) AS outbound_container_order_id,
+                 (
+                   SELECT COALESCE(oo.bolla_number, oo.order_code)
+                   FROM OUTBOUND_ITEMS oi
+                   JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+                   WHERE (oi.pallet_id = p.id OR (oi.pallet_id IS NULL AND oi.pallet_code = p.pallet_code AND oi.product_id = p.product_id))
+                     AND oo.status = 'SHIPPED'
+                     AND COALESCE(oo.is_container, 0) = 1
+                   ORDER BY oo.shipped_at DESC LIMIT 1
+                 ) AS outbound_container_ref
           FROM PALLETS p
           LEFT JOIN PRODUCTS pr ON p.product_id = pr.id
           LEFT JOIN INBOUND_DDTS d ON p.inbound_ddt_id = d.id
+          LEFT JOIN CUSTOM_FORM_SUBMISSIONS cfs ON cfs.id = COALESCE(p.checkin_id, d.checkin_id)
           WHERE p.customer_id = ? 
           AND p.created_at <= ? 
           AND (
@@ -960,6 +1096,8 @@ async function billingRoutes(fastify, options) {
         };
 
         const addedFlatFeePlanKeys = new Set();
+        const billedInboundContainers = new Set();
+        const billedOutboundContainers = new Set();
 
         // Raggruppo per pallet_code per evitare sovrafatturazione sulle palette miste
         const groupedPalletsMap = new Map();
@@ -1084,9 +1222,32 @@ async function billingRoutes(fastify, options) {
             grpMap.get(key).pallets.push(palletSummaryObj);
           };
 
-          // 1. INBOUND
+          const inboundContainerRow = rows.find(
+            r => r.effective_checkin_id && String(r.inbound_vehicle_type || '').toUpperCase().includes('CONTAINER')
+          );
+          const outboundContainerRow = rows.find(r => r.outbound_container_order_id);
+
+          // 1. INBOUND (se entrata con modulo Zebra Container -> fattura 1 volta SCARICO_CONTAINER al posto dell'IN_PALLET per ogni paletta)
           if (isEnteredInMonth) {
-            if (!isFlatRatePallet) {
+            if (inboundContainerRow) {
+              if (!isFlatRatePallet && !billedInboundContainers.has(inboundContainerRow.effective_checkin_id)) {
+                billedInboundContainers.add(inboundContainerRow.effective_checkin_id);
+                const c = addSectionCost(
+                  'EVENTI',
+                  'SCARICO_CONTAINER',
+                  pTariffs['SCARICO_CONTAINER']?.desc || `Scarico Container (${inboundContainerRow.inbound_session_code || '#' + inboundContainerRow.effective_checkin_id})`,
+                  1,
+                  palletSummaryObj,
+                  undefined,
+                  pTariffs,
+                  palletPlanBundle
+                );
+                if (c > 0) {
+                  palletCharges.push({ code: 'SCARICO_CONTAINER', label: `Scarico Container (${inboundContainerRow.inbound_session_code || '#' + inboundContainerRow.effective_checkin_id})`, price: c });
+                  palletTotalPrice += c;
+                }
+              }
+            } else if (!isFlatRatePallet) {
               const c = addSectionCost('EVENTI', 'IN_PALLET', pTariffs['IN_PALLET']?.desc || 'Ingresso Paletta (IN)', 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
               if (c > 0) {
                 palletCharges.push({ code: 'IN_PALLET', label: `Ingresso (${formatDateIT(inDate)})`, price: c });
@@ -1098,9 +1259,27 @@ async function billingRoutes(fastify, options) {
             pushTagEntry(inboundByDayAndTag, pGroupBucket.inboundByDayAndTag, key, () => ({ dateStr, tagLabel, pallets: [] }));
           }
 
-          // 2. OUTBOUND
+          // 2. OUTBOUND (se uscita su bolla impostata come Carico Container -> fattura 1 volta CARICO_CONTAINER al posto dell'OUT_PALLET)
           if (isExitedInMonth) {
-            if (!isFlatRatePallet) {
+            if (outboundContainerRow) {
+              if (!isFlatRatePallet && !billedOutboundContainers.has(outboundContainerRow.outbound_container_order_id)) {
+                billedOutboundContainers.add(outboundContainerRow.outbound_container_order_id);
+                const c = addSectionCost(
+                  'EVENTI',
+                  'CARICO_CONTAINER',
+                  pTariffs['CARICO_CONTAINER']?.desc || `Carico Container (${outboundContainerRow.outbound_container_ref || '#' + outboundContainerRow.outbound_container_order_id})`,
+                  1,
+                  palletSummaryObj,
+                  undefined,
+                  pTariffs,
+                  palletPlanBundle
+                );
+                if (c > 0) {
+                  palletCharges.push({ code: 'CARICO_CONTAINER', label: `Carico Container (${outboundContainerRow.outbound_container_ref || '#' + outboundContainerRow.outbound_container_order_id})`, price: c });
+                  palletTotalPrice += c;
+                }
+              }
+            } else if (!isFlatRatePallet) {
               const c = addSectionCost('EVENTI', 'OUT_PALLET', pTariffs['OUT_PALLET']?.desc || 'Uscita Paletta (OUT)', 1, palletSummaryObj, undefined, pTariffs, palletPlanBundle);
               if (c > 0) {
                 palletCharges.push({ code: 'OUT_PALLET', label: `Uscita (${formatDateIT(outDate)})`, price: c });
@@ -1413,6 +1592,64 @@ async function billingRoutes(fastify, options) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore durante il calcolo della pre-fattura' });
     }
+  });
+
+  // GET /api/billing/audit-logs - Storico separato di tutte le azioni di fatturazione, tariffe, sconti, fatture
+  fastify.get('/audit-logs', async (request, reply) => {
+    const { action = '', customer_id = '', search = '', date_from = '', date_to = '' } = request.query || {};
+    try {
+      const whereParts = ['1=1'];
+      const params = [];
+      if (action) {
+        whereParts.push('action = ?');
+        params.push(action);
+      }
+      if (customer_id) {
+        whereParts.push('customer_id = ?');
+        params.push(parseInt(customer_id, 10));
+      }
+      if (date_from) {
+        whereParts.push('created_at >= ?');
+        params.push(`${date_from} 00:00:00`);
+      }
+      if (date_to) {
+        whereParts.push('created_at <= ?');
+        params.push(`${date_to} 23:59:59`);
+      }
+      if (search && String(search).trim()) {
+        const s = `%${String(search).trim()}%`;
+        whereParts.push('(details LIKE ? OR customer_name LIKE ? OR entity_ref LIKE ? OR username LIKE ? OR action LIKE ?)');
+        params.push(s, s, s, s, s);
+      }
+
+      const [rows] = await db.query(
+        `SELECT * FROM BILLING_AUDIT_LOGS WHERE ${whereParts.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT 1000`,
+        params
+      );
+      return rows;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore recupero storico fatturazione' });
+    }
+  });
+
+  // POST /api/billing/audit-logs - Registra eventi client-side (es. sconti o voci manuali aggiunte in pre-fatturazione)
+  fastify.post('/audit-logs', async (request, reply) => {
+    const { action, customer_id = null, customer_name = null, entity_ref = null, details, metadata = null, source = 'Pre-Fatturazione' } = request.body || {};
+    if (!action || !details) {
+      return reply.code(400).send({ error: 'action e details obbligatori' });
+    }
+    const id = await logBillingAudit(db, {
+      action,
+      customer_id,
+      customer_name,
+      entity_ref,
+      details,
+      metadata,
+      username: request.user?.username || 'Sistema',
+      source
+    });
+    return { success: true, id };
   });
 }
 

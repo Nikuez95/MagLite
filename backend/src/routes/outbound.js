@@ -5,6 +5,7 @@ const bwipjs = require('bwip-js');
 const { consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
 const { createNotification } = require('../utils/notifications');
+const { TEMP_REGIME_MAP, normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 
 async function getRoutingSettings(connection) {
   const [rows] = await connection.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("zone_routing_priority", "position_routing_priority")');
@@ -364,13 +365,156 @@ const DEFAULT_BOLLA_OPTIONS = {
   legal_intact_goods: true,
   legal_driver_check: true,
   legal_transport_norm: true,
-  causale: 'Trasporto / Consegna Merce',
+  causale: 'C/FINE DEPOSITO',
   porto: 'Franco',
   aspetto_beni: 'Bancali / Colli Imballati',
   carrier_name: '',
   vehicle_plate: '',
   transport_notes: ''
 };
+
+async function resolveOriginWarehouse(connection, originWarehouseId, fallbackName = null, fallbackAddress = null, palletWarehouseId = null) {
+  const targetId = originWarehouseId ? Number(originWarehouseId) : (palletWarehouseId ? Number(palletWarehouseId) : null);
+  if (targetId) {
+    const [[wh]] = await connection.query('SELECT id, name, address, cap, city, province FROM WAREHOUSES WHERE id = ? LIMIT 1', [targetId]);
+    if (wh) {
+      const cityPart = [wh.cap, wh.city, wh.province ? `(${wh.province})` : ''].filter(Boolean).join(' ');
+      const fullAddr = [wh.address, cityPart].filter(Boolean).join(' - ') || wh.name;
+      return { id: wh.id, name: wh.name, address: fullAddr };
+    }
+  }
+  if (fallbackName || fallbackAddress) {
+    return {
+      id: originWarehouseId ? Number(originWarehouseId) : null,
+      name: fallbackName || 'Magazzino Centrale',
+      address: fallbackAddress || fallbackName || ''
+    };
+  }
+  const [[defaultWh]] = await connection.query('SELECT id, name, address, cap, city, province FROM WAREHOUSES ORDER BY id ASC LIMIT 1');
+  if (defaultWh) {
+    const cityPart = [defaultWh.cap, defaultWh.city, defaultWh.province ? `(${defaultWh.province})` : ''].filter(Boolean).join(' ');
+    const fullAddr = [defaultWh.address, cityPart].filter(Boolean).join(' - ') || defaultWh.name;
+    return { id: defaultWh.id, name: defaultWh.name, address: fullAddr };
+  }
+  return { id: null, name: 'Magazzino Principale', address: null };
+}
+
+function summarizeOrderCompliance(items = [], legacyOpts = {}) {
+  const tempSet = new Set();
+  const adrMap = new Map();
+  let hasExplicitTemp = false;
+
+  for (const it of items) {
+    const norm = normalizeTempRegime(it.temp_regime);
+    if (norm !== 'NONE') {
+      tempSet.add(norm);
+      hasExplicitTemp = true;
+    } else if (it.temp_regime === 'NONE') {
+      hasExplicitTemp = true;
+    }
+
+    if (it.is_adr) {
+      const parsed = parseAdrData(it.adr_data);
+      const desc = parsed?.formatted_description
+        || (parsed?.un_number ? `${parsed.un_number}${parsed.proper_shipping_name ? ` - ${parsed.proper_shipping_name}` : ''}` : null)
+        || 'Merce Pericolosa ADR';
+      adrMap.set(desc, parsed || { formatted_description: desc });
+    }
+  }
+
+  // Fallback per ordini storici senza metadata su paletta
+  if (!hasExplicitTemp) {
+    if (legacyOpts.temp_6_8) tempSet.add('2_8');
+    if (legacyOpts.temp_15_25) tempSet.add('15_25');
+  }
+  if (adrMap.size === 0 && legacyOpts.is_adr) {
+    const legacyText = legacyOpts.adr_note ? `Merce Pericolosa ADR (${legacyOpts.adr_note})` : 'Merce Pericolosa ADR';
+    adrMap.set(legacyText, { formatted_description: legacyText });
+  }
+
+  const tempRegimes = Array.from(tempSet);
+  const adrDescriptions = Array.from(adrMap.keys());
+  const mixedColdWarning = tempSet.has('2_8') && tempSet.has('15_25');
+
+  return {
+    tempRegimes,
+    needsTempCheck: tempRegimes.length > 0,
+    mixedColdWarning,
+    isAdr: adrDescriptions.length > 0,
+    adrDescriptions
+  };
+}
+
+async function deductOutboundOrderStock(connection, order, items, username, sourceLabel = 'BACKOFFICE') {
+  for (const item of items) {
+    const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
+
+    let palletsQuery = `
+      SELECT pal.*, COALESCE(pal.units_per_box, p.units_per_box, 1) as effective_units_per_box, COALESCE(p.boxes_per_pallet, 1) as effective_boxes_per_pallet
+      FROM PALLETS pal
+      JOIN PRODUCTS p ON pal.product_id = p.id
+      WHERE 
+    `;
+    let palletsParams = [];
+    if (item.pallet_id) {
+      palletsQuery += `pal.id = ? FOR UPDATE`;
+      palletsParams = [item.pallet_id];
+    } else if (item.batch) {
+      palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND TRIM(pal.batch) = TRIM(?) AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1 FOR UPDATE`;
+      palletsParams = [item.pallet_code, item.product_id, item.batch];
+    } else {
+      palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1 FOR UPDATE`;
+      palletsParams = [item.pallet_code, item.product_id];
+    }
+
+    const [pallets] = await connection.query(palletsQuery, palletsParams);
+    if (pallets.length > 0) {
+      const pallet = pallets[0];
+      if (pallet.is_quarantined) {
+        throw new Error(`BLOCCO QUARANTENA: La paletta ${pallet.pallet_code} è in quarantena (${pallet.quarantine_reason || 'Bloccata'}) e non può essere spedita. Sbloccala prima dal Registro Quarantene.`);
+      }
+      const upb = parseFloat(pallet.effective_units_per_box) || 1;
+      const bpp = parseFloat(pallet.effective_boxes_per_pallet) || 1;
+      const unitsPerPallet = upb * bpp;
+      let newQty;
+
+      if ((item.requested_uom === 'Bancali' || item.requested_uom === 'Palette') && actualPicked >= 1) {
+        if (unitsPerPallet > 1 && parseFloat(pallet.quantity) > actualPicked * unitsPerPallet) {
+          newQty = parseFloat(pallet.quantity) - (actualPicked * unitsPerPallet);
+        } else {
+          newQty = 0;
+        }
+      } else {
+        let deduction = actualPicked;
+        if (item.requested_uom === 'Scatole' || item.requested_uom === 'Cartoni') {
+          deduction *= upb;
+        }
+        newQty = parseFloat(pallet.quantity) - deduction;
+      }
+
+      if (newQty <= 0) {
+        newQty = 0;
+        await connection.query('UPDATE PALLETS SET quantity = 0, status = "SHIPPED", location = NULL, shipped_at = CURRENT_TIMESTAMP WHERE id = ?', [pallet.id]);
+      } else {
+        await connection.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [newQty, pallet.id]);
+      }
+
+      if (!parseFloat(item.quantity_picked) || parseFloat(item.quantity_picked) <= 0) {
+        await connection.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED" WHERE id = ?', [actualPicked, item.id]);
+      }
+
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'OUTBOUND_PICK',
+          `Prelevato ${actualPicked} ${item.requested_uom || ''} da paletta ${pallet.pallet_code}${pallet.batch ? ` (Lotto: ${pallet.batch})` : ''} (rimanenza: ${newQty})`,
+          sourceLabel,
+          username
+        ]
+      );
+    }
+  }
+}
 
 function parseBollaOptions(raw) {
   let obj = {};
@@ -501,29 +645,44 @@ async function outboundRoutes(fastify, options) {
                o.picking_operator, o.shipped_by, o.start_picking_at, o.end_picking_at, o.shipped_at,
                o.return_count, o.last_returned_at, o.last_returned_by, o.last_return_reason,
                o.generate_exit_ddt, o.bolla_number, o.bolla_generated_at,
+               o.is_container, o.require_load_recheck, o.origin_warehouse_id, o.origin_warehouse_name, o.origin_warehouse_address,
+               o.load_checkin_id, o.load_checkin_session_code, o.load_vehicle_plate, o.load_recorded_temp,
+               o.load_hygiene_ok, o.load_strisciata_taken, o.load_completed_at, o.load_completed_by,
                o.delivery_address_id, o.delivery_label, o.delivery_address_text, o.bolla_options,
                o.created_by, o.created_at,
                c.business_name as customer_name,
+               c.parent_id as customer_parent_id,
+               pc.business_name as parent_customer_name,
                COALESCE(c.generate_exit_ddt, 1) as customer_generate_exit_ddt,
                COALESCE(agg.total_items, 0) as total_items,
                COALESCE(agg.picked_items, 0) as picked_items,
+               COALESCE(agg.has_adr, 0) as has_adr,
+               agg.temp_regimes,
+               agg.warehouse_names,
                agg.batches,
                agg.products,
                agg.pallets,
                agg.client_pallets
         FROM OUTBOUND_ORDERS o
         JOIN CUSTOMERS c ON o.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
         LEFT JOIN (
           SELECT oi.order_id,
                  COUNT(*) as total_items,
                  SUM(CASE WHEN oi.status = 'PICKED' THEN 1 ELSE 0 END) as picked_items,
+                 MAX(CASE WHEN COALESCE(pal.is_adr, 0) = 1 THEN 1 ELSE 0 END) as has_adr,
+                 GROUP_CONCAT(DISTINCT NULLIF(TRIM(pal.temp_regime), '') SEPARATOR ',') as temp_regimes,
+                 GROUP_CONCAT(DISTINCT NULLIF(TRIM(pal.warehouse), '') SEPARATOR ', ') as warehouse_names,
                  GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(oi.batch, pal.batch)), '') SEPARATOR ', ') as batches,
                  GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ') as products,
                  GROUP_CONCAT(DISTINCT oi.pallet_code SEPARATOR ', ') as pallets,
                  GROUP_CONCAT(DISTINCT NULLIF(TRIM(pal.client_pallet_number), '') SEPARATOR ', ') as client_pallets
           FROM OUTBOUND_ITEMS oi
           LEFT JOIN PRODUCTS p ON p.id = oi.product_id
-          LEFT JOIN PALLETS pal ON pal.id = oi.pallet_id
+          LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+            oi.pallet_id,
+            (SELECT p2.id FROM PALLETS p2 WHERE p2.pallet_code = oi.pallet_code AND p2.product_id = oi.product_id ORDER BY p2.id ASC LIMIT 1)
+          )
           GROUP BY oi.order_id
         ) agg ON agg.order_id = o.id
       `;
@@ -559,7 +718,12 @@ async function outboundRoutes(fastify, options) {
       delivery_address_id = null,
       delivery_label = null,
       delivery_address_text = null,
-      bolla_options = null
+      bolla_options = null,
+      is_container = false,
+      require_load_recheck = false,
+      origin_warehouse_id = null,
+      origin_warehouse_name = null,
+      origin_warehouse_address = null
     } = request.body;
     if (!hasPermission(request.user, 'outbound_create')) {
       return reply.code(403).send({ error: 'Accesso negato: non hai il permesso di creare spedizioni.' });
@@ -597,12 +761,23 @@ async function outboundRoutes(fastify, options) {
             ? (generate_exit_ddt === false || generate_exit_ddt === 0 || generate_exit_ddt === 'false' ? 0 : 1)
             : (deliveryData.cust ? Number(Boolean(deliveryData.cust.generate_exit_ddt)) : 1);
           const mergedOptions = parseBollaOptions(bolla_options);
+          const allocatedItemsPOST = await allocateOutboundItems(items, connection);
+          const firstPalId = allocatedItemsPOST.find(a => a.pallet_id)?.pallet_id || null;
+          let fallbackWhId = null;
+          if (!origin_warehouse_id && firstPalId) {
+            const [[palWh]] = await connection.query('SELECT warehouse_id FROM PALLETS WHERE id = ?', [firstPalId]);
+            if (palWh?.warehouse_id) fallbackWhId = palWh.warehouse_id;
+          }
+          const originWh = await resolveOriginWarehouse(connection, origin_warehouse_id, origin_warehouse_name, origin_warehouse_address, fallbackWhId);
+          const isContainerFlag = (is_container === true || is_container === 1 || is_container === 'true') ? 1 : 0;
+          const requireRecheckFlag = (require_load_recheck === true || require_load_recheck === 1 || require_load_recheck === 'true') ? 1 : 0;
           
           const [orderRes] = await connection.query(
             `INSERT INTO OUTBOUND_ORDERS
              (order_code, customer_id, exit_date, created_by, client_ddt, notes,
-              generate_exit_ddt, delivery_address_id, delivery_label, delivery_address_text, bolla_options)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              generate_exit_ddt, is_container, require_load_recheck, origin_warehouse_id, origin_warehouse_name, origin_warehouse_address,
+              delivery_address_id, delivery_label, delivery_address_text, bolla_options)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderCode,
               customer_id ?? null,
@@ -611,6 +786,11 @@ async function outboundRoutes(fastify, options) {
               client_ddt ?? null,
               cleanNotes,
               effectiveExitDdt,
+              isContainerFlag,
+              requireRecheckFlag,
+              originWh.id,
+              originWh.name,
+              originWh.address,
               deliveryData.addressId,
               deliveryData.label,
               deliveryData.text,
@@ -619,7 +799,6 @@ async function outboundRoutes(fastify, options) {
           );
           const orderId = orderRes.insertId;
 
-          const allocatedItemsPOST = await allocateOutboundItems(items, connection);
           for (const item of allocatedItemsPOST) {
             await connection.query(
               'INSERT INTO OUTBOUND_ITEMS (order_id, pallet_id, pallet_code, product_id, batch, quantity_required, requested_uom, client_pallet_number, is_specific) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -687,7 +866,12 @@ async function outboundRoutes(fastify, options) {
       delivery_address_id,
       delivery_label,
       delivery_address_text,
-      bolla_options
+      bolla_options,
+      is_container,
+      require_load_recheck,
+      origin_warehouse_id,
+      origin_warehouse_name,
+      origin_warehouse_address
     } = request.body;
     
     if (!hasPermission(request.user, 'outbound_create')) {
@@ -728,10 +912,29 @@ async function outboundRoutes(fastify, options) {
             ? (generate_exit_ddt === false || generate_exit_ddt === 0 || generate_exit_ddt === 'false' ? 0 : 1)
             : (orders[0].generate_exit_ddt !== undefined && orders[0].generate_exit_ddt !== null ? Number(Boolean(orders[0].generate_exit_ddt)) : 1);
 
+          const nextIsContainer = is_container !== undefined && is_container !== null
+            ? (is_container === true || is_container === 1 || is_container === 'true' ? 1 : 0)
+            : Number(Boolean(orders[0].is_container));
+          const nextRequireRecheck = require_load_recheck !== undefined && require_load_recheck !== null
+            ? (require_load_recheck === true || require_load_recheck === 1 || require_load_recheck === 'true' ? 1 : 0)
+            : Number(Boolean(orders[0].require_load_recheck));
+
+          let nextOriginWhId = orders[0].origin_warehouse_id;
+          let nextOriginWhName = orders[0].origin_warehouse_name;
+          let nextOriginWhAddr = orders[0].origin_warehouse_address;
+          if (origin_warehouse_id !== undefined || origin_warehouse_name !== undefined || origin_warehouse_address !== undefined) {
+            const whResolved = await resolveOriginWarehouse(connection, origin_warehouse_id, origin_warehouse_name, origin_warehouse_address);
+            nextOriginWhId = whResolved.id;
+            nextOriginWhName = whResolved.name;
+            nextOriginWhAddr = whResolved.address;
+          }
+
           await connection.query(
             `UPDATE OUTBOUND_ORDERS
              SET customer_id = ?, exit_date = ?, client_ddt = ?, notes = ?, status = "PENDING",
-                 generate_exit_ddt = ?, delivery_address_id = ?, delivery_label = ?, delivery_address_text = ?, bolla_options = ?
+                 generate_exit_ddt = ?, is_container = ?, require_load_recheck = ?,
+                 origin_warehouse_id = ?, origin_warehouse_name = ?, origin_warehouse_address = ?,
+                 delivery_address_id = ?, delivery_label = ?, delivery_address_text = ?, bolla_options = ?
              WHERE id = ?`,
             [
               customer_id ?? null,
@@ -739,6 +942,11 @@ async function outboundRoutes(fastify, options) {
               client_ddt ?? null,
               cleanNotes,
               nextExitDdt,
+              nextIsContainer,
+              nextRequireRecheck,
+              nextOriginWhId,
+              nextOriginWhName,
+              nextOriginWhAddr,
               nextAddressId,
               nextLabel,
               nextAddrText,
@@ -800,11 +1008,19 @@ async function outboundRoutes(fastify, options) {
   fastify.get('/:id/details', async (request, reply) => {
     const { id } = request.params;
     try {
-      const [orders] = await db.query('SELECT * FROM OUTBOUND_ORDERS WHERE id = ?', [id]);
+      const [orders] = await db.query(`
+        SELECT o.*, c.business_name as customer_name, pc.business_name as parent_customer_name
+        FROM OUTBOUND_ORDERS o
+        LEFT JOIN CUSTOMERS c ON o.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
+        WHERE o.id = ?
+      `, [id]);
       if (orders.length === 0) return reply.code(404).send({ error: 'Ordine non trovato' });
       
       const [items] = await db.query(`
         SELECT i.*, p.name as product_name, p.uom as base_uom, COALESCE(i.batch, pal.batch) as batch, pal.location,
+               pal.warehouse, pal.warehouse_id, COALESCE(pal.temp_regime, 'NONE') as temp_regime,
+               COALESCE(pal.is_adr, 0) as is_adr, pal.adr_data,
                COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number
         FROM OUTBOUND_ITEMS i
         JOIN PRODUCTS p ON i.product_id = p.id
@@ -818,8 +1034,17 @@ async function outboundRoutes(fastify, options) {
         )
         WHERE i.order_id = ?
       `, [id]);
-      
-      return { order: orders[0], items };
+
+      let loadCheckin = null;
+      if (orders[0].load_checkin_id) {
+        const [[subRow]] = await db.query('SELECT * FROM CUSTOM_FORM_SUBMISSIONS WHERE id = ? LIMIT 1', [orders[0].load_checkin_id]);
+        if (subRow) loadCheckin = subRow;
+      }
+
+      const opts = parseBollaOptions(orders[0].bolla_options);
+      const compliance = summarizeOrderCompliance(items, opts);
+
+      return { order: orders[0], items, load_checkin: loadCheckin, compliance };
     } catch (err) {
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Errore nel recupero dettagli ordine' });
@@ -1078,7 +1303,7 @@ async function outboundRoutes(fastify, options) {
     }
   });
 
-  // PUT /api/outbound/:id/bolla-settings - Aggiorna opzioni legali, indirizzo consegna e genera numero bolla
+  // PUT /api/outbound/:id/bolla-settings - Aggiorna opzioni legali, indirizzo consegna, magazzino origine, modalità container e genera numero bolla
   fastify.put('/:id/bolla-settings', async (request, reply) => {
     if (!hasPermission(request.user, 'outbound_create') && !hasPermission(request.user, 'outbound_pick')) {
       return reply.code(403).send({ error: 'Accesso negato: permesso insufficiente.' });
@@ -1090,7 +1315,12 @@ async function outboundRoutes(fastify, options) {
       delivery_label,
       delivery_address_text,
       bolla_options,
-      generate_now = false
+      generate_now = false,
+      is_container,
+      require_load_recheck,
+      origin_warehouse_id,
+      origin_warehouse_name,
+      origin_warehouse_address
     } = request.body || {};
 
     const connection = await db.getConnection();
@@ -1109,6 +1339,7 @@ async function outboundRoutes(fastify, options) {
 
       const prevOpts = parseBollaOptions(ord.bolla_options);
       const nextOpts = bolla_options ? parseBollaOptions({ ...prevOpts, ...bolla_options }) : prevOpts;
+      if (!nextOpts.causale) nextOpts.causale = 'C/FINE DEPOSITO';
 
       let nextAddrId = ord.delivery_address_id;
       let nextLabel = ord.delivery_label;
@@ -1133,6 +1364,23 @@ async function outboundRoutes(fastify, options) {
         ? (generate_exit_ddt === false || generate_exit_ddt === 0 || generate_exit_ddt === 'false' ? 0 : 1)
         : (ord.generate_exit_ddt !== undefined && ord.generate_exit_ddt !== null ? Number(Boolean(ord.generate_exit_ddt)) : 1);
 
+      const nextIsContainer = is_container !== undefined && is_container !== null
+        ? (is_container === true || is_container === 1 || is_container === 'true' ? 1 : 0)
+        : Number(Boolean(ord.is_container));
+      const nextRequireRecheck = require_load_recheck !== undefined && require_load_recheck !== null
+        ? (require_load_recheck === true || require_load_recheck === 1 || require_load_recheck === 'true' ? 1 : 0)
+        : Number(Boolean(ord.require_load_recheck));
+
+      let nextOriginWhId = ord.origin_warehouse_id;
+      let nextOriginWhName = ord.origin_warehouse_name;
+      let nextOriginWhAddr = ord.origin_warehouse_address;
+      if (origin_warehouse_id !== undefined || origin_warehouse_name !== undefined || origin_warehouse_address !== undefined) {
+        const whResolved = await resolveOriginWarehouse(connection, origin_warehouse_id, origin_warehouse_name, origin_warehouse_address);
+        nextOriginWhId = whResolved.id;
+        nextOriginWhName = whResolved.name;
+        nextOriginWhAddr = whResolved.address;
+      }
+
       let bollaNumber = ord.bolla_number;
       let bollaGenAt = ord.bolla_generated_at;
       if ((generate_now || (nextExitDdt && ord.status === 'READY')) && !bollaNumber) {
@@ -1142,11 +1390,18 @@ async function outboundRoutes(fastify, options) {
 
       await connection.query(
         `UPDATE OUTBOUND_ORDERS
-         SET generate_exit_ddt = ?, delivery_address_id = ?, delivery_label = ?, delivery_address_text = ?,
+         SET generate_exit_ddt = ?, is_container = ?, require_load_recheck = ?,
+             origin_warehouse_id = ?, origin_warehouse_name = ?, origin_warehouse_address = ?,
+             delivery_address_id = ?, delivery_label = ?, delivery_address_text = ?,
              bolla_options = ?, bolla_number = ?, bolla_generated_at = ?
          WHERE id = ?`,
         [
           nextExitDdt,
+          nextIsContainer,
+          nextRequireRecheck,
+          nextOriginWhId,
+          nextOriginWhName,
+          nextOriginWhAddr,
           nextAddrId,
           nextLabel,
           nextAddrText,
@@ -1165,6 +1420,11 @@ async function outboundRoutes(fastify, options) {
         success: true,
         bolla_number: bollaNumber,
         bolla_generated_at: bollaGenAt,
+        is_container: Boolean(nextIsContainer),
+        require_load_recheck: Boolean(nextRequireRecheck),
+        origin_warehouse_id: nextOriginWhId,
+        origin_warehouse_name: nextOriginWhName,
+        origin_warehouse_address: nextOriginWhAddr,
         delivery_address_id: nextAddrId,
         delivery_label: nextLabel,
         delivery_address_text: nextAddrText,
@@ -1189,9 +1449,12 @@ async function outboundRoutes(fastify, options) {
         SELECT o.*,
                c.business_name as customer_name, c.vat_number as customer_vat,
                c.address as customer_address, c.phone as customer_phone, c.email as customer_email,
+               c.parent_id as customer_parent_id,
+               pc.business_name as parent_customer_name, pc.vat_number as parent_customer_vat, pc.address as parent_customer_address,
                COALESCE(c.generate_exit_ddt, 1) as customer_generate_exit_ddt
         FROM OUTBOUND_ORDERS o
         JOIN CUSTOMERS c ON o.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
         WHERE o.order_code = ? OR o.bolla_number = ?
       `, [code, code]);
 
@@ -1227,6 +1490,11 @@ async function outboundRoutes(fastify, options) {
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
                pal.quantity as pallet_quantity,
+               pal.warehouse as pallet_warehouse,
+               pal.warehouse_id as pallet_warehouse_id,
+               COALESCE(pal.temp_regime, 'NONE') as temp_regime,
+               COALESCE(pal.is_adr, 0) as is_adr,
+               pal.adr_data,
                COALESCE(pal.net_weight_kg, (
                  SELECT idt.net_weight_kg FROM INBOUND_DDT_ITEMS idt
                  WHERE idt.inbound_ddt_id = pal.inbound_ddt_id AND idt.product_id = pal.product_id
@@ -1253,7 +1521,17 @@ async function outboundRoutes(fastify, options) {
         ORDER BY i.id ASC
       `, [order.id]);
 
+      const firstPalWhId = items.find(i => i.pallet_warehouse_id)?.pallet_warehouse_id || null;
+      const originWh = await resolveOriginWarehouse(
+        connection,
+        order.origin_warehouse_id,
+        order.origin_warehouse_name,
+        order.origin_warehouse_address,
+        firstPalWhId
+      );
+
       const opts = parseBollaOptions(order.bolla_options);
+      const compliance = summarizeOrderCompliance(items, opts);
       const barcodeValue = order.bolla_number || order.order_code;
       const barcodeBuffer = await bwipjs.toBuffer({
         bcid: 'code128',
@@ -1337,88 +1615,115 @@ async function outboundRoutes(fastify, options) {
 
       let cursorY = Math.max(emitterY + 10, 16 + rightBoxH + 10);
 
-      // --- BANNER SPUNTA NORMATIVE / ALLERTE TRASPORTO (se attive, altezza dinamica) ---
+      // --- BANNER SPUNTA NORMATIVE / ALLERTE TRASPORTO AUTO-RILEVATE DALLE PALETTE ---
       const activeAlerts = [];
-      if (opts.is_adr) activeAlerts.push(`MERCE PERICOLOSA ADR${opts.adr_note ? ` (${opts.adr_note})` : ''}`);
-      if (opts.temp_6_8) activeAlerts.push('TEMPERATURA CONTROLLATA +6°C / +8°C');
-      if (opts.temp_15_25) activeAlerts.push('TEMPERATURA CONTROLLATA +15°C / +25°C');
+      if (order.is_container) activeAlerts.push('MODALITÀ TRASPORTO: CARICO CONTAINER');
+      if (compliance.isAdr) {
+        activeAlerts.push(`MERCE PERICOLOSA ADR: ${compliance.adrDescriptions.join('  •  ')}`);
+      }
+      compliance.tempRegimes.forEach(tr => {
+        const meta = TEMP_REGIME_MAP[tr];
+        if (meta && tr !== 'NONE') activeAlerts.push(meta.shortLabel.toUpperCase());
+      });
 
       if (activeAlerts.length > 0) {
         const alertText = `ATTENZIONE TRASPORTO:  ${activeAlerts.join('   |   ')}`;
-        const alertTextH = doc.font('Helvetica-Bold').fontSize(8.2).heightOfString(alertText, { width: contentWidth - 18 });
+        const alertTextH = doc.font('Helvetica-Bold').fontSize(8.0).heightOfString(alertText, { width: contentWidth - 18 });
         const alertBoxH = Math.max(22, alertTextH + 12);
         doc.roundedRect(marginX, cursorY, contentWidth, alertBoxH, 4).fillAndStroke('#fef2f2', '#ef4444');
-        doc.fillColor('#b91c1c').font('Helvetica-Bold').fontSize(8.2)
+        doc.fillColor('#b91c1c').font('Helvetica-Bold').fontSize(8.0)
           .text(alertText, marginX + 9, cursorY + 6, { width: contentWidth - 18 });
         cursorY += alertBoxH + 8;
       }
 
-      // --- 2 COLONNE RESPONSIVE: PARTENZA / DESTINATARIO vs LUOGO DI CONSEGNA ---
+      if (compliance.mixedColdWarning) {
+        const mixText = 'AVVISO OPERATIVO: Nel carico sono presenti bancali a temperatura 2/8°C e 15/25°C insieme — verificare compartimentazione.';
+        const mixH = Math.max(20, doc.font('Helvetica-Bold').fontSize(7.6).heightOfString(mixText, { width: contentWidth - 18 }) + 10);
+        doc.roundedRect(marginX, cursorY, contentWidth, mixH, 4).fillAndStroke('#fff7ed', '#f97316');
+        doc.fillColor('#9a3412').font('Helvetica-Bold').fontSize(7.6)
+          .text(mixText, marginX + 9, cursorY + 5, { width: contentWidth - 18 });
+        cursorY += mixH + 8;
+      }
+
+      // --- 2 COLONNE RESPONSIVE: DEPOSITANTE + DEPOSITARIO vs LUOGO DI DESTINAZIONE ---
       const colW = (contentWidth - 10) / 2;
       const innerColW = colW - 18;
 
-      const emitterName = company.company_name || 'Magazzino Centrale';
-      const emitterAddr = company.company_address || 'Sede operativa di magazzino';
-      const custName = (order.customer_name || '').toUpperCase();
-      const custSubLine = [order.customer_vat ? `P.IVA: ${order.customer_vat}` : '', order.client_ddt ? `Rif. DDT: ${order.client_ddt}` : ''].filter(Boolean).join(' • ') || '-';
+      const emitterName = company.company_name || 'MagLite Logistica';
+      const emitterLegalAddr = company.company_address || 'Sede Legale Depositario';
+      const originLine = `Inizio Trasporto (${originWh.name}): ${originWh.address || emitterLegalAddr}`;
+      const emitterSub = `${emitterLegalAddr}\n${originLine}`;
 
-      const emitterNameH = doc.font('Helvetica-Bold').fontSize(8.4).heightOfString(emitterName, { width: innerColW });
-      const emitterAddrH = doc.font('Helvetica').fontSize(7.6).heightOfString(emitterAddr, { width: innerColW });
-      const custNameH = doc.font('Helvetica-Bold').fontSize(8.4).heightOfString(custName || '-', { width: innerColW });
-      const custSubH = doc.font('Helvetica').fontSize(7.3).heightOfString(custSubLine, { width: innerColW });
-      const leftTopPartH = 16 + emitterNameH + 2 + emitterAddrH + 6;
+      const depositanteName = (order.parent_customer_name || order.customer_name || '').toUpperCase();
+      const depositanteBranch = order.parent_customer_name && order.parent_customer_name !== order.customer_name
+        ? `Divisione/Rif: ${order.customer_name}`
+        : '';
+      const depositanteVat = order.parent_customer_vat || order.customer_vat;
+      const custSubLine = [
+        depositanteBranch,
+        depositanteVat ? `P.IVA: ${depositanteVat}` : '',
+        order.client_ddt ? `Rif. DDT: ${order.client_ddt}` : ''
+      ].filter(Boolean).join(' • ') || '-';
+
+      const emitterNameH = doc.font('Helvetica-Bold').fontSize(8.2).heightOfString(emitterName, { width: innerColW });
+      const emitterAddrH = doc.font('Helvetica').fontSize(7.3).heightOfString(emitterSub, { width: innerColW });
+      const custNameH = doc.font('Helvetica-Bold').fontSize(8.2).heightOfString(depositanteName || '-', { width: innerColW });
+      const custSubH = doc.font('Helvetica').fontSize(7.1).heightOfString(custSubLine, { width: innerColW });
+      const leftTopPartH = 15 + emitterNameH + 2 + emitterAddrH + 6;
       const leftBottomPartH = 14 + custNameH + 2 + custSubH + 7;
       const leftTotalH = leftTopPartH + leftBottomPartH;
 
       const delivTitle = order.delivery_label || order.customer_name || 'Sede Destinatario';
       const delivAddr = order.delivery_address_text || order.customer_address || 'Da concordare con il destinatario';
       const exitDtStr = order.exit_date ? new Date(order.exit_date).toLocaleDateString('it-IT') : '-';
-      const delivMeta = `Data Prevista Uscita: ${exitDtStr}  |  Causale: ${opts.causale || 'Consegna Merce'}`;
+      const causaleText = 'C/FINE DEPOSITO';
+      const transportModeLabel = order.is_container ? 'CONTAINER' : 'CAMION';
+      const delivMeta = `Data Prevista Uscita: ${exitDtStr}  |  Mezzo: ${transportModeLabel}\nCAUSALE CONSEGNA: ${causaleText}`;
 
-      const delivTitleH = doc.font('Helvetica-Bold').fontSize(8.8).heightOfString(delivTitle, { width: innerColW });
-      const delivAddrH = doc.font('Helvetica').fontSize(7.9).heightOfString(delivAddr, { width: innerColW });
-      const delivMetaH = doc.font('Helvetica-Bold').fontSize(7.3).heightOfString(delivMeta, { width: innerColW });
+      const delivTitleH = doc.font('Helvetica-Bold').fontSize(8.6).heightOfString(delivTitle, { width: innerColW });
+      const delivAddrH = doc.font('Helvetica').fontSize(7.7).heightOfString(delivAddr, { width: innerColW });
+      const delivMetaH = doc.font('Helvetica-Bold').fontSize(7.2).heightOfString(delivMeta, { width: innerColW });
       const rightTotalH = 17 + delivTitleH + 3 + delivAddrH + 8 + delivMetaH + 7;
 
-      const destBoxH = Math.max(leftTotalH, rightTotalH, 78);
+      const destBoxH = Math.max(leftTotalH, rightTotalH, 86);
 
-      // Box Sinistra: Mittente / Da dove esce + Destinatario
+      // Box Sinistra: DEPOSITARIO (nostra sede + luogo inizio trasporto) & DEPOSITANTE (cliente madre)
       doc.roundedRect(marginX, cursorY, colW, destBoxH, 5).fillAndStroke('#ffffff', '#cbd5e1');
       let ly = cursorY + 7;
       doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(6.8)
-        .text('PARTENZA MERCE (MITTENTE / DEPOSITO)', marginX + 9, ly, { width: innerColW });
+        .text('DEPOSITARIO / LUOGO INIZIO TRASPORTO', marginX + 9, ly, { width: innerColW });
       ly += 9;
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.4)
+      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.2)
         .text(emitterName, marginX + 9, ly, { width: innerColW });
       ly += emitterNameH + 2;
-      doc.fillColor('#334155').font('Helvetica').fontSize(7.6)
-        .text(emitterAddr, marginX + 9, ly, { width: innerColW });
+      doc.fillColor('#334155').font('Helvetica').fontSize(7.3)
+        .text(emitterSub, marginX + 9, ly, { width: innerColW });
       ly += emitterAddrH + 5;
       doc.moveTo(marginX + 9, ly).lineTo(marginX + colW - 9, ly).lineWidth(0.5).strokeColor('#e2e8f0').stroke();
       ly += 5;
       doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(6.8)
-        .text('CLIENTE CESSIONARIO / DESTINATARIO', marginX + 9, ly, { width: innerColW });
+        .text('DEPOSITANTE (CLIENTE TITOLARE)', marginX + 9, ly, { width: innerColW });
       ly += 9;
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.4)
-        .text(custName || '-', marginX + 9, ly, { width: innerColW });
+      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.2)
+        .text(depositanteName || '-', marginX + 9, ly, { width: innerColW });
       ly += custNameH + 2;
-      doc.fillColor('#475569').font('Helvetica').fontSize(7.3)
+      doc.fillColor('#475569').font('Helvetica').fontSize(7.1)
         .text(custSubLine, marginX + 9, ly, { width: innerColW });
 
-      // Box Destra: Luogo di Destinazione / Consegna
+      // Box Destra: Luogo di Destinazione / Consegna + CAUSALE C/FINE DEPOSITO
       const destX = marginX + colW + 10;
       doc.roundedRect(destX, cursorY, colW, destBoxH, 5).fillAndStroke('#f0f9ff', '#38bdf8');
       let ry = cursorY + 7;
       doc.fillColor('#0369a1').font('Helvetica-Bold').fontSize(6.8)
-        .text('LUOGO DI DESTINAZIONE / CONSEGNA MERCE', destX + 9, ry, { width: innerColW });
+        .text('LUOGO DI DESTINAZIONE', destX + 9, ry, { width: innerColW });
       ry += 10;
-      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.8)
+      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(8.6)
         .text(delivTitle, destX + 9, ry, { width: innerColW });
       ry += delivTitleH + 3;
-      doc.fillColor('#1e293b').font('Helvetica').fontSize(7.9)
+      doc.fillColor('#1e293b').font('Helvetica').fontSize(7.7)
         .text(delivAddr, destX + 9, ry, { width: innerColW });
       const metaY = Math.max(ry + delivAddrH + 6, cursorY + destBoxH - delivMetaH - 7);
-      doc.fillColor('#475569').font('Helvetica-Bold').fontSize(7.3)
+      doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(7.2)
         .text(delivMeta, destX + 9, metaY, { width: innerColW });
 
       cursorY += destBoxH + 10;
@@ -1462,7 +1767,18 @@ async function outboundRoutes(fastify, options) {
           uniquePallets.add(item.pallet_code);
         }
 
-        const prodTitle = item.sku ? `${item.product_name} [${item.sku}]` : item.product_name;
+        const prodBaseTitle = item.sku ? `${item.product_name} [${item.sku}]` : item.product_name;
+        const rowMetaLines = [];
+        const normTemp = normalizeTempRegime(item.temp_regime);
+        if (normTemp !== 'NONE' && TEMP_REGIME_MAP[normTemp]) {
+          rowMetaLines.push(TEMP_REGIME_MAP[normTemp].shortLabel);
+        }
+        if (item.is_adr) {
+          const parsedAdr = parseAdrData(item.adr_data);
+          const adrText = parsedAdr?.formatted_description || parsedAdr?.un_number || 'ADR';
+          rowMetaLines.push(`ADR: ${adrText}`);
+        }
+        const prodTitle = rowMetaLines.length > 0 ? `${prodBaseTitle}\n${rowMetaLines.join(' | ')}` : prodBaseTitle;
         const expStr = item.expiration_date ? `\nScad: ${new Date(item.expiration_date).toLocaleDateString('it-IT')}` : '';
         const batchText = `${item.batch || '-'}${expStr}`;
         const palStr = (item.pallet_code || '').startsWith('NOBAR-') ? 'Senza Bar.' : (item.pallet_code || '-');
@@ -1560,17 +1876,17 @@ async function outboundRoutes(fastify, options) {
         cursorY += h + 8;
       }
 
-      // --- NOTE LEGALI SPUNTATE PER IL TRASPORTO ---
+      // --- NOTE LEGALI AUTO-GENERATE DALLE PALETTE + CLAUSOLE STANDARD ---
       const legalClauses = [];
-      if (opts.is_adr) {
-        legalClauses.push(`• NORMATIVA ADR: Merce classificata ADR soggetta ad accordi internazionali su strada.${opts.adr_note ? ` Dettagli: ${opts.adr_note}.` : ''} Il trasportatore dichiara di disporre di idoneo equipaggiamento, pannelli e documentazione ADR a bordo.`);
+      if (compliance.isAdr) {
+        legalClauses.push(`• NORMATIVA ADR (${compliance.adrDescriptions.join('; ')}): Merce classificata ADR soggetta ad accordi internazionali su strada. Il trasportatore dichiara di disporre di idoneo equipaggiamento, pannelli arancio e documentazione ADR a bordo.`);
       }
-      if (opts.temp_6_8) {
-        legalClauses.push('• CATENA DEL FREDDO (+6°C / +8°C): Obbligo di mantenimento costante della temperatura controllata tra +6°C e +8°C per tutta la durata del trasporto fino alla consegna al destinatario.');
-      }
-      if (opts.temp_15_25) {
-        legalClauses.push('• TEMPERATURA CONTROLLATA (+15°C / +25°C): Trasporto a temperatura ambiente controllata (+15°C / +25°C). Proteggere da sbalzi termici, gelo o esposizione diretta al calore.');
-      }
+      compliance.tempRegimes.forEach(tr => {
+        const meta = TEMP_REGIME_MAP[tr];
+        if (meta && tr !== 'NONE') {
+          legalClauses.push(`• ${meta.legalClause}`);
+        }
+      });
       if (opts.legal_intact_goods) {
         legalClauses.push('• INTEGRITÀ COLLI: Merce imballata a regola d\'arte, pallettizzata e regolarmente etichettata al momento dell\'uscita dal magazzino.');
       }
@@ -1578,7 +1894,7 @@ async function outboundRoutes(fastify, options) {
         legalClauses.push('• VERIFICA CONDUCENTE: Con la sottoscrizione il conducente dichiara di aver controllato il numero dei bancali/colli e il loro stato apparente esterno senza riserve.');
       }
       if (opts.legal_transport_norm) {
-        legalClauses.push('• RIFERIMENTI LEGALI AUTOTRASPORTO: Documento emesso ai sensi del D.P.R. 472/96 e valido ai fini delle disposizioni sull\'autotrasporto merci conto terzi (D.Lgs. 286/2005 e s.m.i.).');
+        legalClauses.push('• RIFERIMENTI LEGALI AUTOTRASPORTO: Documento emesso ai sensi del D.P.R. 472/96 (Causale: C/FINE DEPOSITO) e valido ai fini delle disposizioni sull\'autotrasporto merci conto terzi (D.Lgs. 286/2005 e s.m.i.).');
       }
 
       if (legalClauses.length > 0) {
@@ -1664,7 +1980,9 @@ async function outboundRoutes(fastify, options) {
                COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box,
                COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
                COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
-               pal.location, COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number, pal.quantity as pallet_quantity,
+               pal.location, pal.warehouse as pallet_warehouse, COALESCE(pal.warehouse_id, 1) as pallet_warehouse_id,
+               COALESCE(pal.temp_regime, 'NONE') as temp_regime, COALESCE(pal.is_adr, 0) as is_adr, pal.adr_data,
+               COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number, pal.quantity as pallet_quantity,
                COALESCE(pal.net_weight_kg, (
                  SELECT idt.net_weight_kg FROM INBOUND_DDT_ITEMS idt
                  WHERE idt.inbound_ddt_id = pal.inbound_ddt_id AND idt.product_id = pal.product_id
@@ -1690,6 +2008,10 @@ async function outboundRoutes(fastify, options) {
         LEFT JOIN LOCATIONS loc ON pal.location = loc.barcode
         WHERE i.order_id = ?
       `, [order.id]);
+
+      const activeWhId = request.query?.warehouse_id ? Number(request.query.warehouse_id) : null;
+      const otherWhItems = activeWhId ? items.filter(it => Number(it.pallet_warehouse_id || 1) !== activeWhId) : [];
+      order.wrong_warehouse_count = otherWhItems.length;
 
       const connection = await db.getConnection();
       try {
@@ -2082,79 +2404,7 @@ async function outboundRoutes(fastify, options) {
 
       const [items] = await connection.query('SELECT * FROM OUTBOUND_ITEMS WHERE order_id = ? FOR UPDATE', [order.id]);
 
-      for (const item of items) {
-        // Usa quantity_picked se > 0 (Zebra usato), altrimenti assumi che dal PC si forzi quantity_required
-        const actualPicked = parseFloat(item.quantity_picked) > 0 ? parseFloat(item.quantity_picked) : parseFloat(item.quantity_required);
-
-        // Scarica la giacenza esattamente dalla riga PALLETS del lotto selezionato (bloccata FOR UPDATE)
-        let palletsQuery = `
-          SELECT pal.*, COALESCE(pal.units_per_box, p.units_per_box, 1) as effective_units_per_box, COALESCE(p.boxes_per_pallet, 1) as effective_boxes_per_pallet
-          FROM PALLETS pal
-          JOIN PRODUCTS p ON pal.product_id = p.id
-          WHERE 
-        `;
-        let palletsParams = [];
-        if (item.pallet_id) {
-          palletsQuery += `pal.id = ? FOR UPDATE`;
-          palletsParams = [item.pallet_id];
-        } else if (item.batch) {
-          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND TRIM(pal.batch) = TRIM(?) AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1 FOR UPDATE`;
-          palletsParams = [item.pallet_code, item.product_id, item.batch];
-        } else {
-          palletsQuery += `pal.pallet_code = ? AND pal.product_id = ? AND pal.status != 'SHIPPED' ORDER BY pal.id ASC LIMIT 1 FOR UPDATE`;
-          palletsParams = [item.pallet_code, item.product_id];
-        }
-
-        const [pallets] = await connection.query(palletsQuery, palletsParams);
-        if (pallets.length > 0) {
-          const pallet = pallets[0];
-          if (pallet.is_quarantined) {
-            throw new Error(`BLOCCO QUARANTENA: La paletta ${pallet.pallet_code} è in quarantena (${pallet.quarantine_reason || 'Bloccata'}) e non può essere spedita. Sbloccala prima dal Registro Quarantene.`);
-          }
-          const upb = parseFloat(pallet.effective_units_per_box) || 1;
-          const bpp = parseFloat(pallet.effective_boxes_per_pallet) || 1;
-          const unitsPerPallet = upb * bpp;
-          let newQty;
-
-          if ((item.requested_uom === 'Bancali' || item.requested_uom === 'Palette') && actualPicked >= 1) {
-            if (unitsPerPallet > 1 && parseFloat(pallet.quantity) > actualPicked * unitsPerPallet) {
-              newQty = parseFloat(pallet.quantity) - (actualPicked * unitsPerPallet);
-            } else {
-              newQty = 0;
-            }
-          } else {
-            let deduction = actualPicked;
-            if (item.requested_uom === 'Scatole' || item.requested_uom === 'Cartoni') {
-              deduction *= upb;
-            }
-            newQty = parseFloat(pallet.quantity) - deduction;
-          }
-          
-          if (newQty <= 0) {
-            newQty = 0;
-            // Paletta esaurita, svuota la posizione, marca SHIPPED e registra shipped_at
-            await connection.query('UPDATE PALLETS SET quantity = 0, status = "SHIPPED", location = NULL, shipped_at = CURRENT_TIMESTAMP WHERE id = ?', [pallet.id]);
-          } else {
-            // Paletta parziale
-            await connection.query('UPDATE PALLETS SET quantity = ? WHERE id = ?', [newQty, pallet.id]);
-          }
-
-          if (!parseFloat(item.quantity_picked) || parseFloat(item.quantity_picked) <= 0) {
-            await connection.query('UPDATE OUTBOUND_ITEMS SET quantity_picked = ?, status = "PICKED" WHERE id = ?', [actualPicked, item.id]);
-          }
-
-          // Audit Log
-          await connection.query(
-            'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
-            [
-              'OUTBOUND_PICK', 
-              `Prelevato ${actualPicked} ${item.requested_uom || ''} da paletta ${pallet.pallet_code}${pallet.batch ? ` (Lotto: ${pallet.batch})` : ''} (rimanenza: ${newQty})`,
-              'BACKOFFICE',
-              request.user?.username || 'SYSTEM'
-            ]
-          );
-        }
-      }
+      await deductOutboundOrderStock(connection, order, items, request.user?.username || 'SYSTEM', source === 'ZEBRA' ? 'ZEBRA' : 'BACKOFFICE');
 
       const [[custRow]] = await connection.query('SELECT COALESCE(generate_exit_ddt, 1) AS generate_exit_ddt FROM CUSTOMERS WHERE id = ?', [order.customer_id]);
       const custEnabled = Boolean(custRow?.generate_exit_ddt ?? 1);
@@ -2233,9 +2483,332 @@ async function outboundRoutes(fastify, options) {
     }
   });
 
+  // GET /api/outbound/bolla-lookup/:code - Cerca bolla / ordine per Modulo Zebra Carico Camion / Container (CARICO_USCITA)
+  fastify.get('/bolla-lookup/:code', async (request, reply) => {
+    if (!hasPermission(request.user, 'access_zebra')) {
+      return reply.code(403).send({ error: 'Accesso negato a Zebra.' });
+    }
+    const cleanCode = decodeURIComponent(request.params.code || '').trim();
+    if (!cleanCode) return reply.code(400).send({ error: 'Codice Bolla o Spedizione obbligatorio.' });
+
+    try {
+      const [orders] = await db.query(`
+        SELECT o.*, c.business_name as customer_name, pc.business_name as parent_customer_name
+        FROM OUTBOUND_ORDERS o
+        JOIN CUSTOMERS c ON o.customer_id = c.id
+        LEFT JOIN CUSTOMERS pc ON c.parent_id = pc.id
+        WHERE o.bolla_number = ? OR o.order_code = ?
+        LIMIT 1
+      `, [cleanCode, cleanCode]);
+
+      if (orders.length === 0) {
+        return reply.code(404).send({ error: `Nessuna Bolla o Spedizione trovata con codice "${cleanCode}".` });
+      }
+      const order = orders[0];
+      if (!canAccessCustomer(request.user, order.customer_id)) {
+        return reply.code(403).send({ error: 'Cliente non autorizzato.' });
+      }
+
+      const [items] = await db.query(`
+        SELECT i.id, i.pallet_id, i.pallet_code, i.product_id, COALESCE(i.batch, pal.batch) as batch,
+               i.quantity_required, i.quantity_picked, COALESCE(i.requested_uom, pal.pallet_uom, p.uom) as uom,
+               COALESCE(i.client_pallet_number, pal.client_pallet_number) as client_pallet_number,
+               p.name as product_name, p.sku,
+               pal.warehouse as pallet_warehouse, COALESCE(pal.warehouse_id, 1) as pallet_warehouse_id,
+               COALESCE(pal.temp_regime, 'NONE') as temp_regime, COALESCE(pal.is_adr, 0) as is_adr, pal.adr_data
+        FROM OUTBOUND_ITEMS i
+        JOIN PRODUCTS p ON i.product_id = p.id
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          i.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 WHERE p2.pallet_code = i.pallet_code AND p2.product_id = i.product_id ORDER BY p2.id ASC LIMIT 1)
+        )
+        WHERE i.order_id = ?
+        ORDER BY i.id ASC
+      `, [order.id]);
+
+      const opts = parseBollaOptions(order.bolla_options);
+      const compliance = summarizeOrderCompliance(items, opts);
+
+      const uniqueBarcodes = Array.from(new Set(
+        items.map(it => it.pallet_code).filter(c => c && !String(c).startsWith('NOBAR-'))
+      ));
+
+      return {
+        order: {
+          ...order,
+          bolla_options_parsed: opts,
+          is_container: Boolean(order.is_container),
+          require_load_recheck: Boolean(order.require_load_recheck)
+        },
+        items,
+        unique_barcodes: uniqueBarcodes,
+        compliance: {
+          ...compliance,
+          temp_labels: compliance.tempRegimes.map(tr => TEMP_REGIME_MAP[tr]?.label || tr)
+        }
+      };
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Errore ricerca Bolla per carico mezzo' });
+    }
+  });
+
+  // POST /api/outbound/:code/bolla-complete-loading - Registra Modulo Carico Camion/Container & spedisce ordine
+  fastify.post('/:code/bolla-complete-loading', async (request, reply) => {
+    if (!hasPermission(request.user, 'access_zebra')) {
+      return reply.code(403).send({ error: 'Accesso negato a Zebra.' });
+    }
+    const cleanCode = decodeURIComponent(request.params.code || '').trim();
+    const {
+      vehicle_type,
+      vehicle_plate,
+      seal_number = '',
+      carrier_name = '',
+      hygiene_ok = true,
+      hygiene_notes = '',
+      recorded_temp = '',
+      strisciata_taken = false,
+      driver_present = true,
+      recheck_scanned_barcodes = [],
+      warehouse_id = null,
+      warehouse_name = null,
+      division_name = null,
+      notes = ''
+    } = request.body || {};
+
+    if (!vehicle_plate || !String(vehicle_plate).trim()) {
+      return reply.code(400).send({ error: 'Inserisci la targa del camion o il codice del container.' });
+    }
+    if (!hygiene_ok) {
+      return reply.code(400).send({ error: 'Le condizioni igienico-sanitarie devono essere conformi per procedere al carico.' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      const [orders] = await connection.query(
+        'SELECT * FROM OUTBOUND_ORDERS WHERE bolla_number = ? OR order_code = ? FOR UPDATE',
+        [cleanCode, cleanCode]
+      );
+      if (orders.length === 0) {
+        await connection.rollback();
+        return reply.code(404).send({ error: 'Bolla o Ordine non trovati' });
+      }
+      const order = orders[0];
+      if (!canAccessCustomer(request.user, order.customer_id)) {
+        await connection.rollback();
+        return reply.code(403).send({ error: 'Cliente non autorizzato.' });
+      }
+
+      const [items] = await connection.query(`
+        SELECT oi.*, pal.temp_regime, pal.is_adr, pal.adr_data
+        FROM OUTBOUND_ITEMS oi
+        LEFT JOIN PALLETS pal ON pal.id = COALESCE(
+          oi.pallet_id,
+          (SELECT p2.id FROM PALLETS p2 WHERE p2.pallet_code = oi.pallet_code AND p2.product_id = oi.product_id ORDER BY p2.id ASC LIMIT 1)
+        )
+        WHERE oi.order_id = ? FOR UPDATE
+      `, [order.id]);
+
+      const opts = parseBollaOptions(order.bolla_options);
+      const compliance = summarizeOrderCompliance(items, opts);
+
+      if (compliance.needsTempCheck && (!recorded_temp && recorded_temp !== 0)) {
+        await connection.rollback();
+        return reply.code(400).send({ error: 'Spedizione a temperatura controllata: inserisci la temperatura rilevata del camion/container.' });
+      }
+      if (compliance.needsTempCheck && !strisciata_taken) {
+        await connection.rollback();
+        return reply.code(400).send({ error: 'Conferma di aver ritirato la strisciata / stampata termografica dal conducente prima di chiudere il carico.' });
+      }
+
+      const expectedBarcodes = Array.from(new Set(
+        items.map(it => String(it.pallet_code || '').trim().toUpperCase()).filter(c => c && !c.startsWith('NOBAR-'))
+      ));
+      const scannedSet = new Set(
+        (Array.isArray(recheck_scanned_barcodes) ? recheck_scanned_barcodes : []).map(b => String(b).trim().toUpperCase())
+      );
+
+      if (order.require_load_recheck && expectedBarcodes.length > 0) {
+        const missing = expectedBarcodes.filter(b => !scannedSet.has(b));
+        if (missing.length > 0) {
+          await connection.rollback();
+          return reply.code(400).send({
+            error: `Ri-verifica carico richiesta dall'ufficio: mancano ${missing.length} bancali da scansionare (${missing.slice(0, 3).join(', ')}).`
+          });
+        }
+      }
+
+      const username = request.user?.username || 'ZEBRA';
+      const effectiveVehicleType = vehicle_type || (order.is_container ? 'CONTAINER' : 'CAMION');
+      const cleanPlate = String(vehicle_plate).trim().toUpperCase();
+
+      // Inserisci log permanente in CUSTOM_FORM_SUBMISSIONS (CARICO_USCITA)
+      const [[formRow]] = await connection.query("SELECT id FROM CUSTOM_FORMS WHERE code = 'CARICO_USCITA' LIMIT 1");
+      const sessCode = `CAR-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const formAnswers = {
+        bolla_number: order.bolla_number || order.order_code,
+        order_code: order.order_code,
+        vehicle_type: effectiveVehicleType,
+        vehicle_plate: cleanPlate,
+        seal_number: String(seal_number || '').trim() || null,
+        carrier_name: String(carrier_name || '').trim() || opts.carrier_name || null,
+        hygiene_ok: Boolean(hygiene_ok),
+        hygiene_notes: String(hygiene_notes || '').trim() || null,
+        needs_temp_check: compliance.needsTempCheck,
+        temp_regimes: compliance.tempRegimes,
+        recorded_temp: recorded_temp !== '' && recorded_temp !== null ? String(recorded_temp).trim() : null,
+        strisciata_taken: Boolean(strisciata_taken),
+        driver_present: Boolean(driver_present),
+        is_adr: compliance.isAdr,
+        adr_descriptions: compliance.adrDescriptions,
+        require_load_recheck: Boolean(order.require_load_recheck),
+        recheck_scanned_barcodes: Array.from(scannedSet),
+        recheck_count: scannedSet.size,
+        expected_barcodes_count: expectedBarcodes.length,
+        warehouse_id: warehouse_id ? Number(warehouse_id) : order.origin_warehouse_id,
+        warehouse_name: warehouse_name || order.origin_warehouse_name || null,
+        division_name: division_name || null,
+        notes: String(notes || '').trim() || null
+      };
+
+      let submissionId = order.load_checkin_id || null;
+      if (formRow) {
+        const [subRes] = await connection.query(
+          `INSERT INTO CUSTOM_FORM_SUBMISSIONS
+           (form_id, session_code, status, current_step_id, operator_id, operator_name, answers, metadata, completed_at)
+           VALUES (?, ?, 'COMPLETED', 'step_done', ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            formRow.id,
+            sessCode,
+            request.user?.id || null,
+            username,
+            JSON.stringify(formAnswers),
+            JSON.stringify({ order_id: order.id, order_code: order.order_code, bolla_number: order.bolla_number, customer_id: order.customer_id })
+          ]
+        );
+        submissionId = subRes.insertId;
+      }
+
+      // Scarica magazzino solo se non già spedito in precedenza
+      let newlyShipped = false;
+      if (order.status !== 'SHIPPED') {
+        await deductOutboundOrderStock(connection, order, items, username, 'ZEBRA');
+        newlyShipped = true;
+      }
+
+      const [[custRow]] = await connection.query('SELECT COALESCE(generate_exit_ddt, 1) AS generate_exit_ddt FROM CUSTOMERS WHERE id = ?', [order.customer_id]);
+      const shouldGenBolla = Boolean(custRow?.generate_exit_ddt ?? 1) && (order.generate_exit_ddt === null ? true : Boolean(order.generate_exit_ddt));
+      let finalBollaNumber = order.bolla_number || null;
+      let finalBollaGenAt = order.bolla_generated_at || null;
+      if (shouldGenBolla && !finalBollaNumber) {
+        finalBollaNumber = await generateBollaNumber(connection);
+        finalBollaGenAt = new Date();
+      }
+
+      const nextBollaOpts = parseBollaOptions(order.bolla_options);
+      nextBollaOpts.vehicle_plate = cleanPlate;
+      if (carrier_name && String(carrier_name).trim()) nextBollaOpts.carrier_name = String(carrier_name).trim();
+      if (seal_number && String(seal_number).trim()) nextBollaOpts.seal_number = String(seal_number).trim();
+      if (order.require_load_recheck || scannedSet.size > 0) {
+        nextBollaOpts.rechecked_at = new Date().toISOString();
+        nextBollaOpts.rechecked_by = username;
+        nextBollaOpts.rechecked_items = scannedSet.size || expectedBarcodes.length;
+      }
+
+      await connection.query(
+        `UPDATE OUTBOUND_ORDERS
+         SET status = 'SHIPPED',
+             shipped_at = COALESCE(shipped_at, CURRENT_TIMESTAMP),
+             start_picking_at = COALESCE(start_picking_at, CURRENT_TIMESTAMP),
+             end_picking_at = COALESCE(end_picking_at, CURRENT_TIMESTAMP),
+             picking_operator = COALESCE(picking_operator, ?),
+             shipped_by = COALESCE(shipped_by, ?),
+             bolla_number = ?,
+             bolla_generated_at = ?,
+             bolla_options = ?,
+             load_checkin_id = ?,
+             load_checkin_session_code = ?,
+             load_vehicle_plate = ?,
+             load_recorded_temp = ?,
+             load_hygiene_ok = ?,
+             load_strisciata_taken = ?,
+             load_completed_at = CURRENT_TIMESTAMP,
+             load_completed_by = ?
+         WHERE id = ?`,
+        [
+          username,
+          username,
+          finalBollaNumber,
+          finalBollaGenAt,
+          JSON.stringify(nextBollaOpts),
+          submissionId,
+          sessCode,
+          cleanPlate,
+          formAnswers.recorded_temp,
+          hygiene_ok ? 1 : 0,
+          strisciata_taken ? 1 : 0,
+          username,
+          order.id
+        ]
+      );
+      if (newlyShipped) {
+        await connection.query('UPDATE OUTBOUND_ITEMS SET picked_at = CURRENT_TIMESTAMP WHERE order_id = ? AND picked_at IS NULL', [order.id]);
+      }
+
+      await connection.query(
+        'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
+        [
+          'CARICO_MEZZO_COMPLETATO',
+          `Carico ${effectiveVehicleType} (${cleanPlate}) per ${order.order_code}${finalBollaNumber ? ` / ${finalBollaNumber}` : ''} (${sessCode})${formAnswers.recorded_temp ? ` • Temp: ${formAnswers.recorded_temp}°C` : ''}${strisciata_taken ? ' • Strisciata ritirata' : ''}${order.require_load_recheck ? ` • Ricontrollo barcode: ${scannedSet.size}/${expectedBarcodes.length}` : ''}`,
+          'ZEBRA',
+          username
+        ]
+      );
+
+      await connection.commit();
+      connection.release();
+
+      await createNotification(db, fastify.io, {
+        type: 'ORDER_COMPLETED',
+        title: `Carico ${effectiveVehicleType} Completato: ${order.order_code}`,
+        message: `${username} ha completato il controllo carico (${cleanPlate}, modulo ${sessCode}) e chiuso la spedizione ${order.order_code}.`,
+        customer_id: order.customer_id,
+        entity_type: 'OUTBOUND',
+        entity_code: order.order_code,
+        link_path: '/desktop/outbound',
+        actor_username: username
+      });
+
+      if (fastify.io) {
+        fastify.io.emit('outbound_updated');
+        fastify.io.emit('inventory_updated');
+        fastify.io.emit('locations_updated');
+        fastify.io.emit('dashboard_update');
+      }
+
+      return {
+        success: true,
+        order_code: order.order_code,
+        bolla_number: finalBollaNumber,
+        session_code: sessCode,
+        checkin_id: submissionId,
+        newly_shipped: newlyShipped
+      };
+    } catch (err) {
+      if (connection) {
+        await connection.rollback();
+        connection.release();
+      }
+      fastify.log.error(err);
+      return reply.code(err.statusCode || 400).send({ error: err.message || 'Errore completamento carico mezzo' });
+    }
+  });
+
   // GET /api/outbound/search-pallets - Aiuto per PC per cercare palette disponibili
   fastify.get('/search-pallets', async (request, reply) => {
-    const { customer_id, exclude_order_id, include_pending } = request.query;
+    const { customer_id, exclude_order_id, include_pending, warehouse_id } = request.query;
     try {
       let excludeCondition = '';
       if (exclude_order_id && exclude_order_id !== 'undefined') {
@@ -2243,6 +2816,7 @@ async function outboundRoutes(fastify, options) {
       }
       
       const statusCondition = include_pending === 'true' ? "IN ('STOCKED', 'PENDING')" : "= 'STOCKED'";
+      const whCondition = warehouse_id && warehouse_id !== 'ALL' ? `AND COALESCE(pal.warehouse_id, 1) = ${Number(warehouse_id) || 1}` : '';
 
       const [pallets] = await db.query(`
         SELECT pal.*, l.zone, l.col, l.pos, p.name as product_name, p.sku as product_sku, COALESCE(pal.pallet_uom, p.uom) as uom, COALESCE(pal.units_per_box, p.units_per_box, 1) as units_per_box, COALESCE(p.boxes_per_pallet, 1) as boxes_per_pallet,
@@ -2270,7 +2844,7 @@ async function outboundRoutes(fastify, options) {
         FROM PALLETS pal
         JOIN PRODUCTS p ON pal.product_id = p.id
         LEFT JOIN LOCATIONS l ON pal.location = l.barcode
-        WHERE pal.customer_id = ? AND pal.status ${statusCondition} AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE)
+        WHERE pal.customer_id = ? AND pal.status ${statusCondition} AND (pal.is_quarantined IS NULL OR pal.is_quarantined = FALSE) ${whCondition}
         HAVING available_quantity > 0
         ORDER BY pal.expiration_date ASC, pal.created_at ASC
       `, [customer_id]);

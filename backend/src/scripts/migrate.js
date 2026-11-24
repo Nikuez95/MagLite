@@ -740,6 +740,262 @@ async function runMigrations() {
       console.warn('[MIGRATE BOLLA WARNING]', bollaMigErr.message);
     }
 
+    // 5b. Tabella Non Conformità (Zebra + Gestionale con snapshot completo e tracciabilità)
+    try {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS NON_CONFORMITIES (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          nc_code VARCHAR(50) UNIQUE NOT NULL,
+          pallet_code VARCHAR(100) NOT NULL,
+          customer_id INT DEFAULT NULL,
+          customer_name VARCHAR(255) DEFAULT NULL,
+          warehouse VARCHAR(50) DEFAULT NULL,
+          location VARCHAR(100) DEFAULT NULL,
+          causes JSON NOT NULL,
+          target_pallet_item_id INT DEFAULT NULL,
+          operator_notes TEXT DEFAULT NULL,
+          items_snapshot JSON NOT NULL,
+          pallet_metadata_snapshot JSON DEFAULT NULL,
+          status ENUM('OPEN', 'ACCEPTED', 'REJECTED') NOT NULL DEFAULT 'OPEN',
+          reported_by VARCHAR(100) NOT NULL,
+          reported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          reported_source VARCHAR(30) DEFAULT 'ZEBRA',
+          resolution_notes TEXT DEFAULT NULL,
+          resolved_by VARCHAR(100) DEFAULT NULL,
+          resolved_at DATETIME DEFAULT NULL,
+          corrected BOOLEAN DEFAULT FALSE,
+          correction_summary JSON DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ Tabella NON_CONFORMITIES verificata.');
+    } catch (ncErr) {
+      console.warn('[MIGRATE NC WARNING]', ncErr.message);
+    }
+
+    // 5c. Container Billing Rules, Billing Audit Logs, Multi-Warehouse, Capannoni, Temp/ADR Palette, Carico Uscita Form
+    try {
+      await connection.query(
+        `INSERT IGNORE INTO billing_rules (rule_code, description, default_price, rule_type)
+         VALUES
+         ('SCARICO_CONTAINER', 'Scarico Container (Una Tantum per Container)', 0.00, 'EVENT'),
+         ('CARICO_CONTAINER', 'Carico Container (Una Tantum per Container)', 0.00, 'EVENT')`
+      );
+
+      // Crea anche listini globali di default "Scarico Container" e "Carico Container" con €0 di base se non esistono
+      const [existingScPlan] = await connection.query("SELECT id FROM tariff_plans WHERE name = 'Scarico Container' LIMIT 1");
+      if (existingScPlan.length === 0) {
+        const [insSc] = await connection.query(
+          "INSERT INTO tariff_plans (name, invoice_label, description, is_default, is_flat_rate) VALUES ('Scarico Container', 'Scarico Container', 'Listino dedicato allo scarico container (prezzo personalizzabile per cliente)', 0, 0)"
+        );
+        await connection.query(
+          "INSERT IGNORE INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, 'SCARICO_CONTAINER', 0.00)",
+          [insSc.insertId]
+        );
+      }
+      const [existingCaPlan] = await connection.query("SELECT id FROM tariff_plans WHERE name = 'Carico Container' LIMIT 1");
+      if (existingCaPlan.length === 0) {
+        const [insCa] = await connection.query(
+          "INSERT INTO tariff_plans (name, invoice_label, description, is_default, is_flat_rate) VALUES ('Carico Container', 'Carico Container', 'Listino dedicato al carico container (prezzo personalizzabile per cliente)', 0, 0)"
+        );
+        await connection.query(
+          "INSERT IGNORE INTO tariff_plan_items (plan_id, rule_code, price) VALUES (?, 'CARICO_CONTAINER', 0.00)",
+          [insCa.insertId]
+        );
+      }
+
+      // Storico separato Fatturazioni & Listini
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS BILLING_AUDIT_LOGS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          action VARCHAR(80) NOT NULL,
+          customer_id INT DEFAULT NULL,
+          customer_name VARCHAR(255) DEFAULT NULL,
+          entity_ref VARCHAR(120) DEFAULT NULL,
+          details TEXT NOT NULL,
+          metadata JSON DEFAULT NULL,
+          username VARCHAR(100) DEFAULT 'Sistema',
+          source VARCHAR(50) DEFAULT 'Fatturazione',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      // Multi-Magazzino & Frammentazione Capannoni/Reparti
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS WAREHOUSES (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(100) UNIQUE NOT NULL,
+          address VARCHAR(255) DEFAULT NULL,
+          cap VARCHAR(20) DEFAULT NULL,
+          city VARCHAR(100) DEFAULT NULL,
+          province VARCHAR(20) DEFAULT NULL,
+          notes TEXT DEFAULT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await connection.query(`INSERT IGNORE INTO WAREHOUSES (id, name, city, province) VALUES (1, 'Settala', 'Settala', 'MI'), (2, 'Caleppio', 'Caleppio di Settala', 'MI')`);
+
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS WAREHOUSE_DIVISIONS (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          warehouse_id INT NOT NULL,
+          name VARCHAR(100) NOT NULL,
+          description VARCHAR(255) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uniq_wh_div (warehouse_id, name),
+          FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Colonne extra su PALLETS (warehouse string libero + warehouse_id + temp_regime + ADR)
+      const [palCols2] = await connection.query(`SHOW COLUMNS FROM PALLETS`);
+      const palColNames2 = new Set(palCols2.map(c => c.Field));
+      const palWhType = String(palCols2.find(c => c.Field === 'warehouse')?.Type || '').toLowerCase();
+      if (palWhType.startsWith('enum')) {
+        await connection.query(`ALTER TABLE PALLETS MODIFY COLUMN warehouse VARCHAR(100) NOT NULL DEFAULT 'Settala'`);
+      }
+      if (!palColNames2.has('warehouse_id')) {
+        await connection.query(`ALTER TABLE PALLETS ADD COLUMN warehouse_id INT DEFAULT 1 AFTER warehouse`);
+        await connection.query(`UPDATE PALLETS p LEFT JOIN WAREHOUSES w ON LOWER(TRIM(p.warehouse)) = LOWER(TRIM(w.name)) SET p.warehouse_id = COALESCE(w.id, 1)`);
+      }
+      if (!palColNames2.has('temp_regime')) {
+        await connection.query(`ALTER TABLE PALLETS ADD COLUMN temp_regime VARCHAR(20) DEFAULT 'NONE'`);
+      }
+      if (!palColNames2.has('is_adr')) {
+        await connection.query(`ALTER TABLE PALLETS ADD COLUMN is_adr BOOLEAN DEFAULT FALSE`);
+      }
+      if (!palColNames2.has('adr_data')) {
+        await connection.query(`ALTER TABLE PALLETS ADD COLUMN adr_data JSON DEFAULT NULL`);
+      }
+
+      // Colonne extra su INBOUND_DDT_ITEMS
+      const [ddtItCols2] = await connection.query(`SHOW COLUMNS FROM INBOUND_DDT_ITEMS`);
+      const ddtItNames2 = new Set(ddtItCols2.map(c => c.Field));
+      if (!ddtItNames2.has('warehouse')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN warehouse VARCHAR(100) DEFAULT 'Settala'`);
+      }
+      if (!ddtItNames2.has('warehouse_id')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN warehouse_id INT DEFAULT 1`);
+      }
+      if (!ddtItNames2.has('temp_regime')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN temp_regime VARCHAR(20) DEFAULT 'NONE'`);
+      }
+      if (!ddtItNames2.has('is_adr')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN is_adr BOOLEAN DEFAULT FALSE`);
+      }
+      if (!ddtItNames2.has('adr_data')) {
+        await connection.query(`ALTER TABLE INBOUND_DDT_ITEMS ADD COLUMN adr_data JSON DEFAULT NULL`);
+      }
+
+      // LOCATIONS & FREE_LOCATIONS: divisibili per magazzino e capannone (default warehouse_id = 1 Settala)
+      const [locCols] = await connection.query(`SHOW COLUMNS FROM LOCATIONS`);
+      const locColNames = new Set(locCols.map(c => c.Field));
+      if (!locColNames.has('warehouse_id')) {
+        await connection.query(`ALTER TABLE LOCATIONS ADD COLUMN warehouse_id INT NOT NULL DEFAULT 1 AFTER id`);
+        await connection.query(`UPDATE LOCATIONS SET warehouse_id = 1 WHERE warehouse_id IS NULL OR warehouse_id = 0`);
+      }
+      if (!locColNames.has('division_id')) {
+        await connection.query(`ALTER TABLE LOCATIONS ADD COLUMN division_id INT DEFAULT NULL AFTER warehouse_id`);
+      }
+      // Sostituisce eventuale indice unico solo su barcode con (warehouse_id, barcode) per consentire stessi nomi in magazzini diversi
+      const [locIdxRows] = await connection.query(`SHOW INDEX FROM LOCATIONS WHERE Column_name = 'barcode' AND Non_unique = 0`);
+      for (const idxR of locIdxRows) {
+        if (idxR.Key_name !== 'uniq_loc_wh_barcode') {
+          try { await connection.query(`ALTER TABLE LOCATIONS DROP INDEX \`${idxR.Key_name}\``); } catch (_) {}
+        }
+      }
+      const [uniqLocCheck] = await connection.query(`SHOW INDEX FROM LOCATIONS WHERE Key_name = 'uniq_loc_wh_barcode'`);
+      if (uniqLocCheck.length === 0) {
+        try { await connection.query(`ALTER TABLE LOCATIONS ADD UNIQUE KEY uniq_loc_wh_barcode (warehouse_id, barcode)`); } catch (_) {}
+      }
+
+      const [freeCols] = await connection.query(`SHOW COLUMNS FROM FREE_LOCATIONS`);
+      const freeColNames = new Set(freeCols.map(c => c.Field));
+      if (!freeColNames.has('warehouse_id')) {
+        await connection.query(`ALTER TABLE FREE_LOCATIONS ADD COLUMN warehouse_id INT NOT NULL DEFAULT 1 AFTER id`);
+        await connection.query(`UPDATE FREE_LOCATIONS SET warehouse_id = 1 WHERE warehouse_id IS NULL OR warehouse_id = 0`);
+      }
+      if (!freeColNames.has('division_id')) {
+        await connection.query(`ALTER TABLE FREE_LOCATIONS ADD COLUMN division_id INT DEFAULT NULL AFTER warehouse_id`);
+      }
+      const [freeIdxRows] = await connection.query(`SHOW INDEX FROM FREE_LOCATIONS WHERE Column_name = 'name' AND Non_unique = 0`);
+      for (const idxR of freeIdxRows) {
+        if (idxR.Key_name !== 'uniq_free_wh_name') {
+          try { await connection.query(`ALTER TABLE FREE_LOCATIONS DROP INDEX \`${idxR.Key_name}\``); } catch (_) {}
+        }
+      }
+      const [uniqFreeCheck] = await connection.query(`SHOW INDEX FROM FREE_LOCATIONS WHERE Key_name = 'uniq_free_wh_name'`);
+      if (uniqFreeCheck.length === 0) {
+        try { await connection.query(`ALTER TABLE FREE_LOCATIONS ADD UNIQUE KEY uniq_free_wh_name (warehouse_id, name)`); } catch (_) {}
+      }
+
+      // OUTBOUND_ORDERS: Container mode, ricontrollo carico, località inizio trasporto, check-in uscita
+      const [outCols2] = await connection.query(`SHOW COLUMNS FROM OUTBOUND_ORDERS`);
+      const outColNames2 = new Set(outCols2.map(c => c.Field));
+      if (!outColNames2.has('is_container')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN is_container BOOLEAN DEFAULT FALSE`);
+      }
+      if (!outColNames2.has('require_load_recheck')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN require_load_recheck BOOLEAN DEFAULT FALSE`);
+      }
+      if (!outColNames2.has('origin_warehouse_id')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN origin_warehouse_id INT DEFAULT NULL`);
+      }
+      if (!outColNames2.has('origin_warehouse_name')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN origin_warehouse_name VARCHAR(100) DEFAULT NULL`);
+      }
+      if (!outColNames2.has('origin_warehouse_address')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN origin_warehouse_address VARCHAR(255) DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_checkin_id')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_checkin_id INT DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_checkin_session_code')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_checkin_session_code VARCHAR(100) DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_vehicle_plate')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_vehicle_plate VARCHAR(60) DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_recorded_temp')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_recorded_temp VARCHAR(40) DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_hygiene_ok')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_hygiene_ok BOOLEAN DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_strisciata_taken')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_strisciata_taken BOOLEAN DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_completed_at')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_completed_at DATETIME DEFAULT NULL`);
+      }
+      if (!outColNames2.has('load_completed_by')) {
+        await connection.query(`ALTER TABLE OUTBOUND_ORDERS ADD COLUMN load_completed_by VARCHAR(100) DEFAULT NULL`);
+      }
+
+      // Seed Modulo Zebra: CARICO_USCITA ("Carico Camion / Container Uscita")
+      const [existingCaricoForm] = await connection.query("SELECT id FROM CUSTOM_FORMS WHERE code = 'CARICO_USCITA' LIMIT 1");
+      if (existingCaricoForm.length === 0) {
+        const caricoSteps = [
+          { id: 'step_bolla', title: 'Scansione Bolla di Uscita', subtitle: 'Scansiona o inserisci il codice Bolla (BOL-...) o Ordine (OUT-...)', type: 'BOLLA_SCAN', required: true },
+          { id: 'step_igiene', title: 'Condizioni Igienico-Sanitarie Mezzo', subtitle: 'Verifica pulizia pianale, integrità pareti e assenza contaminazioni', type: 'CHECKLIST', required: true },
+          { id: 'step_temp', title: 'Temperatura & Strisciata Camion', subtitle: 'Inserisci temperatura rilevata e ricorda di ritirare la strisciata dal camionista', type: 'TEMPERATURE_OUTBOUND', required: false },
+          { id: 'step_plate', title: 'Targa Mezzo / Sigillo Container', subtitle: 'Inserisci la targa automezzo e l eventuale sigillo', type: 'TEXT', required: true },
+          { id: 'step_recheck', title: 'Ri-Verifica Carico Barcode', subtitle: 'Scansiona nuovamente le palette da caricare se richiesto dall ufficio', type: 'BOLLA_RECHECK', required: false }
+        ];
+        await connection.query(
+          `INSERT INTO CUSTOM_FORMS (code, title, description, category, target_device, is_active, icon, color_accent, display_mode, is_default, steps, created_by)
+           VALUES ('CARICO_USCITA', 'Carico Camion / Container', 'Checklist guidata di partenza su bolla: igiene, temperatura e strisciata, targa e ri-verifica barcode.', 'OUTBOUND', 'ZEBRA', 1, 'Truck', 'emerald', 'SHOW_ON_HOME', 0, ?, 'Sistema')`,
+          [JSON.stringify(caricoSteps)]
+        );
+      }
+
+      console.log('✅ Schema Container, Multi-Magazzino, Capannoni, Temp/ADR & Billing Audit verificato.');
+    } catch (extErr) {
+      console.warn('[MIGRATE EXTENDED WARNING]', extErr.message);
+    }
+
     // 6. Consolidamento automatico posizioni e merce identica (stessa posizione + stesso prodotto + stesso lotto)
     try {
       const { consolidateLocationPallets } = require('../utils/palletConsolidation');
@@ -794,7 +1050,15 @@ async function runMigrations() {
         ['QUARANTINE_LOGS', 'idx_quarantine_pallet', 'pallet_id'],
         ['CUSTOM_FORM_SUBMISSIONS', 'idx_cfs_status_created', 'status, created_at'],
         ['OUTBOUND_RETURNS', 'idx_returns_order', 'order_id'],
-        ['OUTBOUND_RETURNS', 'idx_returns_date', 'returned_at']
+        ['OUTBOUND_RETURNS', 'idx_returns_date', 'returned_at'],
+        ['NON_CONFORMITIES', 'idx_nc_status_created', 'status, created_at'],
+        ['NON_CONFORMITIES', 'idx_nc_pallet_code', 'pallet_code'],
+        ['NON_CONFORMITIES', 'idx_nc_customer', 'customer_id'],
+        ['BILLING_AUDIT_LOGS', 'idx_bal_created', 'created_at'],
+        ['BILLING_AUDIT_LOGS', 'idx_bal_cust_created', 'customer_id, created_at'],
+        ['BILLING_AUDIT_LOGS', 'idx_bal_action', 'action'],
+        ['PALLETS', 'idx_pallets_wh_id', 'warehouse_id'],
+        ['LOCATIONS', 'idx_loc_wh_div', 'warehouse_id, division_id']
       ];
 
       for (const [tbl, idxName, cols] of indexesToEnsure) {

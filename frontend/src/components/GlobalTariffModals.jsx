@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import {
-  X, Plus, Save, Trash2, Copy, Layers, Sparkles, Loader2, CheckCircle2, Tag
+  X, Plus, Save, Trash2, Copy, Layers, Sparkles, Loader2, CheckCircle2, Tag, TrendingUp, TrendingDown, CheckSquare, Square
 } from 'lucide-react';
 import { appAlert, appConfirm } from '../utils/alerts';
 
@@ -207,6 +207,31 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
   const [isFlatRate, setIsFlatRate] = useState(false);
   const [planItems, setPlanItems] = useState({});
   const [syncAssigned, setSyncAssigned] = useState(false);
+  const [selectedRuleCodes, setSelectedRuleCodes] = useState([]);
+  const [bulkPercent, setBulkPercent] = useState('10');
+  const [pendingAuditNote, setPendingAuditNote] = useState('');
+
+  const toggleRuleSelected = (code) => {
+    setSelectedRuleCodes(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
+  };
+
+  const applyBulkPercent = (direction) => {
+    if (selectedRuleCodes.length === 0) return;
+    const pct = parseFloat(String(bulkPercent).replace(',', '.'));
+    if (isNaN(pct) || pct <= 0) return appAlert('Inserisci una percentuale maggiore di zero.');
+    const mult = direction === 'UP' ? (1 + pct / 100) : Math.max(0, 1 - pct / 100);
+    setPlanItems(prev => {
+      const next = { ...prev };
+      selectedRuleCodes.forEach(code => {
+        const ruleObj = rules.find(r => r.rule_code === code);
+        const curr = parseFloat(next[code] ?? ruleObj?.default_price ?? 0) || 0;
+        next[code] = Math.max(0, Math.round(curr * mult * 100) / 100);
+      });
+      return next;
+    });
+    const sign = direction === 'UP' ? '+' : '-';
+    setPendingAuditNote(`Variazione % (${sign}${pct}%) su ${selectedRuleCodes.length} voci del listino globale`);
+  };
 
   const getToken = () => localStorage.getItem('maglite_token');
 
@@ -242,6 +267,8 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
         : (parseFloat(r.default_price) || 0);
     });
     setPlanItems(items);
+    setSelectedRuleCodes([]);
+    setPendingAuditNote('');
   };
 
   useEffect(() => {
@@ -271,6 +298,8 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
         : (parseFloat(r.default_price) || 0);
     });
     setPlanItems(items);
+    setSelectedRuleCodes([]);
+    setPendingAuditNote('');
   };
 
   if (!show) return null;
@@ -288,7 +317,8 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
         is_default: isDefault,
         is_flat_rate: isFlatRate,
         items: planItems,
-        sync_assigned: syncAssigned
+        sync_assigned: syncAssigned,
+        audit_note: pendingAuditNote || undefined
       };
       if (editingPlanId) {
         await axios.put(`http://${window.location.hostname}:3000/api/billing/tariff-plans/${editingPlanId}`, payload, { headers });
@@ -553,6 +583,51 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const selectable = rules.filter(r => r.rule_code !== 'CANONE_FISSO_MENSILE').map(r => r.rule_code);
+                          setSelectedRuleCodes(selectedRuleCodes.length === selectable.length ? [] : selectable);
+                        }}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-bold flex items-center gap-1"
+                      >
+                        {selectedRuleCodes.length > 0 ? <CheckSquare size={12} className="text-brand-blue" /> : <Square size={12} />}
+                        {selectedRuleCodes.length > 0 ? `Selezionate (${selectedRuleCodes.length})` : 'Seleziona Tutte'}
+                      </button>
+                    </div>
+                    {selectedRuleCodes.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            value={bulkPercent}
+                            onChange={e => setBulkPercent(e.target.value)}
+                            className="w-12 bg-transparent text-white text-right text-[11px] font-black outline-none"
+                          />
+                          <span className="text-[11px] font-bold text-slate-400">%</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => applyBulkPercent('UP')}
+                          className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-brand-black border border-emerald-500/40 rounded-lg text-[11px] font-black flex items-center gap-1"
+                        >
+                          <TrendingUp size={12} /> Aumenta +%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyBulkPercent('DOWN')}
+                          className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 rounded-lg text-[11px] font-black flex items-center gap-1"
+                        >
+                          <TrendingDown size={12} /> Diminuisci -%
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   {RULE_GROUP_ORDER.map(type => {
                     const groupRules = rules.filter(r => r.rule_type === type && r.rule_code !== 'CANONE_FISSO_MENSILE');
                     if (groupRules.length === 0) return null;
@@ -562,14 +637,28 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
                           <Tag size={12} /> {RULE_GROUP_LABELS[type] || type}
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                          {groupRules.map(r => (
+                          {groupRules.map(r => {
+                            const isChecked = selectedRuleCodes.includes(r.rule_code);
+                            return (
                             <div
                               key={r.rule_code}
-                              className="flex items-center justify-between gap-2 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2"
+                              className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2 border transition-all ${
+                                isChecked
+                                  ? 'bg-sky-950/35 border-brand-blue'
+                                  : 'bg-slate-900 border-slate-800'
+                              }`}
                             >
-                              <div className="min-w-0">
-                                <div className="text-xs font-bold text-slate-200 truncate">{r.description}</div>
-                                <div className="text-[10px] font-mono text-slate-500">{r.rule_code}</div>
+                              <div className="flex items-start gap-2 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => toggleRuleSelected(r.rule_code)}
+                                  className="mt-1 rounded border-slate-600 bg-slate-800 text-brand-blue cursor-pointer shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-xs font-bold text-slate-200 truncate">{r.description}</div>
+                                  <div className="text-[10px] font-mono text-slate-500">{r.rule_code}</div>
+                                </div>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
                                 <span className="text-xs text-slate-500 font-bold">
@@ -584,7 +673,7 @@ export const GlobalPlansModal = ({ show, onClose, onUpdated }) => {
                                 />
                               </div>
                             </div>
-                          ))}
+                          );})}
                         </div>
                       </div>
                     );

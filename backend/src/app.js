@@ -48,11 +48,13 @@ fastify.decorate('authenticate', async function (request, reply) {
 fastify.register(require('./routes/auth'), { prefix: '/api/auth' });
 fastify.register(require('./routes/pallets'), { prefix: '/api/pallets' });
 fastify.register(require('./routes/quarantine'), { prefix: '/api/quarantine' });
+fastify.register(require('./routes/nonConformities'), { prefix: '/api/non-conformities' });
 fastify.register(require('./routes/inbound'), { prefix: '/api/inbound' });
 fastify.register(require('./routes/users'), { prefix: '/api/users' });
 fastify.register(require('./routes/customers'), { prefix: '/api/customers' });
 fastify.register(require('./routes/products'), { prefix: '/api/products' });
 fastify.register(require('./routes/locations'), { prefix: '/api/locations' });
+fastify.register(require('./routes/warehouses'), { prefix: '/api/warehouses' });
 fastify.register(require('./routes/dashboard'), { prefix: '/api/dashboard' });
 fastify.register(require('./routes/audit'), { prefix: '/api/audit' });
 fastify.register(require('./routes/outbound'), { prefix: '/api/outbound' });

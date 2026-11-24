@@ -4,9 +4,11 @@ import { ChevronLeft, ScanBarcode, CheckCircle, PackagePlus, Box, AlertTriangle,
 import { useNavigate } from 'react-router-dom';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import ZebraErrorModal from './ZebraErrorModal';
+import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
 const InboundZebra = () => {
   const navigate = useNavigate();
+  const workspace = useZebraWorkspace();
   const token = localStorage.getItem('maglite_token');
   
   const [step, setStep] = useState('SCAN_DDT');
@@ -27,9 +29,10 @@ const InboundZebra = () => {
   
   const fetchLocs = async () => {
     try {
+      const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
       const [locRes, freeRes, ddtsRes] = await Promise.all([
-        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers: { Authorization: `Bearer ${token}` } }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations${whQ}`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free${whQ}`, { headers: { Authorization: `Bearer ${token}` } }),
         axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt?active_only=true`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
       const allLocs = [
@@ -37,7 +40,7 @@ const InboundZebra = () => {
         ...freeRes.data.map(l => ({ name: l.name, occupied: false }))
       ];
       
-      const invRes = await axios.get(`http://${window.location.hostname}:3000/api/pallets/inventory`, { headers: { Authorization: `Bearer ${token}` } });
+      const invRes = await axios.get(`http://${window.location.hostname}:3000/api/pallets/inventory${whQ}`, { headers: { Authorization: `Bearer ${token}` } });
       const occupiedLocs = new Set(invRes.data.filter(p => p.location).map(p => p.location));
       
       const finalLocs = allLocs.map(l => ({
@@ -54,7 +57,7 @@ const InboundZebra = () => {
 
   useEffect(() => {
     fetchLocs();
-  }, [token]);
+  }, [token, workspace?.warehouseId]);
 
   useBarcodeScanner((barcode) => {
     if (isProcessing) return;

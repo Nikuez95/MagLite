@@ -2,7 +2,7 @@ import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils
 import { hasPerm } from "../../utils/permissions.js";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus, ArrowRightLeft, X, Award } from 'lucide-react';
+import { Map, RefreshCw, Layers, Search, Trash2, Eye, Info, ChevronDown, ChevronRight, Printer, LayoutGrid, List, CheckCircle2, Package, Plus, ArrowRightLeft, X, Award, Warehouse, Building2 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { jwtDecode } from 'jwt-decode';
 
@@ -15,12 +15,28 @@ const Locations = () => {
   const [statusFilter, setStatusFilter] = useState('ALL'); // 'ALL' | 'OCCUPIED' | 'FREE'
   const [viewMode, setViewMode] = useState('GRID'); // 'GRID' | 'LIST'
   const [bulkMode, setBulkMode] = useState('STANDARD'); // STANDARD, TERRA, CUSTOM
+  const [warehouses, setWarehouses] = useState([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState('ALL');
+  const [selectedDivisionId, setSelectedDivisionId] = useState('ALL');
   const [bulkForm, setBulkForm] = useState({
     zone: 'CELLA2',
     rack: 'A',
     cols: 4,       // Lunghezza (quante colonne)
     levels: 3,     // Piani (quanti livelli in altezza)
-    custom: '01, 11, 21' // Usato in CUSTOM
+    custom: '01, 11, 21', // Usato in CUSTOM
+    warehouse_id: '1',
+    division_id: ''
+  });
+  const [newFreeModal, setNewFreeModal] = useState({ show: false, name: '', warehouse_id: '1', division_id: '' });
+  const [reassignModal, setReassignModal] = useState({
+    show: false,
+    title: '',
+    zone: null,
+    source_warehouse_id: null,
+    location_ids: [],
+    free_location_ids: [],
+    target_warehouse_id: '1',
+    target_division_id: ''
   });
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -42,17 +58,26 @@ const Locations = () => {
   const canManageLocations = hasPerm(['pallet_move', 'settings_manage']);
   const canDeleteLocations = hasPerm(['pallet_delete', 'settings_manage']);
 
-  const fetchLocations = async () => {
+  const fetchLocations = async (whOverride = selectedWarehouseId, divOverride = selectedDivisionId) => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [resLoc, resFree, resSettings, resScores] = await Promise.all([
-        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
+      const params = new URLSearchParams();
+      if (whOverride && whOverride !== 'ALL') params.set('warehouse_id', whOverride);
+      if (divOverride && divOverride !== 'ALL') params.set('division_id', divOverride);
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const scoreQs = whOverride && whOverride !== 'ALL' ? `?warehouse_id=${whOverride}` : '';
+
+      const [resLoc, resFree, resSettings, resScores, resWh] = await Promise.all([
+        axios.get(`http://${window.location.hostname}:3000/api/locations${qs}`, { headers }),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free${qs}`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers }),
-        axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/scores`, { headers }).catch(() => ({ data: null }))
+        axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/scores${scoreQs}`, { headers }).catch(() => ({ data: null })),
+        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers }).catch(() => ({ data: [] }))
       ]);
-      setLocations(resLoc.data);
-      setFreeLocations(resFree.data);
+      setLocations(resLoc.data || []);
+      setFreeLocations(resFree.data || []);
+      const whList = resWh.data || [];
+      setWarehouses(whList);
       if (resSettings.data && resSettings.data.require_location_pins !== undefined) {
         setRequirePins(resSettings.data.require_location_pins === 'true');
       }
@@ -65,21 +90,25 @@ const Locations = () => {
   };
 
   useEffect(() => {
-    fetchLocations();
+    fetchLocations(selectedWarehouseId, selectedDivisionId);
+  }, [selectedWarehouseId, selectedDivisionId]);
 
+  useEffect(() => {
     const socket = io(`http://${window.location.hostname}:3000`);
-    const handleRefresh = () => fetchLocations();
+    const handleRefresh = () => fetchLocations(selectedWarehouseId, selectedDivisionId);
     socket.on('stow_updated', handleRefresh);
     socket.on('locations_updated', handleRefresh);
+    socket.on('warehouses_updated', handleRefresh);
     socket.on('inventory_updated', handleRefresh);
 
     return () => {
       socket.off('stow_updated', handleRefresh);
       socket.off('locations_updated', handleRefresh);
+      socket.off('warehouses_updated', handleRefresh);
       socket.off('inventory_updated', handleRefresh);
       socket.disconnect();
     };
-  }, []);
+  }, [selectedWarehouseId, selectedDivisionId]);
 
   const togglePins = async () => {
     if (!canManageLocations) return appAlert('Non hai i permessi per modificare le impostazioni PIN.');
@@ -124,7 +153,9 @@ const Locations = () => {
       const res = await axios.post(`http://${window.location.hostname}:3000/api/locations/bulk`, {
         zone: bulkForm.zone,
         rack: bulkForm.rack,
-        levels: levelsArray
+        levels: levelsArray,
+        warehouse_id: Number(bulkForm.warehouse_id) || 1,
+        division_id: bulkForm.division_id ? Number(bulkForm.division_id) : null
       }, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
@@ -154,12 +185,13 @@ const Locations = () => {
     }
   };
 
-  const handleDeleteZone = async (zoneName) => {
+  const handleDeleteZone = async (zoneName, zoneWarehouseId = null) => {
     if (isProcessing) return;
     if (!await appConfirm(`Sicuro di voler eliminare interamente la zona "${zoneName}"? L'operazione non è reversibile.`)) return;
     setIsProcessing(true);
     try {
-      await axios.delete(`http://${window.location.hostname}:3000/api/locations/zone/${zoneName}`, {
+      const whQ = zoneWarehouseId ? `?warehouse_id=${zoneWarehouseId}` : '';
+      await axios.delete(`http://${window.location.hostname}:3000/api/locations/zone/${encodeURIComponent(zoneName)}${whQ}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       fetchLocations();
@@ -170,18 +202,54 @@ const Locations = () => {
     }
   };
 
-  const handleAddFreeLocation = async () => {
+  const handleAddFreeLocation = () => {
     if (isProcessing) return;
-    const name = await appPrompt("Nome della posizione libera (es. CELLA 2, SCAFFALE ESTERNO):");
-    if (!name) return;
+    const defaultWh = selectedWarehouseId !== 'ALL' ? String(selectedWarehouseId) : String(warehouses[0]?.id || '1');
+    const defaultDiv = selectedDivisionId !== 'ALL' && selectedDivisionId !== 'NONE' ? String(selectedDivisionId) : '';
+    setNewFreeModal({ show: true, name: '', warehouse_id: defaultWh, division_id: defaultDiv });
+  };
+
+  const submitAddFreeLocation = async (e) => {
+    e.preventDefault();
+    if (isProcessing || !newFreeModal.name.trim()) return;
     setIsProcessing(true);
     try {
-      await axios.post(`http://${window.location.hostname}:3000/api/locations/free`, { name }, {
+      await axios.post(`http://${window.location.hostname}:3000/api/locations/free`, {
+        name: newFreeModal.name.trim(),
+        warehouse_id: Number(newFreeModal.warehouse_id) || 1,
+        division_id: newFreeModal.division_id ? Number(newFreeModal.division_id) : null
+      }, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
+      setNewFreeModal({ show: false, name: '', warehouse_id: '1', division_id: '' });
       fetchLocations();
     } catch (err) {
       appAlert(err.response?.data?.error || 'Errore creazione posizione libera');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const submitReassign = async (e) => {
+    e.preventDefault();
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      await axios.put(`http://${window.location.hostname}:3000/api/locations/reassign`, {
+        zone: reassignModal.zone,
+        source_warehouse_id: reassignModal.source_warehouse_id,
+        location_ids: reassignModal.location_ids,
+        free_location_ids: reassignModal.free_location_ids,
+        target_warehouse_id: Number(reassignModal.target_warehouse_id),
+        target_division_id: reassignModal.target_division_id ? Number(reassignModal.target_division_id) : null
+      }, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      setReassignModal(prev => ({ ...prev, show: false }));
+      await fetchLocations();
+      appAlert('Posizioni riassegnate con successo al nuovo magazzino / reparto!', 'Spostamento Completato', 'success');
+    } catch (err) {
+      appAlert(err.response?.data?.error || 'Errore riassegnazione posizioni');
     } finally {
       setIsProcessing(false);
     }
@@ -212,9 +280,13 @@ const Locations = () => {
   const allZonesList = [...new Set(locations.map(l => l.zone))];
 
   const filteredLocations = locations.filter(l => {
+    if (selectedDivisionId === 'NONE' && l.division_id) return false;
+    if (selectedDivisionId !== 'ALL' && selectedDivisionId !== 'NONE' && String(l.division_id || '') !== String(selectedDivisionId)) return false;
     const matchesSearch =
       l.barcode.toLowerCase().includes(searchTerm.toLowerCase()) ||
       l.zone.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (l.warehouse_name && l.warehouse_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (l.division_name && l.division_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (l.pallet_code && l.pallet_code.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (l.product_name && l.product_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (l.customer_name && l.customer_name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -223,6 +295,10 @@ const Locations = () => {
     if (statusFilter === 'FREE') return !l.pallet_code;
     return true;
   });
+
+  const activeWhObj = warehouses.find(w => String(w.id) === String(selectedWarehouseId)) || null;
+  const activeWhDivisions = activeWhObj?.divisions || [];
+  const bulkWhDivisions = (warehouses.find(w => String(w.id) === String(bulkForm.warehouse_id))?.divisions) || [];
 
   const groupedLocations = filteredLocations.reduce((acc, loc) => {
     if (!acc[loc.zone]) acc[loc.zone] = [];
@@ -368,6 +444,91 @@ const Locations = () => {
           </div>
         </div>
 
+        {/* Selettore Sede Magazzino & Reparto / Capannone */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-black uppercase tracking-wider text-slate-400 mr-1 flex items-center gap-1.5">
+              <Warehouse size={15} className="text-brand-blue" /> Sede Magazzino:
+            </span>
+            <button
+              type="button"
+              onClick={() => { setSelectedWarehouseId('ALL'); setSelectedDivisionId('ALL'); }}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                selectedWarehouseId === 'ALL'
+                  ? 'bg-brand-blue text-brand-black border-brand-blue font-black'
+                  : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-600'
+              }`}
+            >
+              Tutti i Magazzini
+            </button>
+            {warehouses.map(w => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => {
+                  const idStr = String(w.id);
+                  setSelectedWarehouseId(idStr);
+                  setSelectedDivisionId('ALL');
+                  setBulkForm(prev => ({ ...prev, warehouse_id: idStr, division_id: '' }));
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                  String(selectedWarehouseId) === String(w.id)
+                    ? 'bg-brand-blue text-brand-black border-brand-blue font-black shadow'
+                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-600'
+                }`}
+              >
+                <Building2 size={13} /> {w.name}
+                {w.divisions?.length > 0 && (
+                  <span className="text-[10px] opacity-80">({w.divisions.length})</span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {activeWhDivisions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-violet-300 mr-1">
+                Capannone / Reparto:
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedDivisionId('ALL')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                  selectedDivisionId === 'ALL' ? 'bg-violet-500 text-white border-violet-500' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Tutti i Reparti
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedDivisionId('NONE')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                  selectedDivisionId === 'NONE' ? 'bg-slate-700 text-white border-slate-600' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Senza Reparto
+              </button>
+              {activeWhDivisions.map(d => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedDivisionId(String(d.id));
+                    setBulkForm(prev => ({ ...prev, division_id: String(d.id) }));
+                  }}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                    String(selectedDivisionId) === String(d.id)
+                      ? 'bg-violet-500 text-white border-violet-400'
+                      : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-violet-500/40'
+                  }`}
+                >
+                  {d.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* KPI Magazzino */}
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
@@ -422,7 +583,38 @@ const Locations = () => {
                 <Layers className="text-brand-blue" size={24} />
                 Generatore Corsie
               </h2>
-              <form onSubmit={handleBulkGenerate} className="space-y-5">
+              <form onSubmit={handleBulkGenerate} className="space-y-4">
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Sede Magazzino *</label>
+                    <select
+                      value={bulkForm.warehouse_id}
+                      onChange={e => setBulkForm({ ...bulkForm, warehouse_id: e.target.value, division_id: '' })}
+                      className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-2.5 text-sm font-bold"
+                    >
+                      {warehouses.map(w => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                      ))}
+                      {warehouses.length === 0 && <option value="1">Settala</option>}
+                    </select>
+                  </div>
+                  {bulkWhDivisions.length > 0 && (
+                    <div>
+                      <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Capannone / Reparto (Opz.)</label>
+                      <select
+                        value={bulkForm.division_id}
+                        onChange={e => setBulkForm({ ...bulkForm, division_id: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-2.5 text-sm font-bold"
+                      >
+                        <option value="">-- Nessun reparto specifico --</option>
+                        {bulkWhDivisions.map(d => (
+                          <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
                 <div>
                   <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Modello Stivaggio</label>
                   <div className="flex gap-2">
@@ -540,6 +732,10 @@ const Locations = () => {
                     const totalOccupied = zoneLocations.filter(l => l.pallet_code).length;
                     const zonePct = zoneLocations.length > 0 ? Math.round((totalOccupied / zoneLocations.length) * 100) : 0;
                     const zScoreObj = (optScores.zoneScores || []).find(zs => zs.zone === zoneName.toUpperCase());
+                    const firstLoc = zoneLocations[0];
+                    const zoneWhId = firstLoc?.warehouse_id || 1;
+                    const zoneWhName = firstLoc?.warehouse_name || warehouses.find(w => w.id === zoneWhId)?.name || 'Settala';
+                    const uniqueDivNames = [...new Set(zoneLocations.map(l => l.division_name).filter(Boolean))];
                     return (
                       <div key={zoneName} className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden">
                         {/* Header Zona */}
@@ -547,9 +743,17 @@ const Locations = () => {
                           onClick={() => toggleZone(zoneName)}
                           className="p-3.5 bg-slate-900/90 hover:bg-slate-800/80 cursor-pointer transition-colors flex flex-wrap items-center justify-between gap-3"
                         >
-                          <div className="flex items-center gap-2.5">
+                          <div className="flex items-center gap-2 flex-wrap">
                             {isExpanded ? <ChevronDown size={18} className="text-brand-blue" /> : <ChevronRight size={18} className="text-slate-400" />}
                             <span className="font-black text-base text-brand-white">Zona {zoneName}</span>
+                            <span className="bg-emerald-500/10 text-emerald-300 border border-emerald-500/25 px-2 py-0.5 rounded-lg text-[11px] font-bold">
+                              {zoneWhName}
+                            </span>
+                            {uniqueDivNames.map(dn => (
+                              <span key={dn} className="bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-lg text-[11px] font-bold">
+                                {dn}
+                              </span>
+                            ))}
                             <span className="bg-slate-950 text-slate-300 px-2 py-0.5 rounded-lg text-xs border border-slate-800 font-bold">
                               {zoneLocations.length} pos.
                             </span>
@@ -568,9 +772,30 @@ const Locations = () => {
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center gap-3 text-xs font-bold">
+                          <div className="flex items-center gap-2 text-xs font-bold">
                             <span className="text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2.5 py-0.5 rounded-full">{totalOccupied} occ. ({zonePct}%)</span>
                             <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">{zoneLocations.length - totalOccupied} lib.</span>
+                            {canManageLocations && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setReassignModal({
+                                    show: true,
+                                    title: `Sposta Zona "${zoneName}" (${zoneWhName})`,
+                                    zone: zoneName,
+                                    source_warehouse_id: zoneWhId,
+                                    location_ids: [],
+                                    free_location_ids: [],
+                                    target_warehouse_id: String(zoneWhId),
+                                    target_division_id: firstLoc?.division_id ? String(firstLoc.division_id) : ''
+                                  });
+                                }}
+                                className="px-2 py-1 bg-violet-500/15 text-violet-300 hover:bg-violet-500 hover:text-white border border-violet-500/30 rounded-lg transition-colors flex items-center gap-1 text-[11px]"
+                                title="Sposta / Riassegna Magazzino o Capannone per questa Zona"
+                              >
+                                <ArrowRightLeft size={13} /> Riassegna Sede
+                              </button>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -583,7 +808,7 @@ const Locations = () => {
                             </button>
                             {canDeleteLocations && totalOccupied === 0 && (
                               <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteZone(zoneName); }}
+                                onClick={(e) => { e.stopPropagation(); handleDeleteZone(zoneName, zoneWhId); }}
                                 disabled={isProcessing}
                                 className="p-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white rounded-lg transition-colors disabled:opacity-40"
                                 title="Elimina intera zona"
@@ -744,12 +969,44 @@ const Locations = () => {
                       </div>
                       <div className="min-w-0">
                         <span className="text-brand-white font-bold block truncate">{fl.name}</span>
-                        <span className="text-[11px] font-semibold text-slate-400">
+                        <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/25">
+                            {fl.warehouse_name || 'Settala'}
+                          </span>
+                          {fl.division_name && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                              {fl.division_name}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[11px] font-semibold text-slate-400 block mt-0.5">
                           {count > 0 ? `${count} articoli (${totalQ} u.) · Clicca per gestire` : 'Vuota · Clicca per ispezionare'}
                         </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1 shrink-0">
+                      {canManageLocations && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setReassignModal({
+                              show: true,
+                              title: `Riassegna Posizione "${fl.name}"`,
+                              zone: null,
+                              source_warehouse_id: fl.warehouse_id || 1,
+                              location_ids: [],
+                              free_location_ids: [fl.id],
+                              target_warehouse_id: String(fl.warehouse_id || 1),
+                              target_division_id: fl.division_id ? String(fl.division_id) : ''
+                            });
+                          }}
+                          className="p-2 bg-violet-500/15 text-violet-300 hover:bg-violet-500 hover:text-white rounded-xl transition-colors"
+                          title="Cambia Magazzino / Capannone"
+                        >
+                          <ArrowRightLeft size={15} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); openFreeLocationInspector(fl.name); }}
@@ -1072,6 +1329,106 @@ const Locations = () => {
                 Chiudi
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Nuova Posizione Libera con Magazzino & Capannone */}
+      {newFreeModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
+          <div className="bg-slate-900 border border-brand-blue/40 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-lg font-black text-white">Nuova Posizione Libera</h3>
+              <button type="button" onClick={() => setNewFreeModal(p => ({ ...p, show: false }))} className="p-1.5 text-slate-400 hover:text-white"><X size={18} /></button>
+            </div>
+            <form onSubmit={submitAddFreeLocation} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Nome Posizione *</label>
+                <input
+                  required
+                  value={newFreeModal.name}
+                  onChange={e => setNewFreeModal(p => ({ ...p, name: e.target.value.toUpperCase() }))}
+                  placeholder="Es. CELLA 2, PIAZZALE FUORI..."
+                  className="w-full bg-slate-950 border border-slate-700 text-white rounded-xl p-3 text-sm font-bold uppercase"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Sede Magazzino *</label>
+                <select
+                  value={newFreeModal.warehouse_id}
+                  onChange={e => setNewFreeModal(p => ({ ...p, warehouse_id: e.target.value, division_id: '' }))}
+                  className="w-full bg-slate-950 border border-slate-700 text-white rounded-xl p-3 text-sm font-bold"
+                >
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </div>
+              {((warehouses.find(w => String(w.id) === String(newFreeModal.warehouse_id))?.divisions) || []).length > 0 && (
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Capannone / Reparto (Opz.)</label>
+                  <select
+                    value={newFreeModal.division_id}
+                    onChange={e => setNewFreeModal(p => ({ ...p, division_id: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-700 text-white rounded-xl p-3 text-sm"
+                  >
+                    <option value="">-- Nessuno --</option>
+                    {warehouses.find(w => String(w.id) === String(newFreeModal.warehouse_id)).divisions.map(d => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setNewFreeModal(p => ({ ...p, show: false }))} className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-bold text-sm">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-2.5 bg-brand-blue hover:bg-sky-400 text-brand-black rounded-xl font-black text-sm">Crea Posizione</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Riassegnazione Sede / Capannone per Zona o Posizione */}
+      {reassignModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/90 backdrop-blur-md">
+          <div className="bg-slate-900 border border-violet-500/40 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-violet-400">Riassegna Posizioni</span>
+                <h3 className="text-lg font-black text-white">{reassignModal.title}</h3>
+              </div>
+              <button type="button" onClick={() => setReassignModal(p => ({ ...p, show: false }))} className="p-1.5 text-slate-400 hover:text-white"><X size={18} /></button>
+            </div>
+            <form onSubmit={submitReassign} className="space-y-4">
+              <p className="text-xs text-slate-400">
+                Le eventuali palette attualmente posizionate in questa zona/posizione verranno aggiornate automaticamente con la nuova sede magazzino.
+              </p>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Nuovo Magazzino di Destinazione *</label>
+                <select
+                  value={reassignModal.target_warehouse_id}
+                  onChange={e => setReassignModal(p => ({ ...p, target_warehouse_id: e.target.value, target_division_id: '' }))}
+                  className="w-full bg-slate-950 border border-slate-700 text-white rounded-xl p-3 text-sm font-bold"
+                >
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Nuovo Capannone / Reparto</label>
+                <select
+                  value={reassignModal.target_division_id}
+                  onChange={e => setReassignModal(p => ({ ...p, target_division_id: e.target.value }))}
+                  className="w-full bg-slate-950 border border-slate-700 text-white rounded-xl p-3 text-sm"
+                >
+                  <option value="">-- Nessun reparto specifico --</option>
+                  {((warehouses.find(w => String(w.id) === String(reassignModal.target_warehouse_id))?.divisions) || []).map(d => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setReassignModal(p => ({ ...p, show: false }))} className="flex-1 py-2.5 bg-slate-800 text-slate-300 rounded-xl font-bold text-sm">Annulla</button>
+                <button type="submit" disabled={isProcessing} className="flex-1 py-2.5 bg-violet-500 hover:bg-violet-400 text-white rounded-xl font-black text-sm">Applica Spostamento</button>
+              </div>
+            </form>
           </div>
         </div>
       )}

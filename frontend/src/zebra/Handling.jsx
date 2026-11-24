@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { Scan, Box, MapPin, CheckCircle2, AlertCircle, ArrowLeft, Search, Keyboard, Layers, Sparkles } from 'lucide-react';
 import { io } from 'socket.io-client';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
+import { useZebraWorkspace } from '../utils/zebraWorkspace';
 
 // Estrae Piano (level) e Posizione Orizzontale (colIndex) da una posizione scaffale (es. "01", "12", "33", "010")
 const parseShelfPos = (posStr) => {
@@ -44,8 +45,10 @@ const parseShelfPos = (posStr) => {
   };
 };
 
-const Handling = () => {
+const Handling = ({ embedded = false, initialBarcodeProp = null, onComplete = null, onCancel = null }) => {
   const routeLocation = useLocation();
+  const workspace = useZebraWorkspace();
+  const [showAllDivisions, setShowAllDivisions] = useState(false);
   const [pallet, setPallet] = useState(null);
   const [status, setStatus] = useState('WAITING_PALLET'); 
   const [message, setMessage] = useState('');
@@ -95,9 +98,15 @@ const Handling = () => {
   const fetchInit = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
+      const params = new URLSearchParams();
+      if (workspace?.warehouseId) params.set('warehouse_id', workspace.warehouseId);
+      if (workspace?.divisionId && !showAllDivisions) params.set('division_id', workspace.divisionId);
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const whOnlyQs = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+
       const [resLoc, resFree, resSettings] = await Promise.all([
-        axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/locations${qs}`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/locations/free${whOnlyQs}`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/settings`, { headers }).catch(() => ({ data: {} }))
       ]);
       const locList = resLoc.data || [];
@@ -121,23 +130,27 @@ const Handling = () => {
     socket.on('locations_updated', refresh);
     socket.on('stow_updated', refresh);
     socket.on('inventory_updated', refresh);
+    socket.on('warehouses_updated', refresh);
     return () => {
       socket.off('locations_updated', refresh);
       socket.off('stow_updated', refresh);
       socket.off('inventory_updated', refresh);
+      socket.off('warehouses_updated', refresh);
       socket.disconnect();
     };
-  }, []);
+  }, [workspace?.warehouseId, workspace?.divisionId, showAllDivisions]);
 
   useEffect(() => {
-    if (routeLocation.state?.initialBarcode) {
-      handleScan(routeLocation.state.initialBarcode);
+    const initCode = initialBarcodeProp || routeLocation.state?.initialBarcode;
+    if (initCode) {
+      handleScan(initCode);
     }
-  }, [routeLocation.state]);
+  }, [routeLocation.state, initialBarcodeProp]);
 
   const openFreeLocation = async (locName) => {
     try {
-      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(locName)}`, {
+      const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(locName)}${whQ}`, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       const items = res.data?.items || [];
@@ -171,7 +184,8 @@ const Handling = () => {
       if (!upper.startsWith('PAL-') && !upper.startsWith('NOBAR-')) {
         // Se non è un barcode paletta, prova a vedere se è un barcode posizione / FREE_LOCATIONS
         try {
-          const resLoc = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(upper)}`, {
+          const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
+          const resLoc = await axios.get(`http://${window.location.hostname}:3000/api/pallets/by-location/${encodeURIComponent(upper)}${whQ}`, {
             headers: { Authorization: `Bearer ${getToken()}` }
           });
           if (resLoc.data?.items?.length > 0) {
@@ -197,6 +211,13 @@ const Handling = () => {
         const res = await axios.get(`http://${window.location.hostname}:3000/api/pallets/${barcode}`, {
           headers: { Authorization: `Bearer ${getToken()}` }
         });
+
+        if (workspace?.warehouseId && res.data.warehouse_id && Number(res.data.warehouse_id) !== Number(workspace.warehouseId)) {
+          setStatus('ERROR');
+          setMessage(`Paletta in altro magazzino (${res.data.warehouse || 'Altra sede'}). Cambia sede in alto prima di spostarla.`);
+          setTimeout(() => setStatus('WAITING_PALLET'), 4000);
+          return;
+        }
         
         if (res.data.status === 'SHIPPED') {
           setStatus('ERROR');
@@ -305,7 +326,8 @@ const Handling = () => {
       pin: pin || undefined,
       source: 'Zebra',
       force,
-      merge_into_existing: mergeIntoExisting
+      merge_into_existing: mergeIntoExisting,
+      active_warehouse_id: workspace?.warehouseId || undefined
     };
   };
 
@@ -325,7 +347,10 @@ const Handling = () => {
       setSourceItems([]);
       setPinInput('');
       setTargetLocation(null);
-      setTimeout(() => setStatus('WAITING_PALLET'), 2000);
+      setTimeout(() => {
+        if (embedded && onComplete) onComplete(targetLocation);
+        else setStatus('WAITING_PALLET');
+      }, 1500);
     } catch (err) {
       setStatus('ERROR');
       setMessage(err.response?.data?.error || 'Errore durante frammentazione');
@@ -353,7 +378,10 @@ const Handling = () => {
       setSourceItems([]);
       setPinInput('');
       setTargetLocation(null);
-      setTimeout(() => setStatus('WAITING_PALLET'), 2000);
+      setTimeout(() => {
+        if (embedded && onComplete) onComplete(locationCode);
+        else setStatus('WAITING_PALLET');
+      }, 1500);
     } catch (err) {
       if (err.response?.status === 409) {
         setOccupyingPallet(err.response.data.occupying_pallet);
@@ -406,6 +434,31 @@ const Handling = () => {
       
       {status === 'WAITING_PALLET' && (
         <div className="animate-fade-in-up w-full flex flex-col items-center">
+          {embedded && onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="self-start mb-3 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs flex items-center gap-1.5"
+            >
+              <ArrowLeft size={16} /> Torna al Picking
+            </button>
+          )}
+          {workspace?.warehouseName && (
+            <div className="mb-3 flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
+              <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-black">
+                Sede: {workspace.warehouseName}{workspace.divisionName && !showAllDivisions ? ` • ${workspace.divisionName}` : ''}
+              </span>
+              {workspace.divisionId && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllDivisions(v => !v)}
+                  className="px-2.5 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300 font-bold"
+                >
+                  {showAllDivisions ? `Solo ${workspace.divisionName}` : 'Tutti i Reparti'}
+                </button>
+              )}
+            </div>
+          )}
           <div className="relative mb-5 flex justify-center w-full">
             <Scan size={76} className="text-brand-blue opacity-80" />
             <div className="absolute inset-0 bg-brand-blue opacity-20 blur-2xl rounded-full animate-pulse"></div>

@@ -6,7 +6,8 @@ import {
   Archive,
   TrendingDown,
   Coins,
-  Settings2
+  Settings2,
+  FileSpreadsheet
 } from 'lucide-react';
 import { hasPerm } from '../utils/permissions';
 
@@ -52,6 +53,13 @@ const NAV_ITEMS = [
     Icon: Settings2,
     perm: ['view_billing', 'finance_manage', 'tariff_plans_manage'],
     accent: 'violet'
+  },
+  {
+    path: '/desktop/billing-audit',
+    label: 'Storico Fatturazioni',
+    Icon: FileSpreadsheet,
+    perm: ['view_billing', 'finance_manage', 'view_finances'],
+    accent: 'teal'
   }
 ];
 

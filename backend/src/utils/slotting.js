@@ -158,11 +158,20 @@ function getDominantVelocityForRows(velocitiesMap, rows) {
   return best;
 }
 
-async function loadMappedWarehouseSnapshot(connection) {
-  const [freeRows] = await connection.query('SELECT name FROM FREE_LOCATIONS');
+async function loadMappedWarehouseSnapshot(connection, warehouseId = null) {
+  const whFilterId = warehouseId ? Number(warehouseId) : null;
+  const [freeRows] = await connection.query(
+    whFilterId ? 'SELECT name FROM FREE_LOCATIONS WHERE warehouse_id = ?' : 'SELECT name FROM FREE_LOCATIONS',
+    whFilterId ? [whFilterId] : []
+  );
   const freeLocSet = new Set(freeRows.map(r => String(r.name || '').trim().toUpperCase()).filter(Boolean));
 
-  const [locRows] = await connection.query('SELECT id, zone, col, pos, barcode FROM LOCATIONS ORDER BY zone ASC, col ASC, pos ASC');
+  const [locRows] = await connection.query(
+    whFilterId
+      ? 'SELECT id, warehouse_id, division_id, zone, col, pos, barcode FROM LOCATIONS WHERE warehouse_id = ? ORDER BY zone ASC, col ASC, pos ASC'
+      : 'SELECT id, warehouse_id, division_id, zone, col, pos, barcode FROM LOCATIONS ORDER BY zone ASC, col ASC, pos ASC',
+    whFilterId ? [whFilterId] : []
+  );
   const locationsByBarcode = new Map();
   const locations = [];
   for (const loc of locRows) {
@@ -171,6 +180,8 @@ async function loadMappedWarehouseSnapshot(connection) {
     const parsed = parseShelfPos(loc.pos);
     const enriched = {
       id: loc.id,
+      warehouse_id: loc.warehouse_id || 1,
+      division_id: loc.division_id || null,
       zone: String(loc.zone || '').trim().toUpperCase(),
       col: String(loc.col || '').trim().toUpperCase(),
       pos: parsed.pos,
@@ -191,9 +202,9 @@ async function loadMappedWarehouseSnapshot(connection) {
     FROM PALLETS p
     JOIN PRODUCTS pr ON p.product_id = pr.id
     JOIN CUSTOMERS c ON p.customer_id = c.id
-    WHERE p.status = 'STOCKED' AND p.quantity > 0
+    WHERE p.status = 'STOCKED' AND p.quantity > 0${whFilterId ? ' AND COALESCE(p.warehouse_id, 1) = ?' : ''}
     ORDER BY p.id ASC
-  `);
+  `, whFilterId ? [whFilterId] : []);
 
   const [reservedRows] = await connection.query(`
     SELECT DISTINCT oi.pallet_id, oi.pallet_code
@@ -545,8 +556,8 @@ function isAllowedOptimizationUom(item) {
   return /^(pezzi|pezzo|pz|scatole|scatola|scat|kg|kilo|chili|chilogramm)/.test(raw);
 }
 
-async function computeOptimizationTasks(connection, canAccessCustomerFn, user) {
-  const snapshot = await loadMappedWarehouseSnapshot(connection);
+async function computeOptimizationTasks(connection, canAccessCustomerFn, user, warehouseId = null) {
+  const snapshot = await loadMappedWarehouseSnapshot(connection, warehouseId);
   const velocities = await getProductVelocities(connection);
   const allGroups = groupMappedPalletsByCode(snapshot);
 

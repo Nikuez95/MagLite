@@ -1,6 +1,6 @@
 import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import {
   Package, Plus, Search, Filter, MapPin, XCircle, CheckCircle, Activity,
@@ -13,6 +13,8 @@ import CreatableSelect from 'react-select/creatable';
 import Select from 'react-select';
 import { hasPerm, canTouchCustomer } from '../../utils/permissions';
 import { DEFAULT_BLOCK_REASONS, DEFAULT_UNBLOCK_REASONS } from './Quarantine';
+import LogisticsMetaFields, { DEFAULT_ADR_DRAFT } from '../../components/LogisticsMetaFields';
+import { TEMP_REGIME_MAP, normalizeTempRegime, parseAdrData, formatAdrDescription } from '../../utils/logisticsMeta';
 
 const formatUOM = (uom) => {
   const u = (uom || '').toLowerCase();
@@ -221,6 +223,8 @@ const ProductsManagement = () => {
   const [pallets, setPallets] = useState([]);
   const [selectedPallets, setSelectedPallets] = useState([]);
   const [products, setProducts] = useState([]);
+  const [tariffPlans, setTariffPlans] = useState([]);
+  const [warehouses, setWarehouses] = useState([{ id: 1, name: 'Settala' }, { id: 2, name: 'Caleppio' }]);
   const [serverFlags, setServerFlags] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -230,7 +234,8 @@ const ProductsManagement = () => {
   const [editProductModal, setEditProductModal] = useState({ show: false, product: null });
   const [isProcessing, setIsProcessing] = useState(false);
   
-  const [searchTerm, setSearchTerm] = useState('');
+  const location = useLocation();
+  const [searchTerm, setSearchTerm] = useState(() => location.state?.search || '');
   const [filterCustomer, setFilterCustomer] = useState('ALL');
   const [filterWarehouse, setFilterWarehouse] = useState('ALL');
   const [filterStatus, setFilterStatus] = useState('ALL'); // 'ALL' | 'PENDING' | 'STOCKED' | 'LOADING_ZONE'
@@ -272,6 +277,12 @@ const ProductsManagement = () => {
     client_pallet_number: '', 
     client_article_number: '',
     expiration_date: '',
+    tariff_plan_id: '',
+    warehouse: 'Settala',
+    warehouse_id: 1,
+    temp_regime: 'NONE',
+    is_adr: false,
+    adr_data: { ...DEFAULT_ADR_DRAFT },
     error: null 
   });
   
@@ -422,13 +433,15 @@ const ProductsManagement = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [palletsRes, productsRes, custRes, locRes, freeRes, flagsRes] = await Promise.all([
+      const [palletsRes, productsRes, custRes, locRes, freeRes, flagsRes, plansRes, whRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/pallets`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/products/tariff-plans`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers }).catch(() => ({ data: [] }))
       ]);
       setPallets(palletsRes.data);
       setProducts(productsRes.data);
@@ -436,6 +449,10 @@ const ProductsManagement = () => {
       setLocations(locRes.data);
       setFreeLocations(freeRes.data || []);
       setServerFlags(flagsRes.data || []);
+      setTariffPlans(Array.isArray(plansRes.data) ? plansRes.data : []);
+      if (Array.isArray(whRes.data) && whRes.data.length > 0) {
+        setWarehouses(whRes.data);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -450,6 +467,7 @@ const ProductsManagement = () => {
     socket.on('inventory_updated', refresh);
     socket.on('dashboard_update', refresh);
     socket.on('quarantine_updated', refresh);
+    socket.on('warehouses_updated', refresh);
     socket.on('billing_updated', refresh);
     return () => {
       socket.off('stow_updated', refresh);
@@ -457,6 +475,7 @@ const ProductsManagement = () => {
       socket.off('inventory_updated', refresh);
       socket.off('dashboard_update', refresh);
       socket.off('quarantine_updated', refresh);
+      socket.off('warehouses_updated', refresh);
       socket.off('billing_updated', refresh);
       socket.disconnect();
     };
@@ -718,13 +737,23 @@ const ProductsManagement = () => {
     setIsProcessing(true);
     setEditModal(prev => ({ ...prev, error: null }));
     try {
+      const selectedWhObj = warehouses.find(w => Number(w.id) === Number(editModal.warehouse_id) || w.name === editModal.warehouse) || null;
+      const adrPayload = editModal.is_adr
+        ? { ...editModal.adr_data, formatted_description: formatAdrDescription(editModal.adr_data) }
+        : null;
       await axios.put(`http://${window.location.hostname}:3000/api/pallets/${editModal.pallet.pallet_code}`, {
         notes: editModal.notes,
         client_pallet_number: editModal.client_pallet_number,
         client_article_number: editModal.client_article_number,
         expiration_date: editModal.expiration_date,
         net_weight_kg: editModal.net_weight_kg !== '' && editModal.net_weight_kg !== undefined ? editModal.net_weight_kg : null,
-        gross_weight_kg: editModal.gross_weight_kg !== '' && editModal.gross_weight_kg !== undefined ? editModal.gross_weight_kg : null
+        gross_weight_kg: editModal.gross_weight_kg !== '' && editModal.gross_weight_kg !== undefined ? editModal.gross_weight_kg : null,
+        tariff_plan_id: editModal.tariff_plan_id ? parseInt(editModal.tariff_plan_id, 10) : null,
+        warehouse: selectedWhObj ? selectedWhObj.name : (editModal.warehouse || 'Settala'),
+        warehouse_id: selectedWhObj ? selectedWhObj.id : (editModal.warehouse_id || 1),
+        temp_regime: editModal.temp_regime || 'NONE',
+        is_adr: Boolean(editModal.is_adr),
+        adr_data: adrPayload
       }, {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
@@ -1239,8 +1268,19 @@ const ProductsManagement = () => {
                   <div className="flex items-center gap-1.5 text-xs font-medium">
                     <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1">
                       <button onClick={() => setFilterWarehouse('ALL')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'ALL' ? 'bg-slate-800 text-brand-white font-bold' : 'text-slate-500 hover:text-slate-300'}`}>Tutti Mag.</button>
-                      <button onClick={() => setFilterWarehouse('Settala')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'Settala' ? 'bg-brand-blue text-brand-black font-bold' : 'text-slate-500 hover:text-brand-blue'}`}>Settala</button>
-                      <button onClick={() => setFilterWarehouse('Caleppio')} className={`px-2.5 py-1 rounded-lg transition-colors ${filterWarehouse === 'Caleppio' ? 'bg-amber-500 text-brand-black font-bold' : 'text-slate-500 hover:text-amber-500'}`}>Caleppio</button>
+                      {warehouses.map((wh, idx) => (
+                        <button
+                          key={wh.id}
+                          onClick={() => setFilterWarehouse(wh.name)}
+                          className={`px-2.5 py-1 rounded-lg transition-colors ${
+                            filterWarehouse === wh.name
+                              ? idx % 2 === 0 ? 'bg-brand-blue text-brand-black font-bold' : 'bg-amber-500 text-brand-black font-bold'
+                              : 'text-slate-500 hover:text-brand-blue'
+                          }`}
+                        >
+                          {wh.name}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -1565,6 +1605,19 @@ const ProductsManagement = () => {
                                 }`}>
                                   {p.warehouse}
                                 </span>
+                                {normalizeTempRegime(p.temp_regime) !== 'NONE' && (
+                                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/35">
+                                    {TEMP_REGIME_MAP[normalizeTempRegime(p.temp_regime)]?.shortLabel}
+                                  </span>
+                                )}
+                                {Boolean(p.is_adr) && (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                    title={parseAdrData(p.adr_data)?.formatted_description || 'Merce ADR'}
+                                  >
+                                    ADR {parseAdrData(p.adr_data)?.un_number || ''}
+                                  </span>
+                                )}
                               </div>
                               <div className="font-bold text-brand-white text-sm mt-1 leading-snug">{p.product_name}</div>
                               <div className="text-slate-400 text-xs">{p.customer_name}</div>
@@ -1581,9 +1634,14 @@ const ProductsManagement = () => {
                           </div>
                         </div>
 
-                        {/* Rif / Weights / Lotto / Scad */}
-                        {(p.client_pallet_number || p.client_article_number || Number(p.net_weight_kg) > 0 || Number(p.gross_weight_kg) > 0) && (
+                        {/* Rif / Weights / Listino / Lotto / Scad */}
+                        {(p.client_pallet_number || p.client_article_number || Number(p.net_weight_kg) > 0 || Number(p.gross_weight_kg) > 0 || p.tariff_plan_name) && (
                           <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+                            {p.tariff_plan_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-violet-500/15 border border-violet-500/35 text-violet-300 font-sans font-bold">
+                                Listino: {p.tariff_plan_name}
+                              </span>
+                            )}
                             {p.client_pallet_number && (
                               <span className="bg-sky-500/15 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-md font-bold">
                                 Rif. Pal: {p.client_pallet_number}
@@ -1708,7 +1766,24 @@ const ProductsManagement = () => {
                               </button>
                               <button
                                 disabled={isQuarantined || !customerAllowed}
-                                onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', net_weight_kg: p.net_weight_kg ?? '', gross_weight_kg: p.gross_weight_kg ?? '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
+                                onClick={() => setEditModal({
+                                  show: true,
+                                  pallet: p,
+                                  newLocation: p.location || '',
+                                  notes: p.notes || '',
+                                  client_pallet_number: p.client_pallet_number || '',
+                                  client_article_number: p.client_article_number || '',
+                                  net_weight_kg: p.net_weight_kg ?? '',
+                                  gross_weight_kg: p.gross_weight_kg ?? '',
+                                  expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '',
+                                  tariff_plan_id: p.tariff_plan_id ? String(p.tariff_plan_id) : '',
+                                  warehouse: p.warehouse || 'Settala',
+                                  warehouse_id: p.warehouse_id || warehouses.find(w => w.name === p.warehouse)?.id || 1,
+                                  temp_regime: normalizeTempRegime(p.temp_regime),
+                                  is_adr: Boolean(p.is_adr),
+                                  adr_data: parseAdrData(p.adr_data) || { ...DEFAULT_ADR_DRAFT },
+                                  error: null
+                                })}
                                 className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl disabled:opacity-30"
                                 title="Modifica"
                               >
@@ -1903,8 +1978,13 @@ const ProductsManagement = () => {
                         <td className="px-3 py-3">
                           <div className="font-bold">{p.product_name}</div>
                           <div className="text-slate-400 text-xs">{p.customer_name}</div>
-                          {(p.client_pallet_number || p.client_article_number) && (
+                          {(p.client_pallet_number || p.client_article_number || p.tariff_plan_name) && (
                             <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              {p.tariff_plan_name && (
+                                <span className="bg-violet-500/15 text-violet-300 border border-violet-500/35 px-2 py-0.5 rounded-md font-bold text-[10px]">
+                                  Listino: {p.tariff_plan_name}
+                                </span>
+                              )}
                               {p.client_pallet_number && (
                                 <span className="bg-sky-500/15 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-md font-mono font-bold text-[10px]">
                                   Rif. Pal. Cl: {p.client_pallet_number}
@@ -1979,9 +2059,24 @@ const ProductsManagement = () => {
                           ) : <span className="text-slate-600 text-xs">-</span>}
                           {(() => {
                             const parsedFlags = p.flags && typeof p.flags === 'string' ? JSON.parse(p.flags) : p.flags || [];
-                            if (parsedFlags.length === 0) return null;
+                            const normT = normalizeTempRegime(p.temp_regime);
+                            const parsedAdr = p.is_adr ? parseAdrData(p.adr_data) : null;
+                            if (parsedFlags.length === 0 && normT === 'NONE' && !p.is_adr) return null;
                             return (
                               <div className="flex gap-1 mt-1 flex-wrap">
+                                {normT !== 'NONE' && (
+                                  <span className="bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 px-1.5 py-0.5 rounded text-[9px] font-bold">
+                                    {TEMP_REGIME_MAP[normT]?.shortLabel}
+                                  </span>
+                                )}
+                                {Boolean(p.is_adr) && (
+                                  <span
+                                    className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                    title={parsedAdr?.formatted_description || 'Merce ADR'}
+                                  >
+                                    ADR {parsedAdr?.un_number || ''}
+                                  </span>
+                                )}
                                 {parsedFlags.map(f => (
                                   <span key={f} className="bg-amber-500/10 text-amber-500 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider text-[9px]">{f}</span>
                                 ))}
@@ -2069,7 +2164,24 @@ const ProductsManagement = () => {
                                 </button>
                                 <button
                                   disabled={isQuarantined || !customerAllowed}
-                                  onClick={() => setEditModal({ show: true, pallet: p, newLocation: p.location || '', notes: p.notes || '', client_pallet_number: p.client_pallet_number || '', client_article_number: p.client_article_number || '', net_weight_kg: p.net_weight_kg ?? '', gross_weight_kg: p.gross_weight_kg ?? '', expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '', error: null })}
+                                  onClick={() => setEditModal({
+                                    show: true,
+                                    pallet: p,
+                                    newLocation: p.location || '',
+                                    notes: p.notes || '',
+                                    client_pallet_number: p.client_pallet_number || '',
+                                    client_article_number: p.client_article_number || '',
+                                    net_weight_kg: p.net_weight_kg ?? '',
+                                    gross_weight_kg: p.gross_weight_kg ?? '',
+                                    expiration_date: p.expiration_date ? p.expiration_date.split('T')[0] : '',
+                                    tariff_plan_id: p.tariff_plan_id ? String(p.tariff_plan_id) : '',
+                                    warehouse: p.warehouse || 'Settala',
+                                    warehouse_id: p.warehouse_id || warehouses.find(w => w.name === p.warehouse)?.id || 1,
+                                    temp_regime: normalizeTempRegime(p.temp_regime),
+                                    is_adr: Boolean(p.is_adr),
+                                    adr_data: parseAdrData(p.adr_data) || { ...DEFAULT_ADR_DRAFT },
+                                    error: null
+                                  })}
                                   className="p-2 text-slate-400 hover:text-brand-blue hover:bg-brand-blue/10 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                   title={isQuarantined ? "Paletta in QUARANTENA: sbloccala prima di modificarla o spostarla" : !customerAllowed ? "Accesso ristretto per questo cliente" : "Modifica"}
                                 >
@@ -2618,7 +2730,7 @@ const ProductsManagement = () => {
 
       {editModal.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/95 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-lg w-full shadow-2xl relative animate-fade-in-up">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl relative animate-fade-in-up max-h-[92vh] overflow-y-auto">
             <h2 className="text-2xl font-bold text-brand-white mb-6 flex items-center gap-3">
               <span className="w-10 h-10 bg-brand-blue/20 flex items-center justify-center rounded-xl text-brand-blue"><Edit3 size={24} /></span>
               Modifica Paletta
@@ -2674,6 +2786,49 @@ const ProductsManagement = () => {
                   <input type="number" step="0.001" min="0" value={editModal.gross_weight_kg ?? ''} onChange={e => setEditModal({...editModal, gross_weight_kg: e.target.value})} placeholder="Opzionale" className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue" />
                 </div>
               </div>
+              <div>
+                <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Listino Prezzi (Fatturazione Paletta)</label>
+                <select
+                  value={editModal.tariff_plan_id ?? ''}
+                  onChange={e => setEditModal({ ...editModal, tariff_plan_id: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue"
+                >
+                  <option value="">Listino Predefinito Cliente / Globale</option>
+                  {tariffPlans.map(tp => (
+                    <option key={tp.id} value={tp.id}>
+                      {tp.name}{tp.is_flat_rate ? ' (Fisso Mensile)' : tp.is_default ? ' (Default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Sede Magazzino</label>
+                <select
+                  value={editModal.warehouse_id || ''}
+                  onChange={e => {
+                    const whObj = warehouses.find(w => String(w.id) === String(e.target.value));
+                    setEditModal({
+                      ...editModal,
+                      warehouse_id: whObj ? whObj.id : Number(e.target.value),
+                      warehouse: whObj ? whObj.name : editModal.warehouse
+                    });
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue"
+                >
+                  {warehouses.map(w => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </div>
+              <LogisticsMetaFields
+                compact
+                tempRegime={editModal.temp_regime || 'NONE'}
+                onTempChange={(val) => setEditModal(prev => ({ ...prev, temp_regime: val }))}
+                isAdr={Boolean(editModal.is_adr)}
+                onAdrToggle={(val) => setEditModal(prev => ({ ...prev, is_adr: val }))}
+                adrData={editModal.adr_data || DEFAULT_ADR_DRAFT}
+                onAdrDataChange={(val) => setEditModal(prev => ({ ...prev, adr_data: val }))}
+              />
               <div>
                 <label className="block text-slate-400 font-bold mb-1 text-xs uppercase tracking-wider">Scadenza</label>
                 <input type="date" value={editModal.expiration_date} onChange={e => setEditModal({...editModal, expiration_date: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 focus:ring-brand-blue [color-scheme:dark]" />

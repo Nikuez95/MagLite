@@ -2,16 +2,19 @@ import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers, FileText } from 'lucide-react';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers, FileText, AlertTriangle, Warehouse, MapPin } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
+import { useZebraWorkspace, getZebraWorkspace, saveZebraWorkspace } from '../utils/zebraWorkspace';
 
 const InboundZebra = lazy(() => import('./InboundZebra'));
 const OutboundZebra = lazy(() => import('./OutboundZebra'));
 const Handling = lazy(() => import('./Handling'));
 const ZebraCheckinWizard = lazy(() => import('./ZebraCheckinWizard'));
+const ZebraLoadVehicleWizard = lazy(() => import('./ZebraLoadVehicleWizard'));
 const OptimizationZebra = lazy(() => import('./OptimizationZebra'));
 const VerifyBarcodeZebra = lazy(() => import('./VerifyBarcodeZebra'));
+const NonConformityZebra = lazy(() => import('./NonConformityZebra'));
 
 const ZebraModuleFallback = () => (
   <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-400 gap-3">
@@ -108,39 +111,51 @@ const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabl
   );
 };
 
-const TopBar = ({ user }) => {
+const TopBar = ({ user, workspace, onOpenWorkspacePicker }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const isHome = location.pathname === '/zebra' || location.pathname === '/zebra/';
   const allowDesktop = canAccessDesktop(user);
 
   return (
-    <header className="bg-brand-black/95 backdrop-blur border-b border-slate-800 px-4 py-3.5 flex justify-between items-center sticky top-0 z-20 shadow-lg">
+    <header className="bg-brand-black/95 backdrop-blur border-b border-slate-800 px-3 sm:px-4 py-3 flex justify-between items-center sticky top-0 z-20 shadow-lg gap-2">
       <div 
-        className={`flex items-center gap-3 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
+        className={`flex items-center gap-2.5 min-w-0 ${!isHome ? 'cursor-pointer active:scale-95 transition-transform' : ''}`} 
         onClick={() => !isHome && navigate('/zebra')}
       >
-        <div className="h-10 w-14 flex items-center justify-center shrink-0">
+        <div className="h-9 w-11 flex items-center justify-center shrink-0">
           <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-brand-white font-black text-lg leading-tight tracking-tight">MagLite</h1>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-black uppercase">
-              <Radio size={10} className="animate-pulse" /> Zebra
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-brand-white font-black text-base leading-tight tracking-tight">MagLite</h1>
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[9px] font-black uppercase shrink-0">
+              <Radio size={9} className="animate-pulse" /> Zebra
             </span>
           </div>
-          <p className="text-slate-400 text-[11px] font-bold flex items-center gap-1 mt-0.5">
-            <User size={11} className="text-brand-blue" />
-            <span>{user.username || 'Operatore'}</span>
+          <p className="text-slate-400 text-[11px] font-bold flex items-center gap-1 mt-0.5 truncate">
+            <User size={10} className="text-brand-blue shrink-0" />
+            <span className="truncate">{user.username || 'Operatore'}</span>
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          type="button"
+          onClick={onOpenWorkspacePicker}
+          className="px-2.5 py-1.5 rounded-xl bg-sky-500/15 border border-sky-500/40 text-sky-300 active:scale-95 text-[11px] font-black flex items-center gap-1 max-w-[140px]"
+          title="Cambia Magazzino / Capannone"
+        >
+          <MapPin size={12} className="shrink-0 text-sky-400" />
+          <span className="truncate">
+            {workspace?.warehouseName || 'Scegli Sede'}
+            {workspace?.divisionName ? ` · ${workspace.divisionName}` : ''}
+          </span>
+        </button>
         {allowDesktop && isHome && (
           <button
             onClick={() => navigate('/desktop')}
-            className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-slate-300 hover:text-brand-white flex items-center gap-1.5"
+            className="px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-slate-300 hover:text-brand-white flex items-center gap-1"
             title="Passa al Gestionale Desktop"
           >
             <Monitor size={14} className="text-brand-blue" />
@@ -150,7 +165,7 @@ const TopBar = ({ user }) => {
         {!isHome && (
           <button
             onClick={() => navigate('/zebra')}
-            className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-brand-blue active:bg-slate-800"
+            className="px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-black uppercase text-brand-blue active:bg-slate-800"
           >
             Home
           </button>
@@ -161,10 +176,10 @@ const TopBar = ({ user }) => {
             localStorage.removeItem('maglite_user');
             window.location.href = '/login';
           }}
-          className="p-3 rounded-2xl bg-slate-900 border border-slate-800 text-rose-400 active:bg-slate-800 transition-colors"
+          className="p-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-rose-400 active:bg-slate-800 transition-colors"
           title="Esci"
         >
-          <LogOut size={20} />
+          <LogOut size={18} />
         </button>
       </div>
     </header>
@@ -182,7 +197,7 @@ const iconComponentMap = {
   Download: Download
 };
 
-const Dashboard = ({ user }) => {
+const Dashboard = ({ user, workspace }) => {
   const navigate = useNavigate();
   const [counts, setCounts] = useState({ inboundPending: 0, outboundActive: 0, outboundReady: 0, optimizeTasks: 0 });
   const [customForms, setCustomForms] = useState([]);
@@ -197,6 +212,7 @@ const Dashboard = ({ user }) => {
   useEffect(() => {
     const token = localStorage.getItem('maglite_token');
     if (!token) return;
+    const whQ = workspace?.warehouseId ? `?warehouse_id=${workspace.warehouseId}` : '';
     const fetchCounts = async () => {
       try {
         const reqs = [
@@ -210,7 +226,7 @@ const Dashboard = ({ user }) => {
             ? axios.get(`http://${window.location.hostname}:3000/api/outbound?ready_only=true`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: [] }))
             : Promise.resolve({ data: [] }),
           canOptimize
-            ? axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: { summary: { totalTasks: 0 } } }))
+            ? axios.get(`http://${window.location.hostname}:3000/api/pallets/optimization/tasks${whQ}`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => ({ data: { summary: { totalTasks: 0 } } }))
             : Promise.resolve({ data: { summary: { totalTasks: 0 } } })
         ];
         const [inRes, outRes, readyRes, optRes] = await Promise.all(reqs);
@@ -232,7 +248,7 @@ const Dashboard = ({ user }) => {
       }
     };
     fetchCounts();
-  }, [canInbound, canPicking, canOptimize]);
+  }, [canInbound, canPicking, canOptimize, workspace?.warehouseId]);
 
   // Se l'operatore spara direttamente un codice dalla Home, apriamo il modulo corrispondente se ha il permesso
   useBarcodeScanner((barcode) => {
@@ -353,6 +369,14 @@ const Dashboard = ({ user }) => {
                   onClick={() => navigate('/zebra/verify')}
                 />
               )}
+
+              <TouchCard
+                icon={AlertTriangle}
+                label="SEGNALA NON CONFORMITÀ"
+                subtitle="Scansiona paletta, vedi contenuto e segnala anomalie al gestionale"
+                accent="rose"
+                onClick={() => navigate('/zebra/non-conformity')}
+              />
             </div>
           );
         })()}
@@ -460,9 +484,59 @@ const ZebraOperationPage = ({ title }) => {
 
 const ZebraApp = () => {
   const navigate = useNavigate();
+  const workspace = useZebraWorkspace();
+  const [warehouses, setWarehouses] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(() => !Boolean(getZebraWorkspace()?.warehouseId));
+  const [pickerStepWh, setPickerStepWh] = useState(null);
   const [user, setUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('maglite_user') || '{}'); } catch { return {}; }
   });
+
+  const fetchWarehouses = async () => {
+    const token = localStorage.getItem('maglite_token');
+    if (!token) return;
+    try {
+      const res = await axios.get(`http://${window.location.hostname}:3000/api/warehouses`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const list = res.data || [];
+      setWarehouses(list);
+      if (!workspace?.warehouseId) {
+        setPickerOpen(true);
+      }
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    fetchWarehouses();
+  }, []);
+
+  useEffect(() => {
+    if (!workspace?.warehouseId) {
+      setPickerOpen(true);
+    }
+  }, [workspace?.warehouseId]);
+
+  const chooseWarehouse = (wh) => {
+    if (wh.divisions && wh.divisions.length > 0) {
+      setPickerStepWh(wh);
+    } else {
+      saveZebraWorkspace({ warehouseId: wh.id, warehouseName: wh.name, divisionId: null, divisionName: null });
+      setPickerStepWh(null);
+      setPickerOpen(false);
+    }
+  };
+
+  const chooseDivision = (wh, div = null) => {
+    saveZebraWorkspace({
+      warehouseId: wh.id,
+      warehouseName: wh.name,
+      divisionId: div ? div.id : null,
+      divisionName: div ? div.name : null
+    });
+    setPickerStepWh(null);
+    setPickerOpen(false);
+  };
 
   useEffect(() => {
     refreshUserProfile().then(u => {
@@ -482,8 +556,10 @@ const ZebraApp = () => {
         if (u) setUser(u);
       });
     });
+    socket.on('warehouses_updated', fetchWarehouses);
     return () => {
       window.removeEventListener('maglite_permissions_updated', sync);
+      socket.off('warehouses_updated', fetchWarehouses);
       socket.disconnect();
     };
   }, []);
@@ -496,11 +572,120 @@ const ZebraApp = () => {
 
   return (
     <div className="min-h-screen bg-brand-black flex flex-col font-sans text-brand-white antialiased selection:bg-brand-blue selection:text-brand-black">
-      <TopBar user={user} />
+      <TopBar
+        user={user}
+        workspace={workspace}
+        onOpenWorkspacePicker={() => {
+          setPickerStepWh(null);
+          setPickerOpen(true);
+        }}
+      />
+
+      {pickerOpen && (
+        <div className="fixed inset-0 z-50 bg-brand-black/95 backdrop-blur-md flex flex-col justify-center p-5 animate-fade-in-up">
+          <div className="max-w-sm w-full mx-auto bg-slate-900 border-2 border-brand-blue/50 rounded-3xl p-6 space-y-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-brand-blue flex items-center gap-1.5">
+                  <Warehouse size={13} /> Area Operativa Zebra
+                </span>
+                <h2 className="text-xl font-black text-white mt-1">
+                  {pickerStepWh ? `Reparto in ${pickerStepWh.name}` : 'In quale Magazzino lavori?'}
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {pickerStepWh
+                    ? 'Scegli il capannone / zona in cui ti trovi ora.'
+                    : 'Zebra filtrerà palette, scaffali e task di questo magazzino.'}
+                </p>
+              </div>
+              {workspace?.warehouseId && (
+                <button
+                  type="button"
+                  onClick={() => { setPickerStepWh(null); setPickerOpen(false); }}
+                  className="p-2 bg-slate-800 rounded-xl text-slate-400"
+                >
+                  <X size={18} />
+                </button>
+              )}
+            </div>
+
+            {!pickerStepWh ? (
+              <div className="space-y-2.5">
+                {warehouses.map(wh => {
+                  const isCurr = Number(workspace?.warehouseId) === Number(wh.id);
+                  return (
+                    <button
+                      key={wh.id}
+                      type="button"
+                      onClick={() => chooseWarehouse(wh)}
+                      className={`w-full p-4 rounded-2xl border-2 text-left flex items-center justify-between transition-all active:scale-[0.98] ${
+                        isCurr
+                          ? 'bg-brand-blue/15 border-brand-blue text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-200 hover:border-slate-600'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-lg font-black">{wh.name}</div>
+                        {wh.city && <div className="text-xs text-slate-400">{wh.city}</div>}
+                        {wh.divisions?.length > 0 && (
+                          <div className="text-[11px] text-violet-300 font-bold mt-1">
+                            {wh.divisions.length} capannoni / reparti disponibili
+                          </div>
+                        )}
+                      </div>
+                      <ChevronRight size={22} className="text-brand-blue" />
+                    </button>
+                  );
+                })}
+                {warehouses.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => chooseDivision({ id: 1, name: 'Settala' }, null)}
+                    className="w-full p-4 rounded-2xl bg-brand-blue text-brand-black font-black"
+                  >
+                    Entra in Settala (Predefinito)
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => chooseDivision(pickerStepWh, null)}
+                  className="w-full p-3.5 rounded-2xl bg-brand-blue text-brand-black font-black text-sm flex items-center justify-between"
+                >
+                  <span>Tutti i Reparti di {pickerStepWh.name}</span>
+                  <ChevronRight size={18} />
+                </button>
+                {pickerStepWh.divisions.map(d => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => chooseDivision(pickerStepWh, d)}
+                    className="w-full p-3.5 rounded-2xl bg-slate-950 border-2 border-violet-500/40 text-white font-bold text-sm flex items-center justify-between active:scale-[0.98]"
+                  >
+                    <span>{d.name}</span>
+                    <ChevronRight size={18} className="text-violet-400" />
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setPickerStepWh(null)}
+                  className="w-full py-2.5 text-xs font-bold text-slate-400"
+                >
+                  ← Cambia Magazzino
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       
       <Suspense fallback={<ZebraModuleFallback />}>
         <Routes>
-          <Route path="/" element={<Dashboard user={user} />} />
+          <Route path="/" element={<Dashboard user={user} workspace={workspace} />} />
+          <Route path="/checkin/CARICO_USCITA" element={<ZebraLoadVehicleWizard />} />
+          <Route path="/form/CARICO_USCITA" element={<ZebraLoadVehicleWizard />} />
           <Route path="/checkin" element={<ZebraCheckinWizard />} />
           <Route path="/checkin/:formCode" element={<ZebraCheckinWizard />} />
           <Route path="/form/:formCode" element={<ZebraCheckinWizard />} />
@@ -526,6 +711,7 @@ const ZebraApp = () => {
             path="/verify"
             element={hasPerm('zebra_verify', user) ? <VerifyBarcodeZebra /> : <Navigate to="/zebra" replace />}
           />
+          <Route path="/non-conformity" element={<NonConformityZebra />} />
           <Route path="/out-stock" element={<ZebraOperationPage title="Picking" />} />
         </Routes>
       </Suspense>

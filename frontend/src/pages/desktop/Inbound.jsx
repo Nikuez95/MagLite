@@ -28,12 +28,15 @@ import {
   Link2
 } from 'lucide-react';
 import { io } from 'socket.io-client';
+import LogisticsMetaFields, { DEFAULT_ADR_DRAFT } from '../../components/LogisticsMetaFields';
+import { TEMP_REGIME_MAP, formatAdrDescription } from '../../utils/logisticsMeta';
 
 const Inbound = () => {
   const [customers, setCustomers] = useState([]);
   const [products, setProducts] = useState([]);
   const [serverFlags, setServerFlags] = useState([]);
   const [tariffPlans, setTariffPlans] = useState([]);
+  const [warehouses, setWarehouses] = useState([{ id: 1, name: 'Settala' }, { id: 2, name: 'Caleppio' }]);
   const [selectedCartIds, setSelectedCartIds] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -81,6 +84,10 @@ const Inbound = () => {
     pallet_group: '',
     flags: [],
     warehouse: 'Settala',
+    warehouse_id: 1,
+    temp_regime: 'NONE',
+    is_adr: false,
+    adr_data: { ...DEFAULT_ADR_DRAFT },
     num_pallets: 1,
     notes: '',
     location: '',
@@ -97,13 +104,14 @@ const Inbound = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [custRes, prodRes, freeRes, locRes, flagsRes, plansRes] = await Promise.all([
+      const [custRes, prodRes, freeRes, locRes, flagsRes, plansRes, whRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/locations`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/products/tariff-plans`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/products/tariff-plans`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers }).catch(() => ({ data: [] }))
       ]);
       setCustomers(custRes.data.filter(c => canTouchCustomer(c.id)).map(c => ({ value: c.id, label: c.business_name, raw: c })));
       setProducts(prodRes.data.map(p => ({ value: p.id, label: `${p.sku} - ${p.name}`, raw: p })));
@@ -111,6 +119,9 @@ const Inbound = () => {
       setMappedLocations(locRes.data || []);
       setServerFlags(flagsRes.data);
       setTariffPlans(plansRes.data || []);
+      if (Array.isArray(whRes.data) && whRes.data.length > 0) {
+        setWarehouses(whRes.data);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -136,11 +147,13 @@ const Inbound = () => {
     socket.on('inbound_updated', refresh);
     socket.on('inventory_updated', refresh);
     socket.on('locations_updated', refresh);
+    socket.on('warehouses_updated', refresh);
     socket.on('billing_updated', refresh);
     return () => {
       socket.off('inbound_updated', refresh);
       socket.off('inventory_updated', refresh);
       socket.off('locations_updated', refresh);
+      socket.off('warehouses_updated', refresh);
       socket.off('billing_updated', refresh);
       socket.disconnect();
     };
@@ -847,7 +860,12 @@ const Inbound = () => {
             k => k.includes('magazzin') || k.includes('deposit')
           );
           const magStr = String(rawMagazzino ?? '').trim();
-          const magazzino = magStr.toLowerCase().includes('caleppio') ? 'Caleppio' : 'Settala';
+          const matchedWh = warehouses.find(w => magStr && w.name.toLowerCase() === magStr.toLowerCase())
+            || warehouses.find(w => magStr && magStr.toLowerCase().includes(w.name.toLowerCase()))
+            || warehouses[0]
+            || { id: 1, name: 'Settala' };
+          const magazzino = matchedWh.name;
+          const magazzinoId = matchedWh.id;
 
           const rawPalletCliente = getCol(
             normRow,
@@ -1062,6 +1080,10 @@ const Inbound = () => {
             flags: parsedFlags,
             batch: lotto,
             warehouse: magazzino,
+            warehouse_id: magazzinoId,
+            temp_regime: 'NONE',
+            is_adr: false,
+            adr_data: null,
             num_pallets: palletsCount,
             notes: note,
             client_pallet_number: palletCliente,
@@ -1224,6 +1246,13 @@ const Inbound = () => {
       return Number.isFinite(n) && n >= 0 ? n : null;
     };
 
+    const resolvedWh = warehouses.find(w => Number(w.id) === Number(formData.warehouse_id) || w.name === formData.warehouse)
+      || warehouses[0]
+      || { id: 1, name: formData.warehouse || 'Settala' };
+    const adrPayload = formData.is_adr
+      ? { ...formData.adr_data, formatted_description: formatAdrDescription(formData.adr_data) }
+      : null;
+
     const newItem = {
       id: Date.now(),
       customer_id: formData.customer_id,
@@ -1241,7 +1270,11 @@ const Inbound = () => {
       tariff_plan_id: effectivePlanId ? Number(effectivePlanId) : null,
       pallet_group: cleanGroup,
       batch: formData.batch,
-      warehouse: formData.warehouse,
+      warehouse: resolvedWh.name,
+      warehouse_id: resolvedWh.id,
+      temp_regime: formData.temp_regime || 'NONE',
+      is_adr: Boolean(formData.is_adr),
+      adr_data: adrPayload,
       num_pallets: cleanGroup ? 1 : formData.num_pallets,
       notes: formData.notes,
       client_pallet_number: formData.client_pallet_number,
@@ -1275,7 +1308,10 @@ const Inbound = () => {
       arrival_date: new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16),
       isNewProduct: false,
       newProductName: '',
-      flags: []
+      flags: [],
+      temp_regime: 'NONE',
+      is_adr: false,
+      adr_data: { ...DEFAULT_ADR_DRAFT }
     }));
   };
 
@@ -1793,21 +1829,21 @@ const Inbound = () => {
                   <Plus size={20} className="text-brand-blue" />
                   Inserimento Articolo / Paletta
                 </h2>
-                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-                  {['Settala', 'Caleppio'].map(wh => (
+                <div className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+                  {warehouses.map((wh, idx) => (
                     <button
-                      key={wh}
+                      key={wh.id}
                       type="button"
-                      onClick={() => setFormData({ ...formData, warehouse: wh })}
+                      onClick={() => setFormData({ ...formData, warehouse: wh.name, warehouse_id: wh.id })}
                       className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                        formData.warehouse === wh
-                          ? wh === 'Settala'
+                        (formData.warehouse_id ? Number(formData.warehouse_id) === Number(wh.id) : formData.warehouse === wh.name)
+                          ? idx % 2 === 0
                             ? 'bg-brand-blue text-brand-black shadow'
                             : 'bg-amber-500 text-brand-black shadow'
                           : 'text-slate-400 hover:text-white'
                       }`}
                     >
-                      {wh}
+                      {wh.name}
                     </button>
                   ))}
                 </div>
@@ -2083,6 +2119,16 @@ const Inbound = () => {
                     onChange={val => setFormData({...formData, flags: val || []})}
                   />
                 </div>
+
+                {/* Temperatura Controllata & ADR (Metadata per Paletta e Bolla di Uscita) */}
+                <LogisticsMetaFields
+                  tempRegime={formData.temp_regime}
+                  onTempChange={(val) => setFormData(prev => ({ ...prev, temp_regime: val }))}
+                  isAdr={formData.is_adr}
+                  onAdrToggle={(val) => setFormData(prev => ({ ...prev, is_adr: val }))}
+                  adrData={formData.adr_data}
+                  onAdrDataChange={(val) => setFormData(prev => ({ ...prev, adr_data: val }))}
+                />
 
                 <div>
                   <label className="block text-slate-400 font-bold mb-1 text-[10px] uppercase tracking-wider">Note Paletta (Opzionale)</label>
@@ -2379,18 +2425,32 @@ const Inbound = () => {
                               {flg}
                             </span>
                           ))}
+                          {item.temp_regime && item.temp_regime !== 'NONE' && (
+                            <span className="text-[10px] font-extrabold bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 px-2 py-0.5 rounded-md shrink-0">
+                              {TEMP_REGIME_MAP[item.temp_regime]?.shortLabel || item.temp_regime}
+                            </span>
+                          )}
+                          {item.is_adr && (
+                            <span className="text-[10px] font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-md shrink-0" title={item.adr_data?.formatted_description || 'Merce Pericolosa ADR'}>
+                              ADR {item.adr_data?.un_number || ''}
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
-                            onClick={() => updateCartItem(item.id, { warehouse: item.warehouse === 'Settala' ? 'Caleppio' : 'Settala' })}
+                            onClick={() => {
+                              const currIdx = warehouses.findIndex(w => w.name === item.warehouse);
+                              const nextWh = warehouses[(currIdx + 1) % Math.max(1, warehouses.length)] || { id: 1, name: 'Settala' };
+                              updateCartItem(item.id, { warehouse: nextWh.name, warehouse_id: nextWh.id });
+                            }}
                             className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider border transition-colors ${
                               item.warehouse === 'Settala'
                                 ? 'bg-brand-blue/10 text-brand-blue border-brand-blue/30 hover:bg-brand-blue/20'
                                 : 'bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20'
                             }`}
-                            title="Clicca per cambiare magazzino (Settala / Caleppio)"
+                            title="Clicca per cambiare sede magazzino"
                           >
                             {item.warehouse}
                           </button>

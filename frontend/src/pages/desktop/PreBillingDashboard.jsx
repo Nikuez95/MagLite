@@ -303,6 +303,19 @@ const PreBillingDashboard = () => {
 
     setShowAddRow(false);
     setNewRow(prev => ({ ...prev, type: 'SERVICE', description: '', qty: 1, price: 0 }));
+
+    // Registra azione in Storico Fatturazioni
+    try {
+      const isDiscount = code === 'DISCOUNT_PERCENT' || code === 'DISCOUNT_FIXED';
+      axios.post(`http://${window.location.hostname}:3000/api/billing/audit-logs`, {
+        action: isDiscount ? 'PREBILLING_DISCOUNT' : 'PREBILLING_MANUAL_ITEM',
+        customer_id: selectedCustomer?.value || null,
+        customer_name: selectedCustomer?.raw?.business_name || targetSection?.sectionName || null,
+        entity_ref: `${month}/${year}`,
+        details: `${isDiscount ? 'Aggiunto sconto' : 'Aggiunta voce manuale'} in Pre-Fatturazione (${month}/${year}): "${newRow.description}" • Q.tà ${qty} × ${code === 'DISCOUNT_PERCENT' ? `${Math.abs(price)}%` : `€${price.toFixed(2)}`}`,
+        metadata: { code, group, description: newRow.description, qty, price, subtotal }
+      }, { headers: { Authorization: `Bearer ${getToken()}` } }).catch(() => {});
+    } catch (_) {}
   };
 
   // Calcolo totali per singola Frammentazione e Totale Cliente Madre

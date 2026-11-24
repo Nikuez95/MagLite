@@ -25,6 +25,13 @@ export function hasPerm(permKey, customUser = null) {
     return user.permissions[permKey];
   }
 
+  if (
+    (permKey === 'view_non_conformities' || permKey === 'non_conformities_manage') &&
+    user.permissions?.access_desktop === true
+  ) {
+    return true;
+  }
+
   if (user.role === 'developer') return true;
   return false;
 }
@@ -72,6 +79,7 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/products', perm: 'view_products', label: 'Prodotti & Stock' },
   { path: '/desktop/inventory', perm: 'view_inventory', label: 'Inventario Globale' },
   { path: '/desktop/quarantine', perm: 'view_quarantine', label: 'Quarantena & Qualità' },
+  { path: '/desktop/non-conformities', perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'], label: 'Non Conformità' },
   { path: '/desktop/customers', perm: 'view_customers', label: 'Anagrafica Clienti' },
   { path: '/desktop/locations', perm: 'view_locations', label: 'Mappa Magazzino' },
   { path: '/desktop/warehouse-signs', perm: ['view_locations', 'locations_manage', 'inbound_create'], label: 'Cartelli Magazzino' },
@@ -81,6 +89,7 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/expenses', perm: ['view_finances', 'finance_manage'], label: 'Gestione Uscite' },
   { path: '/desktop/invoices-history', perm: ['view_finances', 'finance_manage', 'view_billing'], label: 'Archivio Proforme' },
   { path: '/desktop/billing-rules', perm: ['view_billing', 'finance_manage', 'tariff_plans_manage'], label: 'Regole Base Fatturazione' },
+  { path: '/desktop/billing-audit', perm: ['view_billing', 'finance_manage', 'view_finances'], label: 'Storico Fatturazioni' },
   { path: '/desktop/billing-tariffs', perm: ['view_billing', 'finance_manage', 'tariff_plans_manage', 'client_tariffs_manage'], label: 'Tariffe Clienti' },
   { path: '/desktop/billing-dashboard', perm: ['view_billing', 'finance_manage'], label: 'Pre-Fatturazione' },
   { path: '/desktop/users', perm: ['view_users', 'users_manage'], label: 'Utenti & Ruoli (Team)' },
@@ -98,6 +107,7 @@ export const LOCKABLE_SECTIONS = [
   { key: 'outbound_returns', path: '/desktop/outbound/returns', label: 'Storico Resi', group: 'Merce' },
   { key: 'products', path: '/desktop/products', label: 'Prodotti & Stock', group: 'Merce' },
   { key: 'quarantine', path: '/desktop/quarantine', label: 'Quarantena & Qualità', group: 'Merce' },
+  { key: 'non_conformities', path: '/desktop/non-conformities', label: 'Non Conformità', group: 'Merce' },
   { key: 'inventory', path: '/desktop/inventory', label: 'Inventario Globale', group: 'Merce' },
   { key: 'customers', path: '/desktop/customers', label: 'Cartelle Clienti', group: 'Operativo' },
   { key: 'locations', path: '/desktop/locations', label: 'Mappa Magazzino', group: 'Operativo' },
@@ -109,6 +119,7 @@ export const LOCKABLE_SECTIONS = [
   { key: 'expenses', path: '/desktop/expenses', label: 'Gestione Uscite', group: 'Finanza' },
   { key: 'invoices_history', path: '/desktop/invoices-history', label: 'Archivio Proforme', group: 'Finanza' },
   { key: 'billing_rules', path: '/desktop/billing-rules', label: 'Regole Base Fatturazione', group: 'Amministrazione' },
+  { key: 'billing_audit', path: '/desktop/billing-audit', label: 'Storico Fatturazioni', group: 'Amministrazione' },
   { key: 'billing_tariffs', path: '/desktop/billing-tariffs', label: 'Tariffe Clienti', group: 'Amministrazione' },
   { key: 'billing_dashboard', path: '/desktop/billing-dashboard', label: 'Pre-Fatturazione', group: 'Amministrazione' },
   { key: 'users', path: '/desktop/users', label: 'Utenti & Ruoli (Team)', group: 'Sistema' },
