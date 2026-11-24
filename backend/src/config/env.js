@@ -3,10 +3,15 @@ const path = require('path');
 const dotenv = require('dotenv');
 
 const BACKEND_DIR = path.resolve(__dirname, '..', '..');
+const ROOT_DIR = path.resolve(BACKEND_DIR, '..');
 const ENV_PATH = path.join(BACKEND_DIR, '.env');
 
-// Carica sempre MagLite/backend/.env indipendentemente dalla working directory
-dotenv.config({ path: ENV_PATH });
+// Carica .env cercando in backend/.env, root/.env e CWD/.env (senza sovrascrivere env di sistema/Docker)
+for (const candidate of [ENV_PATH, path.join(ROOT_DIR, '.env'), path.resolve(process.cwd(), '.env')]) {
+  if (fs.existsSync(candidate)) {
+    dotenv.config({ path: candidate });
+  }
+}
 
 function formatEnvValue(val) {
   const s = String(val ?? '');

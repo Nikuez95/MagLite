@@ -27,7 +27,11 @@ pool.getConnection()
     conn.release();
   })
   .catch(err => {
-    console.error('❌ Errore critico: impossibile connettersi a MySQL:', err.message);
+    console.error(
+      `❌ Errore critico: impossibile connettersi a MySQL (${process.env.DB_USER}@${process.env.DB_HOST}:${process.env.DB_PORT || 3306}/${process.env.DB_NAME}):`,
+      err.code || '',
+      err.message
+    );
   });
 
 module.exports = pool;

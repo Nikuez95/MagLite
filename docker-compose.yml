@@ -6,7 +6,7 @@ services:
     container_name: maglite_db
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Imposta DB_ROOT_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-${DB_PASSWORD:?Imposta DB_PASSWORD in .env}}
       MYSQL_DATABASE: ${DB_NAME:-maglite_db}
       MYSQL_USER: ${DB_USER:-maglite_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Imposta DB_PASSWORD in .env}
