@@ -121,8 +121,11 @@ async function authRoutes(fastify, options) {
   fastify.put('/preferences', { preValidation: [fastify.authenticate] }, async (request, reply) => {
     try {
       const incoming = (request.body && typeof request.body.preferences === 'object' && request.body.preferences !== null)
-        ? request.body.preferences
+        ? { ...request.body.preferences }
         : {};
+      if (incoming.theme !== undefined) {
+        incoming.theme = incoming.theme === 'light' ? 'light' : 'dark';
+      }
       const [[userRow]] = await db.query('SELECT preferences FROM USERS WHERE id = ?', [request.user.id]);
       const current = parseJsonSafe(userRow?.preferences, {});
       const merged = { ...(current && typeof current === 'object' ? current : {}), ...incoming };

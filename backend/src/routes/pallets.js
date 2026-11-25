@@ -202,13 +202,17 @@ async function palletRoutes(fastify, options) {
           await ensureLocationExists(connection, finalLocation, request.user.username);
         }
 
-        // Se nella posizione è già presente una paletta attiva, riutilizziamo il suo barcode esistente
-        const existingCode = finalLocation
+        const [[finalFreeRow]] = finalLocation
+          ? await connection.query('SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [finalLocation])
+          : [[null]];
+
+        // Se nella posizione mappata è già presente una paletta attiva, riutilizziamo il suo barcode esistente
+        const existingCode = finalLocation && !finalFreeRow
           ? await findExistingLocationBarcode(connection, finalLocation, noBarcode)
           : null;
         const code = existingCode || nextPalletCode();
 
-        if (finalLocation && !noBarcode) {
+        if (finalLocation && !noBarcode && !finalFreeRow) {
           await connection.query(
             "UPDATE PALLETS SET pallet_code = ? WHERE location = ? AND status = 'STOCKED' AND quantity > 0",
             [code, finalLocation]
@@ -373,11 +377,15 @@ async function palletRoutes(fastify, options) {
           const itemAdrObj = itemIsAdr ? parseAdrData(item.adr_data, product?.name || '') : null;
           const [[customer]] = await connection.query('SELECT business_name FROM CUSTOMERS WHERE id = ?', [customer_id]);
 
-          if (itemLoc) {
+          const [[freeLocRow]] = itemLoc
+            ? await connection.query('SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ?', [itemLoc])
+            : [[null]];
+
+          if (itemLoc && !freeLocRow) {
             let slot = locSlotMap.get(itemLoc);
             if (!slot) {
               await ensureLocationExists(connection, itemLoc, request.user.username);
-              // Se c'è già un barcode attivo nella posizione, agganciati ad esso senza generarne uno nuovo
+              // Se c'è già un barcode attivo nella posizione mappata, agganciati ad esso senza generarne uno nuovo
               const existingCode = await findExistingLocationBarcode(connection, itemLoc, false);
               const code = existingCode || nextPalletCode();
               await connection.query(
@@ -416,7 +424,7 @@ async function palletRoutes(fastify, options) {
             let slot = groupSlotMap.get(itemGroup);
             if (!slot) {
               const code = nextPalletCode();
-              slot = { type: 'GROUP', group: itemGroup, loc: null, code, rows: [] };
+              slot = { type: 'GROUP', group: itemGroup, loc: itemLoc || null, code, rows: [] };
               groupSlotMap.set(itemGroup, slot);
               orderedSlots.push(slot);
             }
@@ -426,12 +434,12 @@ async function palletRoutes(fastify, options) {
 
             await connection.query(
               'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+              [slot.code, customer_id, product_id, totalQtyForRow, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, slot.loc ? 'STOCKED' : 'PENDING', slot.loc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
             );
 
             await connection.query(
               "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-              ['INBOUND', `Aggiunta riga a paletta frammentata ${slot.code} (${itemGroup}: ${product.name}, ${totalQtyForRow} q.tà)`, 'Gestionale', request.user.username]
+              ['INBOUND', `Aggiunta riga a paletta frammentata ${slot.code} (${itemGroup}: ${product.name}, ${totalQtyForRow} q.tà)${slot.loc ? ' in ' + slot.loc : ''}`, 'Gestionale', request.user.username]
             );
 
             slot.rows.push({
@@ -446,17 +454,19 @@ async function palletRoutes(fastify, options) {
             });
           } else {
             const countPallets = Math.max(1, parseInt(num_pallets, 10) || 1);
+            const directLoc = itemLoc && freeLocRow ? itemLoc : null;
+            const directStatus = directLoc ? 'STOCKED' : 'PENDING';
             for (let i = 0; i < countPallets; i++) {
               const code = nextPalletCode();
               
               await connection.query(
                 'INSERT INTO PALLETS (pallet_code, customer_id, product_id, quantity, units_per_box, kg_per_unit, pallet_uom, net_weight_kg, gross_weight_kg, tariff_plan_id, batch, warehouse, warehouse_id, temp_regime, is_adr, adr_data, status, location, notes, client_pallet_number, client_article_number, expiration_date, created_at, flags, client_ddt, checkin_id, checkin_session_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?)',
-                [code, customer_id, product_id, quantity, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, 'PENDING', null, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
+                [code, customer_id, product_id, quantity, item.units_per_box || null, effectiveKgPerUnit, item.pallet_uom || null, itemNetKg, itemGrossKg, itemPlanId, batch || null, whPair.name, whPair.id, itemTempRegime, itemIsAdr ? 1 : 0, itemAdrObj ? JSON.stringify(itemAdrObj) : null, directStatus, directLoc, notes || null, client_pallet_number || null, client_article_number || null, cleanExpDate, arrival_date ? new Date(arrival_date) : null, item.flags ? JSON.stringify(item.flags) : null, cleanClientDdt, effectiveCheckinId, effectiveSessionCode]
               );
               
               await connection.query(
                 "INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)",
-                ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)`, 'Gestionale', request.user.username]
+                ['INBOUND', `Creata paletta ${code} (${quantity} q.tà)${directLoc ? ' in ' + directLoc : ''}`, 'Gestionale', request.user.username]
               );
               
               orderedSlots.push({
@@ -471,7 +481,7 @@ async function palletRoutes(fastify, options) {
                   client_pallet_number,
                   client_article_number,
                   expiration_date: cleanExpDate,
-                  location: null
+                  location: directLoc
                 }
               });
             }
@@ -1255,22 +1265,21 @@ async function palletRoutes(fastify, options) {
           // Determina barcode di destinazione e controlla eventuale occupazione (solo su scaffali mappati)
           let targetPalletCode = null;
           if (freeDest) {
-            targetPalletCode = await findExistingLocationBarcode(connection, cleanTargetLoc, true);
-            if (!targetPalletCode) {
-              // Se spostiamo tutto un bancale senza lasciare residui sul vecchio codice, manteniamo il barcode; altrimenti nuovo NOBAR-*
-              const [[siblingCheck]] = effectiveMode === 'SINGLE_ITEM'
-                ? await connection.query(
-                    'SELECT COUNT(*) AS cnt FROM PALLETS WHERE pallet_code = ? AND id != ? AND status != "SHIPPED" AND quantity > 0',
-                    [sourceRows[0].pallet_code, sourceRows[0].id]
-                  )
-                : [[{ cnt: 0 }]];
-              const leavesSiblings = isPartialSplit || (siblingCheck && siblingCheck.cnt > 0);
-              if (!leavesSiblings && sourceRows[0].pallet_code) {
-                targetPalletCode = sourceRows[0].pallet_code;
-              } else {
-                const nextNoBar = await createPalletCodeGenerator(connection, 'NOBAR');
-                targetPalletCode = nextNoBar();
-              }
+            // FREE_LOCATIONS ospita più UDM bancali separati: mantieni il barcode UDM originale (o generane uno nuovo se split/estrazione parziale)
+            const [[siblingCheck]] = effectiveMode === 'SINGLE_ITEM'
+              ? await connection.query(
+                  'SELECT COUNT(*) AS cnt FROM PALLETS WHERE pallet_code = ? AND id != ? AND status != "SHIPPED" AND quantity > 0',
+                  [sourceRows[0].pallet_code, sourceRows[0].id]
+                )
+              : [[{ cnt: 0 }]];
+            const leavesSiblings = isPartialSplit || (siblingCheck && siblingCheck.cnt > 0);
+            const srcCode = String(sourceRows[0].pallet_code || '');
+            if (!leavesSiblings && srcCode) {
+              targetPalletCode = srcCode;
+            } else {
+              const prefix = srcCode.startsWith('NOBAR-') ? 'NOBAR' : 'PAL';
+              const nextCode = await createPalletCodeGenerator(connection, prefix);
+              targetPalletCode = nextCode();
             }
           } else {
             const idPlaceholders = movedIds.map(() => '?').join(',');
@@ -1982,7 +1991,12 @@ async function palletRoutes(fastify, options) {
             await connection.rollback();
             return { status: 403, body: { error: 'Accesso negato: non puoi spostare la merce di questo cliente.' } };
           }
-          if (!force) {
+          const whFilterSql = active_warehouse_id ? ' AND warehouse_id = ?' : '';
+          const freeParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
+          const locParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
+          const [[freeDest]] = await connection.query(`SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))${whFilterSql}`, freeParams);
+
+          if (!force && !freeDest) {
             const [occupied] = await connection.query(
               "SELECT id, pallet_code FROM PALLETS WHERE location = ? AND status = 'STOCKED' AND quantity > 0 AND pallet_code != ? FOR UPDATE", 
               [location, pallet_code]
@@ -1999,14 +2013,10 @@ async function palletRoutes(fastify, options) {
                 }
               };
             }
-          } else {
+          } else if (force) {
             fastify.log.info(`[STOW] Force is true! Bypassing occupied check.`);
           }
 
-          const whFilterSql = active_warehouse_id ? ' AND warehouse_id = ?' : '';
-          const freeParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
-          const locParams = active_warehouse_id ? [location, parseInt(active_warehouse_id, 10)] : [location];
-          const [[freeDest]] = await connection.query(`SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))${whFilterSql}`, freeParams);
           const [[loc]] = freeDest ? [[null]] : await connection.query(`SELECT * FROM LOCATIONS WHERE barcode = ?${whFilterSql}`, locParams);
           
           if (freeDest) {

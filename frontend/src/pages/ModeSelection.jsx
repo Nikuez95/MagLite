@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Monitor, Smartphone, LogOut, ShieldAlert } from 'lucide-react';
+import { Monitor, Smartphone, LogOut, ShieldAlert, Sun, Moon } from 'lucide-react';
 import { canAccessDesktop, canAccessZebra, refreshUserProfile } from '../utils/permissions';
+import { useTheme, getLogoSrc } from '../utils/theme';
 
 const ModeSelection = () => {
   const navigate = useNavigate();
+  const { theme, isLight, toggleTheme } = useTheme();
   const [user, setUser] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('maglite_user') || '{}');
@@ -45,17 +47,28 @@ const ModeSelection = () => {
 
   return (
     <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center p-6 text-brand-white relative">
-      <button 
-        onClick={handleLogout}
-        className="absolute top-6 right-6 flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-brand-white hover:bg-slate-800 transition-colors"
-      >
-        <LogOut size={18} />
-        <span className="text-sm font-bold">Logout</span>
-      </button>
+      <div className="absolute top-6 right-6 flex items-center gap-2.5">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          title={isLight ? 'Passa a Modalità Scura' : 'Passa a Modalità Chiara'}
+          className="flex items-center gap-2 px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-xl text-slate-300 hover:text-brand-white hover:bg-slate-800 transition-colors"
+        >
+          {isLight ? <Moon size={18} className="text-brand-blue" /> : <Sun size={18} className="text-amber-400" />}
+          <span className="text-sm font-bold">{isLight ? 'Scura' : 'Chiara'}</span>
+        </button>
+        <button 
+          onClick={handleLogout}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-brand-white hover:bg-slate-800 transition-colors"
+        >
+          <LogOut size={18} />
+          <span className="text-sm font-bold">Logout</span>
+        </button>
+      </div>
 
       <div className="text-center mb-12">
         <div className="w-60 h-32 flex items-center justify-center mx-auto mb-5">
-          <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_20px_rgba(169,218,255,0.4)]" />
+          <img src={getLogoSrc(theme)} alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_20px_rgba(169,218,255,0.4)]" />
         </div>
         <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-2">MagLite <span className="text-brand-blue">x Porcelli</span></h1>
         <p className="text-slate-400 text-lg">Seleziona la modalità operativa per continuare</p>

@@ -7,6 +7,7 @@ import Select from 'react-select';
 import CreatableSelect from 'react-select/creatable';
 import { io } from 'socket.io-client';
 import FinanceAdminNav from '../../components/FinanceAdminNav';
+import { themedSelectStyles } from '../../utils/theme';
 
 const BillingRulesManager = () => {
   const [rules, setRules] = useState([]);
@@ -104,13 +105,7 @@ const BillingRulesManager = () => {
     }
   };
 
-  const selectStyles = {
-    control: (base) => ({ ...base, backgroundColor: '#020617', borderColor: '#334155', color: '#f8fafc' }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', border: '1px solid #1e293b' }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc' }),
-    singleValue: base => ({ ...base, color: '#f8fafc' }),
-    input: base => ({ ...base, color: '#f8fafc' })
-  };
+  const selectStyles = themedSelectStyles;
 
   return (
     <div className="flex-1 p-6 md:p-8 overflow-y-auto bg-brand-black min-h-screen">

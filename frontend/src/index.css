@@ -2,6 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color-scheme: dark;
+  --color-brand-white: 248 250 252;
+  --color-brand-black: 18 30 39;
+  --color-brand-blue: 169 218 255;
+  --color-brand-blue-dark: 138 195 237;
+  --color-slate-50: 243 249 254;
+  --color-slate-100: 226 241 252;
+  --color-slate-200: 194 222 242;
+  --color-slate-300: 156 193 223;
+  --color-slate-400: 118 160 191;
+  --color-slate-500: 89 128 156;
+  --color-slate-600: 66 99 123;
+  --color-slate-700: 48 74 94;
+  --color-slate-800: 35 55 70;
+  --color-slate-900: 25 41 53;
+  --color-slate-950: 16 28 37;
+
+  --scrollbar-track: #0F172A;
+  --scrollbar-thumb: #1E293B;
+  --scrollbar-thumb-hover: #334155;
+
+  --rs-bg: #020617;
+  --rs-border: #1e293b;
+  --rs-menu-bg: #0f172a;
+  --rs-option-hover: #1e293b;
+  --rs-text: #f8fafc;
+  --rs-muted: #94a3b8;
+  --rs-accent: #38bdf8;
+  --rs-multi-bg: #1e293b;
+  --rs-multi-border: #334155;
+}
+
+html.theme-light {
+  color-scheme: light;
+  --color-brand-white: 11 25 38;
+  --color-brand-black: 221 239 255;
+  --color-brand-blue: 2 132 199;
+  --color-brand-blue-dark: 3 105 161;
+  --color-slate-50: 11 25 38;
+  --color-slate-100: 11 25 38;
+  --color-slate-200: 17 37 56;
+  --color-slate-300: 28 57 84;
+  --color-slate-400: 51 86 117;
+  --color-slate-500: 76 114 148;
+  --color-slate-600: 100 136 168;
+  --color-slate-700: 147 203 247;
+  --color-slate-800: 190 225 252;
+  --color-slate-900: 255 255 255;
+  --color-slate-950: 235 245 255;
+
+  --scrollbar-track: #ddefff;
+  --scrollbar-thumb: #93cbf7;
+  --scrollbar-thumb-hover: #62b4f5;
+
+  --rs-bg: #ebf5ff;
+  --rs-border: #93cbf7;
+  --rs-menu-bg: #ffffff;
+  --rs-option-hover: #d8eeff;
+  --rs-text: #0b1926;
+  --rs-muted: #4c7294;
+  --rs-accent: #0284c7;
+  --rs-multi-bg: #d4ecff;
+  --rs-multi-border: #93cbf7;
+}
+
 @layer base {
   /* Scrollbar sottile e moderna */
   ::-webkit-scrollbar {
@@ -9,14 +75,14 @@
     height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #0F172A; 
+    background: var(--scrollbar-track); 
   }
   ::-webkit-scrollbar-thumb {
-    background: #1E293B; 
+    background: var(--scrollbar-thumb); 
     border-radius: 10px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #334155; 
+    background: var(--scrollbar-thumb-hover); 
   }
 
   .no-scrollbar {
@@ -132,4 +198,348 @@ div.fixed.inset-0 > div {
 
 .swal2-confirm, .swal2-cancel, .swal2-deny {
   cursor: pointer !important;
+}
+
+/* ==========================================
+   MAGLITE LIGHT MODE (BIANCO & CELESTINO)
+   ========================================== */
+html.theme-light,
+html.theme-light body {
+  background-color: #ddefff;
+  color: #0b1926;
+}
+
+html.theme-light .bg-brand-black {
+  background-color: #ddefff;
+}
+
+html.theme-light [class^="bg-brand-black/"],
+html.theme-light [class*=" bg-brand-black/"] {
+  background-color: rgba(221, 239, 255, 0.92);
+}
+
+html.theme-light main.bg-brand-black,
+html.theme-light .min-h-screen.bg-brand-black {
+  background-image: radial-gradient(circle at top right, rgba(154, 212, 255, 0.48), transparent 55%),
+    linear-gradient(180deg, #ddefff 0%, #f2f9ff 100%);
+}
+
+/* Superfici card, banner, blocchi interni e bottoni secondari (esplicite per compatibilità HMR/cache) */
+html.theme-light .bg-slate-900 {
+  background-color: #ffffff;
+}
+
+html.theme-light [class^="bg-slate-900/"],
+html.theme-light [class*=" bg-slate-900/"] {
+  background-color: rgba(255, 255, 255, 0.94);
+}
+
+html.theme-light .bg-slate-950 {
+  background-color: #ebf5ff;
+}
+
+html.theme-light [class^="bg-slate-950/"],
+html.theme-light [class*=" bg-slate-950/"] {
+  background-color: rgba(235, 245, 255, 0.9);
+}
+
+html.theme-light .bg-slate-800 {
+  background-color: #d6ecff;
+}
+
+html.theme-light [class^="bg-slate-800/"],
+html.theme-light [class*=" bg-slate-800/"] {
+  background-color: rgba(214, 236, 255, 0.72);
+}
+
+html.theme-light .bg-slate-700 {
+  background-color: #bddffe;
+}
+
+html.theme-light [class^="bg-slate-700/"],
+html.theme-light [class*=" bg-slate-700/"] {
+  background-color: rgba(189, 223, 254, 0.8);
+}
+
+html.theme-light :is(
+  .hover\:bg-slate-800, .hover\:bg-slate-800\/30, .hover\:bg-slate-800\/40,
+  .hover\:bg-slate-800\/50, .hover\:bg-slate-800\/60, .hover\:bg-slate-800\/70,
+  .hover\:bg-slate-800\/80, .hover\:bg-slate-800\/90
+):hover {
+  background-color: #c5e3ff;
+}
+
+html.theme-light :is(.hover\:bg-slate-700, .hover\:bg-slate-700\/80):hover {
+  background-color: #add6fc;
+}
+
+html.theme-light :is(.hover\:bg-slate-900, .hover\:bg-slate-900\/60):hover {
+  background-color: #f4faff;
+}
+
+/* Bordi e divisori celestini */
+html.theme-light :is([class^="border-slate-900"], [class*=" border-slate-900"]) {
+  border-color: #dceeff;
+}
+html.theme-light :is([class^="border-slate-800"], [class*=" border-slate-800"]) {
+  border-color: #bfe0fc;
+}
+html.theme-light :is([class^="border-slate-700"], [class*=" border-slate-700"]) {
+  border-color: #93cbf7;
+}
+html.theme-light :is([class^="border-brand-blue"], [class*=" border-brand-blue"]) {
+  border-color: #38bdf8;
+}
+html.theme-light :is([class^="divide-slate-800"], [class*=" divide-slate-800"]) > :not([hidden]) ~ :not([hidden]) {
+  border-color: #cbe6fd;
+}
+
+/* Gradienti card/sezioni */
+html.theme-light :is([class^="from-slate-900"], [class*=" from-slate-900"]) {
+  --tw-gradient-from: #ffffff var(--tw-gradient-from-position);
+  --tw-gradient-to: rgba(255, 255, 255, 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+html.theme-light :is([class^="via-slate-900"], [class*=" via-slate-900"]) {
+  --tw-gradient-stops: var(--tw-gradient-from), #ffffff var(--tw-gradient-via-position), var(--tw-gradient-to);
+}
+html.theme-light :is([class^="to-slate-950"], [class*=" to-slate-950"], [class^="to-slate-900"], [class*=" to-slate-900"]) {
+  --tw-gradient-to: #ebf5ff var(--tw-gradient-to-position);
+}
+html.theme-light :is([class^="from-slate-700"], [class*=" from-slate-700"]) {
+  --tw-gradient-from: #93cbf7 var(--tw-gradient-from-position);
+  --tw-gradient-to: rgba(147, 203, 247, 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+
+/* Testi principali e secondari ad alta leggibilità (Blu notte / Nero) */
+html.theme-light :is([class^="text-brand-white"], [class*=" text-brand-white"]),
+html.theme-light .hover\:text-brand-white:hover {
+  color: #0b1926;
+}
+html.theme-light :is([class^="text-slate-50"], [class*=" text-slate-50"], [class^="text-slate-100"], [class*=" text-slate-100"], [class^="text-slate-200"], [class*=" text-slate-200"]) {
+  color: #0b1926;
+}
+html.theme-light :is([class^="text-slate-300"], [class*=" text-slate-300"]) {
+  color: #16324d;
+}
+html.theme-light :is([class^="text-slate-400"], [class*=" text-slate-400"]) {
+  color: #294b6b;
+}
+html.theme-light :is([class^="text-slate-500"], [class*=" text-slate-500"]) {
+  color: #3f6487;
+}
+html.theme-light :is([class^="text-slate-600"], [class*=" text-slate-600"]) {
+  color: #52789b;
+}
+html.theme-light :is([class^="text-brand-blue"], [class*=" text-brand-blue"]) {
+  color: #0369a1;
+}
+
+/* Form controls, placeholder e input date in modalità chiara */
+html.theme-light [class*="color-scheme:dark"] {
+  color-scheme: light !important;
+}
+
+html.theme-light input::placeholder,
+html.theme-light textarea::placeholder {
+  color: #4f7496;
+  opacity: 1;
+}
+
+html.theme-light select option {
+  background-color: #ffffff;
+  color: #0b1926;
+}
+
+html.theme-light div.fixed.inset-0 {
+  background-color: rgba(11, 25, 38, 0.34) !important;
+}
+
+html.theme-light div.fixed.inset-0 > div {
+  box-shadow: 0 25px 60px -12px rgba(14, 116, 214, 0.24), 0 0 0 1px rgba(147, 203, 247, 0.8);
+}
+
+/* Accento primario Celestino MagLite con testo Blu Notte ben leggibile */
+html.theme-light .bg-brand-blue {
+  background-color: #96d2ff;
+  border-color: #5cb4f7;
+  color: #0b1926;
+}
+
+html.theme-light .hover\:bg-brand-blue:hover {
+  background-color: #7cc5ff;
+}
+
+html.theme-light [class^="bg-brand-blue/"],
+html.theme-light [class*=" bg-brand-blue/"] {
+  background-color: rgba(14, 165, 233, 0.14);
+}
+
+html.theme-light .text-brand-black,
+html.theme-light .bg-brand-blue.text-brand-black,
+html.theme-light .bg-brand-blue .text-brand-black,
+html.theme-light .hover\:bg-brand-blue:hover.hover\:text-brand-black:hover,
+html.theme-light .hover\:bg-brand-blue:hover .text-brand-black {
+  color: #0b1926;
+}
+
+html.theme-light .bg-sky-500.text-brand-black,
+html.theme-light .bg-rose-500.text-brand-black {
+  color: #ffffff;
+}
+
+html.theme-light .text-white,
+html.theme-light .hover\:text-white:hover {
+  color: #0b1926;
+}
+
+/* Mantieni testo bianco su bottoni/badge con sfondo pieno colorato scuro */
+html.theme-light :is(
+  .bg-sky-500, .bg-sky-600,
+  .bg-blue-500, .bg-blue-600,
+  .bg-emerald-500, .bg-emerald-600,
+  .bg-green-500, .bg-green-600,
+  .bg-rose-500, .bg-rose-600,
+  .bg-red-500, .bg-red-600,
+  .bg-violet-500, .bg-violet-600,
+  .bg-indigo-500, .bg-indigo-600,
+  .bg-purple-500, .bg-purple-600,
+  .bg-amber-600, .bg-orange-500, .bg-orange-600,
+  .bg-cyan-600, .bg-teal-600
+).text-white,
+html.theme-light :is(
+  .bg-sky-500, .bg-sky-600,
+  .bg-blue-500, .bg-blue-600,
+  .bg-emerald-500, .bg-emerald-600,
+  .bg-green-500, .bg-green-600,
+  .bg-rose-500, .bg-rose-600,
+  .bg-red-500, .bg-red-600,
+  .bg-violet-500, .bg-violet-600,
+  .bg-indigo-500, .bg-indigo-600,
+  .bg-purple-500, .bg-purple-600,
+  .bg-amber-600, .bg-orange-500, .bg-orange-600,
+  .bg-cyan-600, .bg-teal-600
+) .text-white,
+html.theme-light :is(
+  .hover\:bg-sky-500, .hover\:bg-sky-600,
+  .hover\:bg-emerald-500, .hover\:bg-rose-500, .hover\:bg-rose-600,
+  .hover\:bg-violet-500, .hover\:bg-amber-500
+).hover\:text-white:hover {
+  color: #ffffff;
+}
+
+/* Tabelle uniformi in modalità chiara (intestazioni celestine, testo blu notte, righe nitide) */
+html.theme-light table thead tr {
+  background-color: #dff0ff !important;
+  border-color: #b4dcfa !important;
+}
+
+html.theme-light table thead th {
+  color: #16324d !important;
+}
+
+html.theme-light table tbody tr {
+  border-color: #d6ecfd;
+}
+
+html.theme-light table tbody tr:hover {
+  background-color: rgba(186, 226, 255, 0.32);
+}
+
+/* Sfondi e gradienti scuri *-900 / *-950 convertiti in tinte pastello chiare */
+html.theme-light [class*="bg-rose-950"],
+html.theme-light [class*="bg-rose-900"],
+html.theme-light [class*="bg-red-950"],
+html.theme-light [class*="bg-red-900"] {
+  background-color: rgba(255, 228, 230, 0.9) !important;
+}
+html.theme-light [class*="bg-amber-950"],
+html.theme-light [class*="bg-amber-900"] {
+  background-color: rgba(254, 243, 199, 0.9) !important;
+}
+html.theme-light [class*="bg-emerald-950"],
+html.theme-light [class*="bg-emerald-900"],
+html.theme-light [class*="bg-green-950"],
+html.theme-light [class*="bg-green-900"] {
+  background-color: rgba(209, 250, 229, 0.9) !important;
+}
+html.theme-light [class*="bg-sky-950"],
+html.theme-light [class*="bg-sky-900"],
+html.theme-light [class*="bg-blue-950"],
+html.theme-light [class*="bg-blue-900"] {
+  background-color: rgba(219, 239, 255, 0.94) !important;
+}
+html.theme-light [class*="bg-cyan-950"],
+html.theme-light [class*="bg-cyan-900"] {
+  background-color: rgba(207, 250, 254, 0.94) !important;
+}
+html.theme-light [class*="bg-violet-950"],
+html.theme-light [class*="bg-violet-900"],
+html.theme-light [class*="bg-purple-950"],
+html.theme-light [class*="bg-purple-900"] {
+  background-color: rgba(237, 233, 254, 0.94) !important;
+}
+html.theme-light [class*="bg-orange-950"],
+html.theme-light [class*="bg-orange-900"] {
+  background-color: rgba(255, 237, 213, 0.94) !important;
+}
+html.theme-light [class*="to-rose-950"],
+html.theme-light [class*="to-rose-900"] {
+  --tw-gradient-to: rgba(255, 228, 230, 0.65) var(--tw-gradient-to-position) !important;
+}
+html.theme-light [class*="to-amber-950"],
+html.theme-light [class*="to-amber-900"] {
+  --tw-gradient-to: rgba(254, 243, 199, 0.65) var(--tw-gradient-to-position) !important;
+}
+html.theme-light [class*="to-sky-950"],
+html.theme-light [class*="to-emerald-950"] {
+  --tw-gradient-to: rgba(224, 242, 254, 0.7) var(--tw-gradient-to-position) !important;
+}
+html.theme-light .bg-black\/20,
+html.theme-light .bg-black\/30,
+html.theme-light .bg-black\/40 {
+  background-color: rgba(11, 25, 38, 0.08) !important;
+}
+
+/* Contrasto nitido per TUTTI i colori testo pastello (incluse varianti con opacità) su bianco/celestino */
+html.theme-light :is([class^="text-sky-100"], [class*=" text-sky-100"], [class^="text-sky-200"], [class*=" text-sky-200"], [class^="text-sky-300"], [class*=" text-sky-300"]) { color: #0c4a6e; }
+html.theme-light :is([class^="text-sky-400"], [class*=" text-sky-400"], [class^="text-sky-500"], [class*=" text-sky-500"]) { color: #0369a1; }
+html.theme-light :is([class^="text-cyan-100"], [class*=" text-cyan-100"], [class^="text-cyan-200"], [class*=" text-cyan-200"], [class^="text-cyan-300"], [class*=" text-cyan-300"]) { color: #155e75; }
+html.theme-light :is([class^="text-cyan-400"], [class*=" text-cyan-400"], [class^="text-cyan-500"], [class*=" text-cyan-500"]) { color: #0e7490; }
+html.theme-light :is([class^="text-amber-200"], [class*=" text-amber-200"], [class^="text-amber-300"], [class*=" text-amber-300"]) { color: #92400e; }
+html.theme-light :is([class^="text-amber-400"], [class*=" text-amber-400"], [class^="text-amber-500"], [class*=" text-amber-500"]) { color: #b45309; }
+html.theme-light :is([class^="text-yellow-200"], [class*=" text-yellow-200"], [class^="text-yellow-300"], [class*=" text-yellow-300"], [class^="text-yellow-400"], [class*=" text-yellow-400"], [class^="text-yellow-500"], [class*=" text-yellow-500"]) { color: #a16207; }
+html.theme-light :is([class^="text-emerald-200"], [class*=" text-emerald-200"], [class^="text-emerald-300"], [class*=" text-emerald-300"]) { color: #065f46; }
+html.theme-light :is([class^="text-emerald-400"], [class*=" text-emerald-400"], [class^="text-emerald-500"], [class*=" text-emerald-500"]) { color: #047857; }
+html.theme-light :is([class^="text-green-200"], [class*=" text-green-200"], [class^="text-green-300"], [class*=" text-green-300"], [class^="text-green-400"], [class*=" text-green-400"], [class^="text-green-500"], [class*=" text-green-500"]) { color: #15803d; }
+html.theme-light :is([class^="text-rose-200"], [class*=" text-rose-200"], [class^="text-rose-300"], [class*=" text-rose-300"]) { color: #9f1239; }
+html.theme-light :is([class^="text-rose-400"], [class*=" text-rose-400"]) { color: #be123c; }
+html.theme-light :is([class^="text-violet-200"], [class*=" text-violet-200"], [class^="text-violet-300"], [class*=" text-violet-300"]) { color: #5b21b6; }
+html.theme-light :is([class^="text-violet-400"], [class*=" text-violet-400"]) { color: #6d28d9; }
+html.theme-light :is([class^="text-purple-200"], [class*=" text-purple-200"], [class^="text-purple-300"], [class*=" text-purple-300"]) { color: #6b21a8; }
+html.theme-light :is([class^="text-purple-400"], [class*=" text-purple-400"]) { color: #7e22ce; }
+html.theme-light :is([class^="text-indigo-200"], [class*=" text-indigo-200"], [class^="text-indigo-300"], [class*=" text-indigo-300"], [class^="text-indigo-400"], [class*=" text-indigo-400"]) { color: #4338ca; }
+html.theme-light :is([class^="text-orange-300"], [class*=" text-orange-300"], [class^="text-orange-400"], [class*=" text-orange-400"]) { color: #c2410c; }
+html.theme-light :is([class^="text-teal-300"], [class*=" text-teal-300"], [class^="text-teal-400"], [class*=" text-teal-400"]) { color: #0f766e; }
+html.theme-light :is([class^="text-fuchsia-300"], [class*=" text-fuchsia-300"], [class^="text-pink-300"], [class*=" text-pink-300"]) { color: #86198f; }
+
+/* Card, Sidebar, Header & ombre celestino morbide in Light Mode */
+html.theme-light aside {
+  background-image: linear-gradient(180deg, #ffffff 0%, #ebf5ff 100%) !important;
+  box-shadow: 4px 0 24px -10px rgba(14, 116, 214, 0.16);
+}
+
+html.theme-light header {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+  box-shadow: 0 4px 20px -10px rgba(14, 116, 214, 0.16);
+}
+
+html.theme-light .shadow-xl,
+html.theme-light .shadow-2xl {
+  --tw-shadow-color: rgba(14, 116, 214, 0.12);
+}
+
+html.theme-light .maglite-swal-popup {
+  background-image: radial-gradient(circle at top right, rgba(169, 218, 255, 0.25), transparent 60%) !important;
 }

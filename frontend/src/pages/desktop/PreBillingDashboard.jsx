@@ -9,6 +9,7 @@ import {
   FileText, User, Tag, Search, ExternalLink, MessageSquare, Sparkles, Archive
 } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
+import { themedSelectStyles } from '../../utils/theme';
 import { generateProformaPdf, formatDateIT, DEFAULT_PDF_OPTIONS } from '../../utils/invoicePdf';
 import { io } from 'socket.io-client';
 import FinanceAdminNav from '../../components/FinanceAdminNav';
@@ -430,12 +431,7 @@ const PreBillingDashboard = () => {
     }
   };
 
-  const selectStyles = {
-    control: (base) => ({ ...base, backgroundColor: '#020617', borderColor: '#334155', color: '#f8fafc', borderRadius: '0.75rem' }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', border: '1px solid #1e293b', zIndex: 50 }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc' }),
-    singleValue: base => ({ ...base, color: '#f8fafc' })
-  };
+  const selectStyles = themedSelectStyles;
 
   const months = Array.from({ length: 12 }, (_, i) => ({ value: i + 1, label: new Date(2000, i, 1).toLocaleString('it-IT', { month: 'long' }) }));
   const currentYear = new Date().getFullYear();

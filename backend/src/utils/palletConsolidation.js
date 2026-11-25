@@ -3,9 +3,21 @@
  * e il consolidamento automatico delle giacenze identiche (stessa posizione + stesso prodotto + stesso lotto).
  */
 
+async function isFreeLocationName(connection, location) {
+  if (!location) return false;
+  const cleanLoc = String(location).trim().toUpperCase();
+  if (!cleanLoc) return false;
+  const [[row]] = await connection.query(
+    'SELECT id FROM FREE_LOCATIONS WHERE UPPER(TRIM(name)) = ? LIMIT 1',
+    [cleanLoc]
+  );
+  return Boolean(row);
+}
+
 /**
- * Restituisce il pallet_code già presente in una determinata posizione (se occupata da merce attiva),
+ * Restituisce il pallet_code già presente in una determinata posizione mappata (se occupata da merce attiva),
  * così da evitare la generazione di nuovi barcode inutili in caso di aggiunta/frammentazione da Desktop o Zebra.
+ * Per le FREE_LOCATIONS restituisce sempre null, perché possono contenere più UDM bancali separati.
  *
  * @param {object} connection - Connessione o pool MySQL
  * @param {string} location - Ubicazione (mappata o FREE_LOCATIONS)
@@ -16,6 +28,10 @@ async function findExistingLocationBarcode(connection, location, allowNoBar = fa
   if (!location) return null;
   const cleanLoc = String(location).trim().toUpperCase();
   if (!cleanLoc || cleanLoc.startsWith('ZONA CARICO')) return null;
+
+  if (await isFreeLocationName(connection, cleanLoc)) {
+    return null;
+  }
 
   const [rows] = await connection.query(
     `SELECT pallet_code
@@ -71,7 +87,11 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
     locationsToProcess = locRows.map(r => r.loc).filter(Boolean);
   }
 
+  const [freeRows] = await connection.query('SELECT UPPER(TRIM(name)) AS name FROM FREE_LOCATIONS');
+  const freeLocationSet = new Set(freeRows.map(r => r.name).filter(Boolean));
+
   for (const loc of locationsToProcess) {
+    const isFreeLoc = freeLocationSet.has(loc);
     const [rows] = await connection.query(
       `SELECT p.*, d.status AS ddt_status
        FROM PALLETS p
@@ -85,25 +105,28 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
 
     if (rows.length <= 1) continue;
 
-    // 1. Determina il barcode canonico già esistente nella posizione (preferendo PAL-* a NOBAR-*)
-    const firstBarcoded = rows.find(r => r.pallet_code && !String(r.pallet_code).startsWith('NOBAR-'));
-    const canonicalCode = firstBarcoded ? firstBarcoded.pallet_code : rows[0].pallet_code;
+    // 1. Su postazioni mappate unifica il barcode canonico; sulle FREE_LOCATIONS i bancali (UDM) restano separati
+    let canonicalCode = null;
+    if (!isFreeLoc) {
+      const firstBarcoded = rows.find(r => r.pallet_code && !String(r.pallet_code).startsWith('NOBAR-'));
+      canonicalCode = firstBarcoded ? firstBarcoded.pallet_code : rows[0].pallet_code;
 
-    for (const r of rows) {
-      if (r.pallet_code !== canonicalCode) {
-        await connection.query('UPDATE PALLETS SET pallet_code = ? WHERE id = ?', [canonicalCode, r.id]);
-        await connection.query(
-          `UPDATE OUTBOUND_ITEMS oi
-           JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
-           SET oi.pallet_code = ?
-           WHERE oi.pallet_id = ? AND oo.status != 'SHIPPED'`,
-          [canonicalCode, r.id]
-        );
-        r.pallet_code = canonicalCode;
+      for (const r of rows) {
+        if (r.pallet_code !== canonicalCode) {
+          await connection.query('UPDATE PALLETS SET pallet_code = ? WHERE id = ?', [canonicalCode, r.id]);
+          await connection.query(
+            `UPDATE OUTBOUND_ITEMS oi
+             JOIN OUTBOUND_ORDERS oo ON oi.order_id = oo.id
+             SET oi.pallet_code = ?
+             WHERE oi.pallet_id = ? AND oo.status != 'SHIPPED'`,
+            [canonicalCode, r.id]
+          );
+          r.pallet_code = canonicalCode;
+        }
       }
     }
 
-    // 2. Raggruppa per (customer_id, product_id, batch normalizzato) per unire merce identica nella stessa posizione
+    // 2. Raggruppa per (customer_id, product_id, batch) su mappate, o includendo pallet_code su FREE_LOCATIONS
     const groups = new Map();
     for (const r of rows) {
       if (r.is_quarantined) continue;
@@ -113,7 +136,9 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
       }
 
       const normBatch = String(r.batch || '').trim().toUpperCase();
-      const key = `${r.customer_id}__${r.product_id}__${normBatch}`;
+      const key = isFreeLoc
+        ? `${String(r.pallet_code || '').trim().toUpperCase()}__${r.customer_id}__${r.product_id}__${normBatch}`
+        : `${r.customer_id}__${r.product_id}__${normBatch}`;
       if (!groups.has(key)) {
         groups.set(key, []);
       }
@@ -124,6 +149,7 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
       if (groupRows.length <= 1) continue;
 
       const primary = groupRows[0];
+      const effectiveCode = isFreeLoc ? primary.pallet_code : canonicalCode;
       const secondaries = groupRows.slice(1);
       const secondaryIds = secondaries.map(s => s.id);
 
@@ -150,7 +176,7 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
          WHERE id = ?`,
         [
           totalQty,
-          canonicalCode,
+          effectiveCode,
           mergedNotes,
           mergedClientPallet,
           mergedClientArticle,
@@ -166,7 +192,7 @@ async function consolidateLocationPallets(connection, targetLocation = null) {
         `UPDATE OUTBOUND_ITEMS
          SET pallet_id = ?, pallet_code = ?
          WHERE pallet_id IN (?)`,
-        [primary.id, canonicalCode, secondaryIds]
+        [primary.id, effectiveCode, secondaryIds]
       );
 
       // Se in uno stesso ordine Outbound non ancora spedito si trovano ora più righe che puntano

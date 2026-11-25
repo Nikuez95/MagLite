@@ -2,10 +2,11 @@ import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers, FileText, AlertTriangle, Warehouse, MapPin } from 'lucide-react';
+import { ArrowRightLeft, PackageMinus, LogOut, Scan, Download, ChevronRight, User, Radio, Monitor, Lock, Truck, ClipboardList, Box, Thermometer, ShieldAlert, Sparkles, X, Layers, FileText, AlertTriangle, Warehouse, MapPin, Sun, Moon } from 'lucide-react';
 import useBarcodeScanner from '../hooks/useBarcodeScanner';
 import { hasPerm, canAccessZebra, canAccessDesktop, refreshUserProfile } from '../utils/permissions';
 import { useZebraWorkspace, getZebraWorkspace, saveZebraWorkspace } from '../utils/zebraWorkspace';
+import { useTheme, getLogoSrc } from '../utils/theme';
 
 const InboundZebra = lazy(() => import('./InboundZebra'));
 const OutboundZebra = lazy(() => import('./OutboundZebra'));
@@ -114,6 +115,7 @@ const TouchCard = ({ icon: Icon, label, subtitle, badge, accent = 'blue', disabl
 const TopBar = ({ user, workspace, onOpenWorkspacePicker }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { theme, isLight, toggleTheme } = useTheme();
   const isHome = location.pathname === '/zebra' || location.pathname === '/zebra/';
   const allowDesktop = canAccessDesktop(user);
 
@@ -124,7 +126,7 @@ const TopBar = ({ user, workspace, onOpenWorkspacePicker }) => {
         onClick={() => !isHome && navigate('/zebra')}
       >
         <div className="h-9 w-11 flex items-center justify-center shrink-0">
-          <img src="/logo.png" alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
+          <img src={getLogoSrc(theme)} alt="Logistic Porcelli Logo" className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.4)]" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
@@ -170,6 +172,14 @@ const TopBar = ({ user, workspace, onOpenWorkspacePicker }) => {
             Home
           </button>
         )}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          title={isLight ? 'Modalità Chiara — Passa a Scura' : 'Modalità Scura — Passa a Chiara'}
+          className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 active:bg-slate-800 transition-colors"
+        >
+          {isLight ? <Moon size={16} className="text-brand-blue" /> : <Sun size={16} className="text-amber-400" />}
+        </button>
         <button 
           onClick={() => {
             localStorage.removeItem('maglite_token');

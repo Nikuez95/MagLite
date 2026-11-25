@@ -1,4 +1,5 @@
 import { appAlert, appConfirm, appConfirmThreeWay, appPrompt } from "../../utils/alerts.js";
+import { themedSelectStyles } from "../../utils/theme.js";
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
@@ -199,25 +200,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange, itemsPerPage, onIte
 };
 
 const ProductsManagement = () => {
-  const selectStyles = {
-    control: (base, state) => ({
-      ...base,
-      backgroundColor: '#020617', 
-      borderColor: state.isFocused ? '#38bdf8' : '#1e293b', 
-      borderRadius: '0.75rem',
-      padding: '0.25rem',
-      boxShadow: 'none',
-      '&:hover': { borderColor: '#38bdf8' }
-    }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #1e293b' }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc', cursor: 'pointer' }),
-    singleValue: base => ({ ...base, color: '#f8fafc', fontWeight: 'bold' }),
-    input: base => ({ ...base, color: '#f8fafc' }),
-    placeholder: base => ({ ...base, color: '#475569' }),
-    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155' }),
-    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.75rem', textTransform: 'uppercase' }),
-    multiValueRemove: base => ({ ...base, color: '#94a3b8', ':hover': { backgroundColor: '#f43f5e', color: '#fff' } })
-  };
+  const selectStyles = themedSelectStyles;
 
   const [activeTab, setActiveTab] = useState('pallets'); // 'pallets' o 'products'
   const [pallets, setPallets] = useState([]);
@@ -663,7 +646,7 @@ const ProductsManagement = () => {
   const destinationOptions = React.useMemo(() => {
     const freeOpts = freeLocations.map(fl => ({
       value: fl.name.toUpperCase(),
-      label: `${fl.name.toUpperCase()} [Posizione Libera${fl.items_count > 0 ? ` · ${fl.items_count} art.` : ''}]`
+      label: `${fl.name.toUpperCase()} [Area Libera${fl.items_count > 0 ? ` · ${fl.pallets_count || 1} UDM (${fl.items_count} art.)` : ''}]`
     }));
     const mappedFree = locations
       .filter(l => !l.pallet_code)

@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
 import axios from 'axios'
+import { applyTheme, getUserTheme } from './utils/theme'
+
+applyTheme(getUserTheme());
 
 // Global interceptor for 401 Unauthorized
 axios.interceptors.response.use(

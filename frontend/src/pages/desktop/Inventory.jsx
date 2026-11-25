@@ -9,6 +9,7 @@ import Select from 'react-select';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { io } from 'socket.io-client';
+import { themedSelectStyles } from '../../utils/theme';
 
 const defaultColumns = [
   { key: 'code', label: 'Cod. Paletta', visible: true },
@@ -293,25 +294,7 @@ const Inventory = () => {
     }
   };
 
-  const selectStyles = {
-    control: (base, state) => ({
-      ...base,
-      backgroundColor: '#020617',
-      borderColor: state.isFocused ? '#38bdf8' : '#1e293b',
-      borderRadius: '0.75rem',
-      padding: '0.1rem',
-      minHeight: '38px',
-      boxShadow: 'none',
-      '&:hover': { borderColor: '#38bdf8' }
-    }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #1e293b' }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#F8FAFC', cursor: 'pointer', fontSize: '0.8rem' }),
-    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.4rem' }),
-    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.75rem' }),
-    multiValueRemove: base => ({ ...base, color: '#38bdf8', ':hover': { backgroundColor: '#38bdf8', color: '#020617' } }),
-    input: base => ({ ...base, color: '#F8FAFC', fontSize: '0.8rem' }),
-    placeholder: base => ({ ...base, color: '#64748b', fontSize: '0.8rem' })
-  };
+  const selectStyles = themedSelectStyles;
 
   const toggleColumn = (key) => {
     const newCols = columns.map(c => c.key === key ? { ...c, visible: !c.visible } : c);

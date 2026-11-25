@@ -50,8 +50,8 @@ const InboundZebra = () => {
         axios.get(`http://${window.location.hostname}:3000/api/inbound/ddt?active_only=true`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
       const allLocs = [
-        ...locRes.data.map(l => ({ name: l.barcode, occupied: !!l.pallet_code })),
-        ...freeRes.data.map(l => ({ name: l.name, occupied: false }))
+        ...locRes.data.map(l => ({ name: l.barcode, occupied: !!l.pallet_code, isFree: false })),
+        ...freeRes.data.map(l => ({ name: l.name, occupied: false, isFree: true }))
       ];
       
       const invRes = await axios.get(`http://${window.location.hostname}:3000/api/pallets/inventory${whQ}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -59,7 +59,8 @@ const InboundZebra = () => {
       
       const finalLocs = allLocs.map(l => ({
         name: l.name,
-        occupied: l.occupied || occupiedLocs.has(l.name)
+        isFree: l.isFree,
+        occupied: l.isFree ? false : (l.occupied || occupiedLocs.has(l.name))
       }));
       
       setLocationsList(finalLocs);
@@ -656,7 +657,7 @@ const InboundZebra = () => {
               <datalist id="locations-list">
                 {locationsList.map(l => (
                   <option key={l.name} value={l.name}>
-                    {l.name} {l.occupied ? '(OCCUPATA)' : '(LIBERA)'}
+                    {l.name} {l.isFree ? '(AREA LIBERA)' : l.occupied ? '(OCCUPATA)' : '(LIBERA)'}
                   </option>
                 ))}
               </datalist>

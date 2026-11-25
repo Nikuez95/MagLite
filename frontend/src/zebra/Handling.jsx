@@ -540,6 +540,7 @@ const Handling = ({ embedded = false, initialBarcodeProp = null, onComplete = nu
               <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto">
                 {freeLocations.map(fl => {
                   const cnt = Number(fl.items_count) || 0;
+                  const udmCnt = Number(fl.pallets_count) || 0;
                   return (
                     <button
                       key={fl.id}
@@ -558,7 +559,7 @@ const Handling = ({ embedded = false, initialBarcodeProp = null, onComplete = nu
                           ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
                           : 'bg-slate-950 text-slate-500 border-slate-800'
                       }`}>
-                        {cnt > 0 ? `${cnt} art.` : 'Vuota'}
+                        {cnt > 0 ? `${udmCnt || 1} UDM · ${cnt} art.` : 'Vuota'}
                       </span>
                     </button>
                   );
@@ -614,60 +615,101 @@ const Handling = ({ embedded = false, initialBarcodeProp = null, onComplete = nu
             return null;
           })()}
 
-          <div className="flex-1 overflow-y-auto space-y-2.5 pb-4">
-            {sourceItems.map(item => (
-              <div key={item.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-mono font-bold text-brand-blue">{item.sku || item.pallet_code}</div>
-                    <div className="text-sm font-black text-brand-white leading-snug">{item.product_name}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      {item.customer_name} {item.batch ? `· Lotto: ${item.batch}` : ''}
-                    </div>
-                  </div>
-                  <span className="text-sm font-black text-emerald-400 shrink-0">
-                    {item.quantity} {item.uom || ''}
-                  </span>
-                </div>
+          <div className="flex-1 overflow-y-auto space-y-3 pb-4">
+            {(() => {
+              const udmMap = new Map();
+              sourceItems.forEach(item => {
+                const code = item.pallet_code || `ROW-${item.id}`;
+                if (!udmMap.has(code)) udmMap.set(code, []);
+                udmMap.get(code).push(item);
+              });
+              const udmGroups = Array.from(udmMap.entries());
+              const showGroupHeaders = udmGroups.length > 1;
 
-                {item.is_quarantined ? (
-                  <div className="text-[11px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-1.5">
-                    Bloccato in Quarantena
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPallet(item);
-                        setMovePlan({
-                          mode: 'SINGLE_ITEM',
-                          pallet_id: item.id,
-                          pallet_code: item.pallet_code,
-                          move_quantity: parseFloat(item.quantity),
-                          label: `${item.product_name} (${item.quantity} ${item.uom || ''})`
-                        });
-                        setStatus('SELECT_ZONE');
-                        fetchRecommendation(item.pallet_code);
-                      }}
-                      className="py-2.5 px-2 rounded-xl bg-brand-blue text-brand-black font-black text-xs active:scale-95"
-                    >
-                      Sposta Tutto ({item.quantity})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPartialModalItem(item);
-                        setPartialQtyInput(String(Math.min(1, parseFloat(item.quantity) || 1)));
-                      }}
-                      className="py-2.5 px-2 rounded-xl bg-slate-800 border border-slate-700 text-brand-white font-bold text-xs active:scale-95"
-                    >
-                      Q.tà Parziale...
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+              return udmGroups.map(([udmCode, udmItems]) => (
+                <div key={udmCode} className={showGroupHeaders ? 'bg-slate-950/70 border border-slate-800 rounded-2xl p-2.5 space-y-2' : 'space-y-2.5'}>
+                  {showGroupHeaders && (
+                    <div className="flex items-center justify-between gap-2 px-1">
+                      <span className="font-mono text-xs font-black text-brand-blue bg-brand-blue/15 px-2.5 py-1 rounded-lg border border-brand-blue/30">
+                        {udmCode}
+                      </span>
+                      {udmItems.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPallet(udmItems[0]);
+                            setMovePlan({
+                              mode: 'ALL_PALLET',
+                              pallet_code: udmCode,
+                              label: `Intera UDM ${udmCode} (${udmItems.length} righe)`
+                            });
+                            setStatus('SELECT_ZONE');
+                            fetchRecommendation(udmCode);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500 text-brand-black font-black text-[11px] active:scale-95"
+                        >
+                          Sposta Intera UDM ({udmItems.length})
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {udmItems.map(item => (
+                    <div key={item.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-mono font-bold text-brand-blue">{item.sku || item.pallet_code}</div>
+                          <div className="text-sm font-black text-brand-white leading-snug">{item.product_name}</div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            {item.customer_name} {item.batch ? `· Lotto: ${item.batch}` : ''}
+                          </div>
+                        </div>
+                        <span className="text-sm font-black text-emerald-400 shrink-0">
+                          {item.quantity} {item.uom || ''}
+                        </span>
+                      </div>
+
+                      {item.is_quarantined ? (
+                        <div className="text-[11px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-1.5">
+                          Bloccato in Quarantena
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPallet(item);
+                              setMovePlan({
+                                mode: 'SINGLE_ITEM',
+                                pallet_id: item.id,
+                                pallet_code: item.pallet_code,
+                                move_quantity: parseFloat(item.quantity),
+                                label: `${item.product_name} (${item.quantity} ${item.uom || ''})`
+                              });
+                              setStatus('SELECT_ZONE');
+                              fetchRecommendation(item.pallet_code);
+                            }}
+                            className="py-2.5 px-2 rounded-xl bg-brand-blue text-brand-black font-black text-xs active:scale-95"
+                          >
+                            Sposta Tutto ({item.quantity})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPartialModalItem(item);
+                              setPartialQtyInput(String(Math.min(1, parseFloat(item.quantity) || 1)));
+                            }}
+                            className="py-2.5 px-2 rounded-xl bg-slate-800 border border-slate-700 text-brand-white font-bold text-xs active:scale-95"
+                          >
+                            Q.tà Parziale...
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ));
+            })()}
           </div>
         </div>
       )}
@@ -930,7 +972,7 @@ const Handling = ({ embedded = false, initialBarcodeProp = null, onComplete = nu
                       <div className="text-[11px] text-slate-400">Posizione Libera · Nessun PIN richiesto</div>
                     </div>
                     <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
-                      {fl.items_count > 0 ? `${fl.items_count} art.` : 'Vuota'}
+                      {fl.items_count > 0 ? `${fl.pallets_count || 1} UDM · ${fl.items_count} art.` : 'Vuota'}
                     </span>
                   </button>
                 ))

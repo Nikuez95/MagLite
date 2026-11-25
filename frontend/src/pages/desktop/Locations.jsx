@@ -942,7 +942,7 @@ const Locations = () => {
                   <Layers className="text-brand-blue" size={24} />
                   Elenco Posizioni Libere (Aree Terra / Celle)
                 </h2>
-                <p className="text-xs text-slate-400 mt-1">Le posizioni libere raggruppano automaticamente gli articoli omogenei aggiunti da Desktop o Zebra.</p>
+                <p className="text-xs text-slate-400 mt-1">Le posizioni libere ospitano più UDM bancali mantenendoli separati in un&apos;unica area di sosta.</p>
               </div>
               <button 
                 onClick={handleAddFreeLocation}
@@ -956,6 +956,7 @@ const Locations = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {freeLocations.map(fl => {
                 const count = Number(fl.items_count) || 0;
+                const palletsCount = Number(fl.pallets_count) || 0;
                 const totalQ = parseFloat(fl.total_qty) || 0;
                 return (
                   <div
@@ -980,7 +981,9 @@ const Locations = () => {
                           )}
                         </div>
                         <span className="text-[11px] font-semibold text-slate-400 block mt-0.5">
-                          {count > 0 ? `${count} articoli (${totalQ} u.) · Clicca per gestire` : 'Vuota · Clicca per ispezionare'}
+                          {count > 0
+                            ? `${palletsCount || 1} UDM · ${count} ${count === 1 ? 'articolo' : 'articoli'} (${totalQ} u.)`
+                            : 'Vuota · Clicca per ispezionare'}
                         </span>
                       </div>
                     </div>
@@ -1064,64 +1067,89 @@ const Locations = () => {
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                {canManageLocations && (() => {
-                  const uniqueCodes = [...new Set(freeInspect.items.map(i => i.pallet_code).filter(Boolean))];
-                  if (uniqueCodes.length === 1 && freeInspect.items.length > 1) {
+                {(() => {
+                  const udmMap = new Map();
+                  freeInspect.items.forEach(item => {
+                    const code = item.pallet_code || `ROW-${item.id}`;
+                    if (!udmMap.has(code)) udmMap.set(code, []);
+                    udmMap.get(code).push(item);
+                  });
+                  const udmGroups = Array.from(udmMap.entries());
+
+                  return udmGroups.map(([udmCode, udmItems]) => {
+                    const hasMovable = udmItems.some(i => !i.is_quarantined);
                     return (
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => setFreeMoveDraft({
-                            item: freeInspect.items[0],
-                            mode: 'ALL_PALLET',
-                            moveQty: String(freeInspect.items[0].quantity),
-                            targetLocation: '',
-                            error: null
-                          })}
-                          className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-brand-black border border-amber-500/40 font-black text-xs flex items-center gap-1.5 transition-colors"
-                        >
-                          <ArrowRightLeft size={14} /> Sposta TUTTI gli articoli ({freeInspect.items.length})
-                        </button>
+                      <div key={udmCode} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-xs font-black px-2.5 py-1 rounded-lg bg-brand-blue/15 text-brand-blue border border-brand-blue/30">
+                              {udmCode}
+                            </span>
+                            <span className="text-[11px] font-bold text-slate-400">
+                              {udmItems.length} {udmItems.length === 1 ? 'riga' : 'righe'}
+                            </span>
+                          </div>
+                          {canManageLocations && hasMovable && udmItems.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setFreeMoveDraft({
+                                item: udmItems[0],
+                                mode: 'ALL_PALLET',
+                                moveQty: String(udmItems[0].quantity),
+                                targetLocation: '',
+                                error: null
+                              })}
+                              className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-brand-black border border-amber-500/40 font-black text-[11px] flex items-center gap-1.5 transition-colors shrink-0"
+                            >
+                              <ArrowRightLeft size={13} /> Sposta Intera UDM ({udmItems.length})
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          {udmItems.map(item => (
+                            <div key={item.id} className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono text-xs font-bold text-brand-blue">{item.sku}</span>
+                                  {item.batch && (
+                                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      Lotto: {item.batch}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="font-black text-sm text-brand-white mt-0.5">{item.product_name}</div>
+                                <div className="text-xs text-slate-400 mt-0.5">
+                                  {item.customer_name}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 shrink-0">
+                                <div className="text-right">
+                                  <div className="font-black text-base text-emerald-400">{item.quantity} {item.uom || ''}</div>
+                                </div>
+                                {canManageLocations && !item.is_quarantined && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setFreeMoveDraft({
+                                      item,
+                                      mode: 'SINGLE_ITEM',
+                                      moveQty: String(item.quantity),
+                                      targetLocation: '',
+                                      error: null
+                                    })}
+                                    className="px-3 py-2 rounded-xl bg-brand-blue text-brand-black font-black text-xs hover:bg-sky-400 transition-colors flex items-center gap-1.5"
+                                  >
+                                    <ArrowRightLeft size={14} /> Sposta
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     );
-                  }
-                  return null;
+                  });
                 })()}
-
-                {freeInspect.items.map(item => (
-                  <div key={item.id} className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs font-bold text-brand-blue">{item.sku}</span>
-                        <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">{item.pallet_code}</span>
-                      </div>
-                      <div className="font-black text-sm text-brand-white mt-0.5">{item.product_name}</div>
-                      <div className="text-xs text-slate-400 mt-0.5">
-                        {item.customer_name} {item.batch ? `· Lotto: ${item.batch}` : ''}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right">
-                        <div className="font-black text-base text-emerald-400">{item.quantity} {item.uom || ''}</div>
-                      </div>
-                      {canManageLocations && !item.is_quarantined && (
-                        <button
-                          type="button"
-                          onClick={() => setFreeMoveDraft({
-                            item,
-                            mode: 'SINGLE_ITEM',
-                            moveQty: String(item.quantity),
-                            targetLocation: '',
-                            error: null
-                          })}
-                          className="px-3 py-2 rounded-xl bg-brand-blue text-brand-black font-black text-xs hover:bg-sky-400 transition-colors flex items-center gap-1.5"
-                        >
-                          <ArrowRightLeft size={14} /> Sposta
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
               </div>
             )}
 

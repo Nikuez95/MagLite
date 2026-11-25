@@ -113,12 +113,12 @@ const FinancesDashboard = () => {
                     <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="monthLabel" stroke="#94a3b8" />
-                <YAxis stroke="#94a3b8" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--color-slate-800))" />
+                <XAxis dataKey="monthLabel" stroke="rgb(var(--color-slate-400))" />
+                <YAxis stroke="rgb(var(--color-slate-400))" />
                 <RechartsTooltip 
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }}
-                  itemStyle={{ color: '#f8fafc' }}
+                  contentStyle={{ backgroundColor: 'rgb(var(--color-slate-900))', borderColor: 'rgb(var(--color-slate-800))', color: 'rgb(var(--color-brand-white))' }}
+                  itemStyle={{ color: 'rgb(var(--color-brand-white))' }}
                 />
                 <Legend />
                 <Area type="monotone" name="Entrate" dataKey="income" stroke="#0ea5e9" fillOpacity={1} fill="url(#colorIncome)" />

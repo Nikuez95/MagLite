@@ -444,6 +444,7 @@ async function locationRoutes(fastify, options) {
         SELECT fl.*,
                COALESCE(w.name, 'Settala') AS warehouse_name,
                wd.name AS division_name,
+               COUNT(DISTINCT CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.pallet_code END) AS pallets_count,
                COUNT(DISTINCT CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.id END) AS items_count,
                COALESCE(SUM(CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.quantity ELSE 0 END), 0) AS total_qty,
                GROUP_CONCAT(DISTINCT CASE WHEN p.status = 'STOCKED' AND p.quantity > 0 THEN p.pallet_code END SEPARATOR ', ') AS pallet_codes

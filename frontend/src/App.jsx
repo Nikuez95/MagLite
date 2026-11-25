@@ -75,6 +75,7 @@ import {
   isSoftwareEngineer,
   getSectionKeyForPath
 } from './utils/permissions';
+import { applyTheme, getUserTheme, THEME_DARK } from './utils/theme';
 
 const SectionLockedView = ({ sectionName, lockInfo, user, sectionKey, sectionLocks, onUnlockSection, onBypassOnce }) => {
   const navigate = useNavigate();
@@ -325,6 +326,9 @@ function App() {
         const u = JSON.parse(localStorage.getItem('maglite_user') || '{}');
         setUserState(u);
         setNeedsPasswordChange(Boolean(token && u.requires_password_change));
+        if (token) {
+          applyTheme(getUserTheme(u));
+        }
       } catch {
         // ignore
       }
@@ -339,10 +343,12 @@ function App() {
       const updatedUser = JSON.parse(localStorage.getItem('maglite_user') || '{}');
       setUserState(updatedUser);
       setNeedsPasswordChange(updatedUser.requires_password_change);
+      applyTheme(getUserTheme(updatedUser));
       refreshUserProfile();
     } else {
       localStorage.removeItem('maglite_token');
       setNeedsPasswordChange(false);
+      applyTheme(THEME_DARK);
     }
   }, [token]);
 

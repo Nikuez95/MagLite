@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn } from 'lucide-react';
 import axios from 'axios';
+import { applyTheme, getLogoSrc, getUserTheme, THEME_DARK } from '../utils/theme';
 
 const Login = ({ setToken }) => {
   const navigate = useNavigate();
@@ -9,6 +10,10 @@ const Login = ({ setToken }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    applyTheme(THEME_DARK);
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -22,8 +27,9 @@ const Login = ({ setToken }) => {
       });
 
       if (response.data.token) {
-        setToken(response.data.token);
         localStorage.setItem('maglite_user', JSON.stringify(response.data.user));
+        applyTheme(getUserTheme(response.data.user));
+        setToken(response.data.token);
         navigate('/');
       }
     } catch (err) {

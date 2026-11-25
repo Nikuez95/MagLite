@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { appAlert } from '../../utils/alerts';
 import { hasPerm } from '../../utils/permissions';
+import { themedSelectStyles } from '../../utils/theme';
 import CustomerTariffEditor from '../../components/CustomerTariffEditor';
 import { GlobalPlansModal, NewGlobalServiceModal } from '../../components/GlobalTariffModals';
 import FinanceAdminNav from '../../components/FinanceAdminNav';
@@ -86,24 +87,7 @@ const ClientTariffManager = () => {
     }
   };
 
-  const selectStyles = {
-    control: (base, state) => ({
-      ...base,
-      backgroundColor: '#020617',
-      borderColor: state.isFocused ? '#38bdf8' : '#1e293b',
-      padding: '0.25rem',
-      borderRadius: '0.75rem',
-      color: '#f8fafc'
-    }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', border: '1px solid #1e293b', zIndex: 50 }),
-    option: (base, state) => ({
-      ...base,
-      backgroundColor: state.isFocused ? '#1e293b' : 'transparent',
-      color: '#f8fafc'
-    }),
-    singleValue: base => ({ ...base, color: '#f8fafc' }),
-    input: base => ({ ...base, color: '#f8fafc' })
-  };
+  const selectStyles = themedSelectStyles;
 
   return (
     <div className="flex-1 p-6 md:p-8 overflow-y-auto bg-brand-black min-h-screen">

@@ -97,93 +97,211 @@ function sanitizeExpirationDate(val) {
 }
 
 /**
- * Disegna una singola etichetta paletta con pdfkit e bwip-js.
+ * Adatta un testo su max 1 o 2 righe riducendo il font solo quanto serve e troncando con '...' se estremo.
+ */
+function fitTextLines(doc, text, maxWidth, startSize, minSize, maxLines = 2) {
+  const clean = String(text || '').trim() || '-';
+  let size = startSize;
+  doc.font('Helvetica-Bold').fontSize(size);
+
+  if (maxLines === 1) {
+    while (doc.widthOfString(clean) > maxWidth && size > minSize) {
+      size -= 0.5;
+      doc.fontSize(size);
+    }
+    let output = clean;
+    if (doc.widthOfString(output) > maxWidth) {
+      while (output.length > 3 && doc.widthOfString(`${output}...`) > maxWidth) {
+        output = output.slice(0, -1);
+      }
+      output = `${output}...`;
+    }
+    return { text: output, fontSize: size, height: size * 1.15 };
+  }
+
+  // Prova su 1 riga a dimensione iniziale; se non ci sta, consenti 2 righe
+  if (doc.widthOfString(clean) <= maxWidth) {
+    return { text: clean, fontSize: size, height: size * 1.15 };
+  }
+
+  size = Math.max(minSize, startSize - 1.5);
+  doc.fontSize(size);
+  let maxAllowedHeight = size * 1.18 * maxLines + 2;
+  while (doc.heightOfString(clean, { width: maxWidth, lineGap: 1 }) > maxAllowedHeight && size > minSize) {
+    size -= 0.5;
+    doc.fontSize(size);
+    maxAllowedHeight = size * 1.18 * maxLines + 2;
+  }
+
+  let output = clean;
+  if (doc.heightOfString(output, { width: maxWidth, lineGap: 1 }) > maxAllowedHeight) {
+    while (output.length > 6 && doc.heightOfString(`${output}...`, { width: maxWidth, lineGap: 1 }) > maxAllowedHeight) {
+      output = output.slice(0, -1);
+    }
+    output = `${output.trim()}...`;
+  }
+
+  const measuredH = doc.heightOfString(output, { width: maxWidth, lineGap: 1 });
+  return { text: output, fontSize: size, height: measuredH };
+}
+
+/**
+ * Disegna una singola etichetta paletta moderna, pulita, brandizzata e responsive con pdfkit e bwip-js.
  */
 async function drawLabel(doc, lbl, x, y, w, h) {
-  // Bordo arrotondato moderno
-  doc.roundedRect(x, y, w, h, 8).lineWidth(1).strokeOpacity(0.3).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
+  const scale = Math.max(0.75, Math.min(w / 273, h / 192));
+  const padX = Math.max(8, Math.round(10 * scale));
+  const innerW = w - padX * 2;
+  const accentH = Math.max(3, 3.5 * scale);
 
-  // HEADER (Logo, Warehouse & Posizione in piccolo se assegnata)
-  if (fs.existsSync(logoPath)) {
-    doc.image(logoPath, x + 12, y + 9, { fit: [130, 34] });
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 146, y + 11, { width: w - 158, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 146, y + 23, { width: w - 158, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 146, y + 18, { width: w - 158, align: 'right', lineBreak: false });
-    }
+  // Barra superiore brandizzata bicolore (senza contorno grigio attorno all'etichetta)
+  const navyW = w * 0.68;
+  doc.rect(x, y, navyW, accentH).fill('#121e27');
+  doc.rect(x + navyW, y, w - navyW, accentH).fill('#0284c7');
+
+  // HEADER: Logo ingrandito a sinistra + Magazzino / Posizione a destra
+  const headerTop = y + accentH + 4 * scale;
+  const headerH = Math.round(48 * scale);
+  const hasLogo = fs.existsSync(logoPath);
+
+  if (hasLogo) {
+    const logoBoxW = innerW * 0.54;
+    const logoBoxH = headerH - 2 * scale;
+    doc.image(logoPath, x + padX, headerTop, { fit: [logoBoxW, logoBoxH], valign: 'center' });
+  }
+
+  const rightBoxX = hasLogo ? x + padX + innerW * 0.52 : x + padX;
+  const rightBoxW = hasLogo ? innerW * 0.48 : innerW;
+  const whText = String(lbl.warehouse || 'Settala').trim();
+  const locText = lbl.location ? String(lbl.location).trim().toUpperCase() : '';
+
+  if (locText) {
+    doc.font('Helvetica').fontSize(6.5 * scale).fillColor('#64748b')
+      .text('MAGAZZINO', rightBoxX, headerTop + 2 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(8.5 * scale).fillColor('#121e27')
+      .text(whText, rightBoxX, headerTop + 9.5 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+
+    // Badge posizione moderno e ad alto contrasto
+    const badgeFontSize = 8 * scale;
+    doc.font('Helvetica-Bold').fontSize(badgeFontSize);
+    const badgeLabel = `POS: ${locText}`;
+    const pillPadX = 6 * scale;
+    const pillW = Math.min(rightBoxW, doc.widthOfString(badgeLabel) + pillPadX * 2);
+    const pillH = 14 * scale;
+    const pillX = rightBoxX + rightBoxW - pillW;
+    const pillY = headerTop + 22 * scale;
+    doc.roundedRect(pillX, pillY, pillW, pillH, 3 * scale).fillAndStroke('#e0f2fe', '#0284c7');
+    doc.fillColor('#0c4a6e').text(badgeLabel, pillX + pillPadX * 0.5, pillY + 3 * scale, {
+      width: pillW - pillPadX,
+      align: 'center',
+      lineBreak: false
+    });
   } else {
-    if (lbl.location) {
-      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 11, { width: w - 24, align: 'right', lineBreak: false });
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#0f172a').text(`Posizione: ${lbl.location}`, x + 12, y + 23, { width: w - 24, align: 'right', lineBreak: false });
-    } else {
-      doc.fontSize(9).font('Helvetica').fillColor('#64748b').text(`Magazzino: ${lbl.warehouse}`, x + 12, y + 18, { width: w - 24, align: 'right', lineBreak: false });
-    }
+    doc.font('Helvetica').fontSize(7 * scale).fillColor('#64748b')
+      .text('MAGAZZINO', rightBoxX, headerTop + 10 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(9.5 * scale).fillColor('#121e27')
+      .text(whText, rightBoxX, headerTop + 19 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
   }
 
-  // Divider
-  doc.moveTo(x + 10, y + 46).lineTo(x + w - 10, y + 46).lineWidth(0.5).strokeOpacity(0.2).strokeColor('#000000').stroke();
-  doc.strokeOpacity(1).strokeColor('black').lineWidth(1); // reset
+  // Linea separatrice pulita brand-blue (nessun tratto grigio sbiadito)
+  const dividerY = headerTop + headerH + 2 * scale;
+  doc.moveTo(x + padX, dividerY).lineTo(x + w - padX, dividerY).lineWidth(0.75 * scale).strokeColor('#bae6fd').stroke();
 
-  // CLIENTE (Auto-shrink text per evitare a capo)
-  let cName = (lbl.customer_name || '').toUpperCase();
-  let maxFontSizeC = 11;
-  doc.fontSize(maxFontSizeC).font('Helvetica-Bold');
-  while (doc.widthOfString(cName) > (w - 24) && maxFontSizeC > 6) {
-    maxFontSizeC -= 0.5;
-    doc.fontSize(maxFontSizeC);
-  }
-  doc.fillColor('#334155').text(cName, x + 12, y + 50, { width: w - 24, align: 'left', lineBreak: false });
+  // CLIENTE
+  let cursorY = dividerY + 5 * scale;
+  const cName = (lbl.customer_name || '-').toUpperCase();
+  const fittedCustomer = fitTextLines(doc, cName, innerW, 9 * scale, 6.5 * scale, 1);
+  doc.font('Helvetica-Bold').fontSize(fittedCustomer.fontSize).fillColor('#0369a1')
+    .text(fittedCustomer.text, x + padX, cursorY, { width: innerW, align: 'left', lineBreak: false });
+  cursorY += fittedCustomer.fontSize + 4 * scale;
 
-  // PRODOTTO (Auto-shrink text per evitare a capo)
-  let pName = (lbl.product_name || '').toUpperCase();
-  let maxFontSize = 18;
-  doc.fontSize(maxFontSize).font('Helvetica-Bold');
-  while (doc.widthOfString(pName) > (w - 24) && maxFontSize > 8) {
-    maxFontSize -= 0.5;
-    doc.fontSize(maxFontSize);
-  }
-  doc.fillColor('black').text(pName, x + 12, y + 68, { width: w - 24, align: 'left', lineBreak: false });
+  // PRODOTTO (fino a 2 righe responsive ben leggibili)
+  const pName = (lbl.product_name || '-').toUpperCase();
+  const fittedProduct = fitTextLines(doc, pName, innerW, 13.5 * scale, 8 * scale, 2);
+  doc.font('Helvetica-Bold').fontSize(fittedProduct.fontSize).fillColor('#0f172a')
+    .text(fittedProduct.text, x + padX, cursorY, { width: innerW, align: 'left', lineGap: 1 });
+  cursorY += fittedProduct.height + 5 * scale;
 
-  // LOTTO & SCADENZA (Niente Q.tà stampata!)
-  let metaY = y + 70 + maxFontSize + 8; // posiziona sotto al prodotto
-  let batchStr = `Lotto: ${lbl.batch || '-'}`;
+  // STRIP METADATI (Lotto, Scadenza & Riferimenti Cliente)
   const cleanExp = sanitizeExpirationDate(lbl.expiration_date);
+  let expFormatted = null;
   if (cleanExp) {
     const [ey, em, ed] = cleanExp.split('-');
-    batchStr += `   |   Scad: ${ed}/${em}/${ey}`;
-  }
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text(batchStr, x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
-
-  // DATI AGGIUNTIVI OPZIONALI (+ Posizione in piccolo sopra il barcode)
-  if (lbl.client_pallet_number || lbl.client_article_number || lbl.location) {
-    metaY += 14;
-    let extras = [];
-    if (lbl.location) extras.push(`Pos: ${lbl.location}`);
-    if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
-    if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#475569').text(extras.join('  |  '), x + 12, metaY, { width: w - 24, align: 'left', lineBreak: false });
+    expFormatted = `${ed}/${em}/${ey}`;
   }
 
-  doc.fillColor('black'); // reset colore testo per sicurezza
+  const extras = [];
+  if (lbl.client_pallet_number) extras.push(`Pal. Cliente: ${lbl.client_pallet_number}`);
+  if (lbl.client_article_number && lbl.client_article_number !== '-') extras.push(`Art: ${lbl.client_article_number}`);
+  const hasExtras = extras.length > 0;
 
-  // BARCODE (Ridimensiona per stare nel blocco rimanente senza sovrapporsi)
-  const barcodeY = metaY + 18;
-  const remainingHeight = h - (barcodeY - y) - 10;
-  const finalBarcodeHeight = Math.max(25, remainingHeight);
+  const stripH = (hasExtras ? 30 : 19) * scale;
+  doc.roundedRect(x + padX, cursorY, innerW, stripH, 4 * scale).fill('#f1f5f9');
+  doc.rect(x + padX, cursorY, 2.5 * scale, stripH).fill('#0284c7');
+
+  const stripPadX = 7 * scale;
+  const stripInnerW = innerW - stripPadX * 1.5;
+  const row1Y = cursorY + 4.5 * scale;
+
+  const batchLabel = `LOTTO: ${lbl.batch || '-'}`;
+  const expLabel = expFormatted ? `SCAD: ${expFormatted}` : '';
+
+  if (expLabel) {
+    doc.font('Helvetica-Bold').fontSize(8.5 * scale);
+    const expW = doc.widthOfString(expLabel) + 6 * scale;
+    const batchFit = fitTextLines(doc, batchLabel, Math.max(40, stripInnerW - expW), 8.5 * scale, 6.5 * scale, 1);
+    doc.font('Helvetica-Bold').fontSize(batchFit.fontSize).fillColor('#0f172a')
+      .text(batchFit.text, x + padX + stripPadX, row1Y, { width: stripInnerW - expW, align: 'left', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(8.5 * scale).fillColor('#be123c')
+      .text(expLabel, x + padX + stripPadX, row1Y, { width: stripInnerW, align: 'right', lineBreak: false });
+  } else {
+    const batchFit = fitTextLines(doc, batchLabel, stripInnerW, 8.5 * scale, 6.5 * scale, 1);
+    doc.font('Helvetica-Bold').fontSize(batchFit.fontSize).fillColor('#0f172a')
+      .text(batchFit.text, x + padX + stripPadX, row1Y, { width: stripInnerW, align: 'left', lineBreak: false });
+  }
+
+  if (hasExtras) {
+    const extraFit = fitTextLines(doc, extras.join('  •  '), stripInnerW, 7.5 * scale, 6 * scale, 1);
+    doc.font('Helvetica-Bold').fontSize(extraFit.fontSize).fillColor('#475569')
+      .text(extraFit.text, x + padX + stripPadX, cursorY + 16.5 * scale, { width: stripInnerW, align: 'left', lineBreak: false });
+  }
+
+  cursorY += stripH + 6 * scale;
+
+  // BARCODE FOOTER (Responsive su spazio rimanente, codice vettoriale nitido sotto le barre)
+  const codeStr = String(lbl.code || 'PAL-0000');
+  const bottomPad = 5 * scale;
+  const codeFontSize = Math.max(8, 9.5 * scale);
+  const codeTextH = codeFontSize + 3 * scale;
+  const availableFooterH = Math.max(30, (y + h - bottomPad) - cursorY);
+  const maxBarcodeImgH = Math.min(availableFooterH - codeTextH, 110 * scale);
+  const barcodeImgH = Math.max(22, maxBarcodeImgH);
+  const barcodeW = Math.max(80, innerW - 16 * scale);
+
+  // Centra verticalmente il blocco barcode+testo nello spazio disponibile
+  const totalBarcodeBlockH = barcodeImgH + codeTextH;
+  const barcodeStartY = cursorY + Math.max(0, (availableFooterH - totalBarcodeBlockH) / 2);
 
   const pngBuffer = await bwipjs.toBuffer({
     bcid: 'code128',
-    text: String(lbl.code || 'PAL-0000'),
-    scale: 3,
-    height: 12,
-    includetext: true,
-    textxalign: 'center',
+    text: codeStr,
+    scale: 4,
+    height: 14,
+    includetext: false,
   });
 
-  const barcodeW = w - 40;
-  doc.image(pngBuffer, x + 20, barcodeY, { fit: [barcodeW, finalBarcodeHeight], align: 'center', valign: 'top' });
+  doc.image(pngBuffer, x + (w - barcodeW) / 2, barcodeStartY, {
+    fit: [barcodeW, barcodeImgH],
+    align: 'center',
+    valign: 'center'
+  });
+
+  doc.font('Helvetica-Bold').fontSize(codeFontSize).fillColor('#0f172a')
+    .text(codeStr, x + padX, barcodeStartY + barcodeImgH + 2 * scale, {
+      width: innerW,
+      align: 'center',
+      lineBreak: false
+    });
 }
 
 /**
@@ -191,12 +309,10 @@ async function drawLabel(doc, lbl, x, y, w, h) {
  * sugli stream di Fastify quando si generano centinaia di etichette in modo asincrono.
  */
 async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode = 'GRID' } = {}) {
-  const docOptions = { margin: 20 };
-  if (paper_format === 'THERMAL') {
-    docOptions.size = [283, 425];
-  } else {
-    docOptions.size = 'A4';
-  }
+  const isThermal = paper_format === 'THERMAL';
+  const docOptions = isThermal
+    ? { size: [283, 425], margin: 12 }
+    : { size: 'A4', margin: print_mode === 'SINGLE_PAGE' ? 24 : 18 };
 
   const doc = new PDFDocument(docOptions);
   const chunks = [];
@@ -206,33 +322,38 @@ async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode
     doc.on('error', reject);
   });
 
-  if (paper_format === 'THERMAL' || print_mode === 'SINGLE_PAGE') {
+  if (isThermal || print_mode === 'SINGLE_PAGE') {
+    const margin = isThermal ? 12 : 24;
     for (let i = 0; i < labels.length; i++) {
       if (i > 0) doc.addPage();
       const lbl = labels[i];
-      const w = doc.page.width - 40;
-      const h = doc.page.height - 40;
-      await drawLabel(doc, lbl, 20, 20, w, h);
+      const w = doc.page.width - margin * 2;
+      const h = doc.page.height - margin * 2;
+      await drawLabel(doc, lbl, margin, margin, w, h);
     }
   } else {
     const labelsPerRow = 2;
-    const labelWidth = 265;
-    const labelHeight = 180;
-    const startX = 25;
-    let startY = 25;
+    const rowsPerPage = 4;
+    const perPage = labelsPerRow * rowsPerPage;
+    const pageMarginX = 18;
+    const pageMarginY = 18;
+    const gapX = 14;
+    const gapY = 12;
+    const labelWidth = (doc.page.width - pageMarginX * 2 - gapX * (labelsPerRow - 1)) / labelsPerRow;
+    const labelHeight = (doc.page.height - pageMarginY * 2 - gapY * (rowsPerPage - 1)) / rowsPerPage;
 
     for (let i = 0; i < labels.length; i++) {
       const lbl = labels[i];
-      const col = i % labelsPerRow;
-      const row = Math.floor((i % 8) / labelsPerRow);
+      const pageSlot = i % perPage;
+      const col = pageSlot % labelsPerRow;
+      const row = Math.floor(pageSlot / labelsPerRow);
 
-      if (i > 0 && i % 8 === 0) {
+      if (i > 0 && pageSlot === 0) {
         doc.addPage();
-        startY = 25;
       }
 
-      const x = startX + (col * (labelWidth + 15));
-      const y = startY + (row * (labelHeight + 15));
+      const x = pageMarginX + col * (labelWidth + gapX);
+      const y = pageMarginY + row * (labelHeight + gapY);
       await drawLabel(doc, lbl, x, y, labelWidth, labelHeight);
     }
   }

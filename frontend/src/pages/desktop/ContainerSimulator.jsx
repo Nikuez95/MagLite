@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { useTheme } from '../../utils/theme';
 
 const STORAGE_KEY = 'maglite_container_sim_v1';
 
@@ -888,6 +889,7 @@ function draw3DContainerCanvas(
 }
 
 const ContainerSimulator = () => {
+  const { theme: appTheme } = useTheme();
   const [container, setContainer] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -1031,7 +1033,7 @@ const ContainerSimulator = () => {
         transform2DRef.current = draw2DPlanCanvas(ctx, rect.width, rect.height, container, pallets, {
           selectedId,
           maxStep: animStep,
-          theme: 'dark'
+          theme: appTheme
         });
       }
     }
@@ -1047,7 +1049,7 @@ const ContainerSimulator = () => {
         draw2DSideCanvas(ctx, rect.width, rect.height, container, pallets, {
           selectedId,
           maxStep: animStep,
-          theme: 'dark'
+          theme: appTheme
         });
       }
     }
@@ -1066,11 +1068,11 @@ const ContainerSimulator = () => {
           zoom: camZoom,
           selectedId,
           maxStep: animStep,
-          theme: 'dark'
+          theme: appTheme
         });
       }
     }
-  }, [container, pallets, selectedId, animStep, camYaw, camPitch, camZoom]);
+  }, [container, pallets, selectedId, animStep, camYaw, camPitch, camZoom, appTheme]);
 
   useEffect(() => {
     renderCanvases();

@@ -49,7 +49,9 @@ import {
   Lock,
   Unlock,
   Wrench,
-  ShieldOff
+  ShieldOff,
+  Sun,
+  Moon
 } from 'lucide-react';
 import {
   hasPerm,
@@ -58,6 +60,7 @@ import {
   LOCKABLE_SECTIONS,
   getSectionKeyForPath
 } from '../../utils/permissions';
+import { useTheme, getLogoSrc } from '../../utils/theme';
 import NotificationCenter from '../../components/NotificationCenter';
 
 const DEFAULT_SIDEBAR_PREFS = {
@@ -99,6 +102,7 @@ function reorderList(list, fromId, toId) {
 const DesktopLayout = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { theme, isLight, toggleTheme } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(true);
   const [socketInstance, setSocketInstance] = useState(null);
@@ -615,9 +619,17 @@ const DesktopLayout = () => {
       {/* Mobile Header */}
       <div className="md:hidden flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 sticky top-0 z-50">
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
-          <img src="/logo.png" alt="Logistic Porcelli Logo" className="h-9 w-auto object-contain" />
+          <img src={getLogoSrc(theme)} alt="Logistic Porcelli Logo" className="h-9 w-auto object-contain" />
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={isLight ? 'Passa a Modalità Scura' : 'Passa a Modalità Chiara'}
+            className="p-2 bg-slate-800 rounded-lg text-brand-white"
+          >
+            {isLight ? <Moon size={18} className="text-brand-blue" /> : <Sun size={18} className="text-amber-400" />}
+          </button>
           <NotificationCenter socket={socketInstance} />
           <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 bg-slate-800 rounded-lg text-brand-white">
             {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
@@ -635,7 +647,7 @@ const DesktopLayout = () => {
         >
           <div className="h-11 w-16 flex items-center justify-center shrink-0">
             <img
-              src="/logo.png"
+              src={getLogoSrc(theme)}
               alt="Logistic Porcelli Logo"
               className="max-w-full max-h-full object-contain drop-shadow-[0_0_15px_rgba(169,218,255,0.35)] group-hover:scale-105 transition-transform"
             />
@@ -1230,17 +1242,27 @@ const DesktopLayout = () => {
                 </div>
               </div>
             </div>
-            <button
-              onClick={() => {
-                localStorage.removeItem('maglite_token');
-                localStorage.removeItem('maglite_user');
-                window.location.href = '/login';
-              }}
-              title="Log Out Sicuro"
-              className="p-2 rounded-xl text-rose-400 hover:bg-rose-500/15 hover:text-rose-300 transition-all shrink-0"
-            >
-              <LogOut size={18} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={toggleTheme}
+                title={isLight ? 'Modalità Chiara attiva — Passa a Scura' : 'Modalità Scura attiva — Passa a Chiara'}
+                className="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-brand-blue/50 text-slate-300 hover:text-brand-white transition-all shrink-0"
+              >
+                {isLight ? <Moon size={16} className="text-brand-blue" /> : <Sun size={16} className="text-amber-400" />}
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('maglite_token');
+                  localStorage.removeItem('maglite_user');
+                  window.location.href = '/login';
+                }}
+                title="Log Out Sicuro"
+                className="p-2 rounded-xl text-rose-400 hover:bg-rose-500/15 hover:text-rose-300 transition-all shrink-0"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -1337,6 +1359,16 @@ const DesktopLayout = () => {
                 Zebra
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-brand-white border border-slate-800 transition-all"
+              title={isLight ? 'Modalità Chiara attiva — Clicca per modalità Scura' : 'Modalità Scura attiva — Clicca per modalità Chiara'}
+            >
+              {isLight ? <Moon size={14} className="text-brand-blue" /> : <Sun size={14} className="text-amber-400" />}
+              <span>{isLight ? 'Scura' : 'Chiara'}</span>
+            </button>
 
             <NotificationCenter socket={socketInstance} />
 

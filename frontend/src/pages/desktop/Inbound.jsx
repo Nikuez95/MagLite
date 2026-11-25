@@ -1,5 +1,6 @@
 import { appAlert, appConfirm, appPrompt } from "../../utils/alerts.js";
 import { hasPerm, canTouchCustomer } from "../../utils/permissions.js";
+import { themedSelectStyles } from "../../utils/theme.js";
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
@@ -1456,25 +1457,7 @@ const Inbound = () => {
     }
   };
 
-  const selectStyles = {
-    control: (base, state) => ({
-      ...base,
-      backgroundColor: '#020617', 
-      borderColor: state.isFocused ? '#38bdf8' : '#1e293b', 
-      borderRadius: '0.75rem',
-      padding: '0.15rem',
-      minHeight: '42px',
-      boxShadow: 'none',
-      '&:hover': { borderColor: '#38bdf8' }
-    }),
-    menu: base => ({ ...base, backgroundColor: '#0f172a', zIndex: 50, border: '1px solid #1e293b' }),
-    option: (base, state) => ({ ...base, backgroundColor: state.isFocused ? '#1e293b' : 'transparent', color: '#f8fafc', cursor: 'pointer', fontSize: '0.875rem' }),
-    singleValue: base => ({ ...base, color: '#f8fafc', fontSize: '0.875rem' }),
-    input: base => ({ ...base, color: '#f8fafc', fontSize: '0.875rem' }),
-    multiValue: base => ({ ...base, backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155' }),
-    multiValueLabel: base => ({ ...base, color: '#38bdf8', fontWeight: 'bold', fontSize: '0.7rem', textTransform: 'uppercase' }),
-    multiValueRemove: base => ({ ...base, color: '#94a3b8', ':hover': { backgroundColor: '#f43f5e', color: '#fff' } })
-  };
+  const selectStyles = themedSelectStyles;
 
   const renderQuantityHint = () => {
     if (!formData.quantity) return null;
