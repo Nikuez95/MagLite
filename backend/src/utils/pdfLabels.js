@@ -146,61 +146,82 @@ function fitTextLines(doc, text, maxWidth, startSize, minSize, maxLines = 2) {
 }
 
 /**
- * Disegna una singola etichetta paletta moderna, pulita, brandizzata e responsive con pdfkit e bwip-js.
+ * Disegna una singola etichetta paletta moderna, pulita e responsive con pdfkit e bwip-js.
  */
-async function drawLabel(doc, lbl, x, y, w, h) {
+async function drawLabel(doc, lbl, x, y, w, h, { showLogo = true } = {}) {
   const scale = Math.max(0.75, Math.min(w / 273, h / 192));
   const padX = Math.max(8, Math.round(10 * scale));
   const innerW = w - padX * 2;
-  const accentH = Math.max(3, 3.5 * scale);
 
-  // Barra superiore brandizzata bicolore (senza contorno grigio attorno all'etichetta)
-  const navyW = w * 0.68;
-  doc.rect(x, y, navyW, accentH).fill('#121e27');
-  doc.rect(x + navyW, y, w - navyW, accentH).fill('#0284c7');
-
-  // HEADER: Logo ingrandito a sinistra + Magazzino / Posizione a destra
-  const headerTop = y + accentH + 4 * scale;
-  const headerH = Math.round(48 * scale);
-  const hasLogo = fs.existsSync(logoPath);
+  // HEADER: Logo opzionale a sinistra + Magazzino / Posizione
+  const headerTop = y + 4 * scale;
+  const effectiveShowLogo = lbl && lbl.show_logo !== undefined ? Boolean(lbl.show_logo) : Boolean(showLogo);
+  const hasLogo = effectiveShowLogo && fs.existsSync(logoPath);
+  const whText = String(lbl.warehouse || 'Settala').trim();
+  const locText = lbl.location ? String(lbl.location).trim().toUpperCase() : '';
+  const headerH = hasLogo ? Math.round(48 * scale) : Math.round((locText ? 26 : 24) * scale);
 
   if (hasLogo) {
     const logoBoxW = innerW * 0.54;
     const logoBoxH = headerH - 2 * scale;
     doc.image(logoPath, x + padX, headerTop, { fit: [logoBoxW, logoBoxH], valign: 'center' });
-  }
 
-  const rightBoxX = hasLogo ? x + padX + innerW * 0.52 : x + padX;
-  const rightBoxW = hasLogo ? innerW * 0.48 : innerW;
-  const whText = String(lbl.warehouse || 'Settala').trim();
-  const locText = lbl.location ? String(lbl.location).trim().toUpperCase() : '';
+    const rightBoxX = x + padX + innerW * 0.52;
+    const rightBoxW = innerW * 0.48;
 
-  if (locText) {
-    doc.font('Helvetica').fontSize(6.5 * scale).fillColor('#64748b')
-      .text('MAGAZZINO', rightBoxX, headerTop + 2 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(8.5 * scale).fillColor('#121e27')
-      .text(whText, rightBoxX, headerTop + 9.5 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+    if (locText) {
+      doc.font('Helvetica').fontSize(6.5 * scale).fillColor('#64748b')
+        .text('MAGAZZINO', rightBoxX, headerTop + 2 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+      doc.font('Helvetica-Bold').fontSize(8.5 * scale).fillColor('#121e27')
+        .text(whText, rightBoxX, headerTop + 9.5 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
 
-    // Badge posizione moderno e ad alto contrasto
-    const badgeFontSize = 8 * scale;
-    doc.font('Helvetica-Bold').fontSize(badgeFontSize);
-    const badgeLabel = `POS: ${locText}`;
-    const pillPadX = 6 * scale;
-    const pillW = Math.min(rightBoxW, doc.widthOfString(badgeLabel) + pillPadX * 2);
-    const pillH = 14 * scale;
-    const pillX = rightBoxX + rightBoxW - pillW;
-    const pillY = headerTop + 22 * scale;
-    doc.roundedRect(pillX, pillY, pillW, pillH, 3 * scale).fillAndStroke('#e0f2fe', '#0284c7');
-    doc.fillColor('#0c4a6e').text(badgeLabel, pillX + pillPadX * 0.5, pillY + 3 * scale, {
-      width: pillW - pillPadX,
-      align: 'center',
-      lineBreak: false
-    });
+      // Badge posizione moderno e ad alto contrasto
+      const badgeFontSize = 8 * scale;
+      doc.font('Helvetica-Bold').fontSize(badgeFontSize);
+      const badgeLabel = `POS: ${locText}`;
+      const pillPadX = 6 * scale;
+      const pillW = Math.min(rightBoxW, doc.widthOfString(badgeLabel) + pillPadX * 2);
+      const pillH = 14 * scale;
+      const pillX = rightBoxX + rightBoxW - pillW;
+      const pillY = headerTop + 22 * scale;
+      doc.roundedRect(pillX, pillY, pillW, pillH, 3 * scale).fillAndStroke('#e0f2fe', '#0284c7');
+      doc.fillColor('#0c4a6e').text(badgeLabel, pillX + pillPadX * 0.5, pillY + 3 * scale, {
+        width: pillW - pillPadX,
+        align: 'center',
+        lineBreak: false
+      });
+    } else {
+      doc.font('Helvetica').fontSize(7 * scale).fillColor('#64748b')
+        .text('MAGAZZINO', rightBoxX, headerTop + 10 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+      doc.font('Helvetica-Bold').fontSize(9.5 * scale).fillColor('#121e27')
+        .text(whText, rightBoxX, headerTop + 19 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+    }
   } else {
-    doc.font('Helvetica').fontSize(7 * scale).fillColor('#64748b')
-      .text('MAGAZZINO', rightBoxX, headerTop + 10 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+    // Layout compatto senza logo: Magazzino a sinistra + Posizione a destra
+    const leftW = locText ? innerW * 0.54 : innerW;
+    doc.font('Helvetica').fontSize(6.5 * scale).fillColor('#64748b')
+      .text('MAGAZZINO', x + padX, headerTop + 1.5 * scale, { width: leftW, align: 'left', lineBreak: false });
     doc.font('Helvetica-Bold').fontSize(9.5 * scale).fillColor('#121e27')
-      .text(whText, rightBoxX, headerTop + 19 * scale, { width: rightBoxW, align: 'right', lineBreak: false });
+      .text(whText, x + padX, headerTop + 9.5 * scale, { width: leftW, align: 'left', lineBreak: false });
+
+    if (locText) {
+      const rightBoxX = x + padX + innerW * 0.52;
+      const rightBoxW = innerW * 0.48;
+      const badgeFontSize = 8.5 * scale;
+      doc.font('Helvetica-Bold').fontSize(badgeFontSize);
+      const badgeLabel = `POS: ${locText}`;
+      const pillPadX = 7 * scale;
+      const pillW = Math.min(rightBoxW, doc.widthOfString(badgeLabel) + pillPadX * 2);
+      const pillH = 15.5 * scale;
+      const pillX = rightBoxX + rightBoxW - pillW;
+      const pillY = headerTop + 5 * scale;
+      doc.roundedRect(pillX, pillY, pillW, pillH, 3 * scale).fillAndStroke('#e0f2fe', '#0284c7');
+      doc.fillColor('#0c4a6e').text(badgeLabel, pillX + pillPadX * 0.5, pillY + 3.5 * scale, {
+        width: pillW - pillPadX,
+        align: 'center',
+        lineBreak: false
+      });
+    }
   }
 
   // Linea separatrice pulita brand-blue (nessun tratto grigio sbiadito)
@@ -304,11 +325,26 @@ async function drawLabel(doc, lbl, x, y, w, h) {
     });
 }
 
+async function shouldShowPalletBarcodeLogo(db) {
+  try {
+    const [[row]] = await db.query(
+      "SELECT setting_value FROM settings WHERE setting_key = 'pallet_barcode_show_logo' LIMIT 1"
+    );
+    if (!row || row.setting_value === null || row.setting_value === undefined || row.setting_value === '') {
+      return true;
+    }
+    const normalized = String(row.setting_value).trim().toLowerCase();
+    return !['false', '0', 'no', 'off'].includes(normalized);
+  } catch (_) {
+    return true;
+  }
+}
+
 /**
  * Genera l'intero PDF delle etichette in memoria (Buffer), evitando qualsiasi problema di backpressure
  * sugli stream di Fastify quando si generano centinaia di etichette in modo asincrono.
  */
-async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode = 'GRID' } = {}) {
+async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode = 'GRID', show_logo = true } = {}) {
   const isThermal = paper_format === 'THERMAL';
   const docOptions = isThermal
     ? { size: [283, 425], margin: 12 }
@@ -329,7 +365,7 @@ async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode
       const lbl = labels[i];
       const w = doc.page.width - margin * 2;
       const h = doc.page.height - margin * 2;
-      await drawLabel(doc, lbl, margin, margin, w, h);
+      await drawLabel(doc, lbl, margin, margin, w, h, { showLogo: show_logo });
     }
   } else {
     const labelsPerRow = 2;
@@ -354,7 +390,7 @@ async function generateLabelsPdfBuffer(labels, { paper_format = 'A4', print_mode
 
       const x = pageMarginX + col * (labelWidth + gapX);
       const y = pageMarginY + row * (labelHeight + gapY);
-      await drawLabel(doc, lbl, x, y, labelWidth, labelHeight);
+      await drawLabel(doc, lbl, x, y, labelWidth, labelHeight, { showLogo: show_logo });
     }
   }
 
@@ -366,4 +402,5 @@ module.exports = {
   drawLabel,
   generateLabelsPdfBuffer,
   sanitizeExpirationDate,
+  shouldShowPalletBarcodeLogo,
 };

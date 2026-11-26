@@ -1,5 +1,6 @@
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
+const { resolveProductCategoryIds } = require('../utils/productCategories');
 const db = require('../config/db');
 
 async function productRoutes(fastify, options) {
@@ -23,15 +24,23 @@ async function productRoutes(fastify, options) {
   fastify.get('/', async (request, reply) => {
     try {
       const [rows] = await db.query(`
-        SELECT p.*, c.business_name as customer_name 
-        FROM PRODUCTS p 
-        JOIN CUSTOMERS c ON p.customer_id = c.id 
+        SELECT p.*,
+               c.business_name as customer_name,
+               mc.name as macro_category_name,
+               mc.color as macro_category_color,
+               mc.is_system as macro_is_system,
+               mic.name as micro_category_name
+        FROM PRODUCTS p
+        JOIN CUSTOMERS c ON p.customer_id = c.id
+        LEFT JOIN PRODUCT_MACRO_CATEGORIES mc ON mc.id = p.macro_category_id
+        LEFT JOIN PRODUCT_MICRO_CATEGORIES mic ON mic.id = p.micro_category_id
         ORDER BY p.name ASC
       `);
       return rows
         .filter(r => canAccessCustomer(request.user, r.customer_id))
         .map(r => ({
           ...r,
+          macro_is_system: Boolean(r.macro_is_system),
           default_temp_regime: normalizeTempRegime(r.default_temp_regime),
           default_is_adr: Boolean(r.default_is_adr),
           default_adr_data: parseAdrData(r.default_adr_data, r.name)
@@ -113,7 +122,8 @@ async function productRoutes(fastify, options) {
     const {
       sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet,
       kg_per_unit, default_article_number, flags,
-      default_temp_regime, default_is_adr, default_adr_data
+      default_temp_regime, default_is_adr, default_adr_data,
+      macro_category_id, micro_category_id
     } = request.body;
     
     const cleanArticle = default_article_number ? String(default_article_number).trim() : '';
@@ -140,6 +150,14 @@ async function productRoutes(fastify, options) {
     try {
       await connection.beginTransaction();
 
+      const hasCategoryInput = macro_category_id !== undefined || micro_category_id !== undefined;
+      const resolvedCategories = await resolveProductCategoryIds(
+        connection,
+        macro_category_id,
+        micro_category_id,
+        { fallbackToDefault: true }
+      );
+
       // Verifica se esiste già un prodotto con questo SKU o con lo stesso nome (ed eventuale vecchio SKU PROD-XXXX)
       const [bySkuRows] = await connection.query('SELECT * FROM PRODUCTS WHERE sku = ?', [cleanSku]);
       const [byNameRows] = await connection.query(
@@ -158,6 +176,12 @@ async function productRoutes(fastify, options) {
             await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
           }
         }
+        const nextMacroId = hasCategoryInput
+          ? resolvedCategories.macro_category_id
+          : (target.macro_category_id || resolvedCategories.macro_category_id);
+        const nextMicroId = hasCategoryInput
+          ? resolvedCategories.micro_category_id
+          : (target.micro_category_id || null);
         await connection.query(
           `UPDATE PRODUCTS
            SET name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet),
@@ -165,7 +189,8 @@ async function productRoutes(fastify, options) {
                default_temp_regime = COALESCE(?, default_temp_regime),
                default_is_adr = COALESCE(?, default_is_adr),
                default_adr_data = CASE WHEN ? IS NOT NULL THEN ? ELSE default_adr_data END,
-               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags)
+               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags),
+               macro_category_id = ?, micro_category_id = ?
            WHERE id = ?`,
           [
             cleanName, uom || null, units_per_box || null, boxes_per_pallet || null,
@@ -173,11 +198,14 @@ async function productRoutes(fastify, options) {
             cleanDefTemp !== undefined ? cleanDefTemp : null,
             cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
             cleanDefAdrJson !== undefined ? 1 : null, cleanDefAdrJson ?? null,
-            finalDefaultArticle, flagsJson, target.id
+            finalDefaultArticle, flagsJson,
+            nextMacroId, nextMicroId,
+            target.id
           ]
         );
         await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [cleanSku, target.id]);
         await connection.commit();
+        if (fastify.io) fastify.io.emit('product_categories_updated');
         return reply.code(200).send({ success: true, id: target.id, sku: cleanSku });
       }
 
@@ -192,6 +220,12 @@ async function productRoutes(fastify, options) {
             await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
           }
         }
+        const nextMacroId = hasCategoryInput
+          ? resolvedCategories.macro_category_id
+          : (target.macro_category_id || resolvedCategories.macro_category_id);
+        const nextMicroId = hasCategoryInput
+          ? resolvedCategories.micro_category_id
+          : (target.micro_category_id || null);
         await connection.query(
           `UPDATE PRODUCTS
            SET sku = ?, name = ?, uom = COALESCE(?, uom), units_per_box = COALESCE(?, units_per_box), boxes_per_pallet = COALESCE(?, boxes_per_pallet),
@@ -199,7 +233,8 @@ async function productRoutes(fastify, options) {
                default_temp_regime = COALESCE(?, default_temp_regime),
                default_is_adr = COALESCE(?, default_is_adr),
                default_adr_data = CASE WHEN ? IS NOT NULL THEN ? ELSE default_adr_data END,
-               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags)
+               default_article_number = COALESCE(?, default_article_number), flags = COALESCE(?, flags),
+               macro_category_id = ?, micro_category_id = ?
            WHERE id = ?`,
           [
             newSkuForTarget, cleanName, uom || null, units_per_box || null, boxes_per_pallet || null,
@@ -207,20 +242,24 @@ async function productRoutes(fastify, options) {
             cleanDefTemp !== undefined ? cleanDefTemp : null,
             cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
             cleanDefAdrJson !== undefined ? 1 : null, cleanDefAdrJson ?? null,
-            finalDefaultArticle, flagsJson, target.id
+            finalDefaultArticle, flagsJson,
+            nextMacroId, nextMicroId,
+            target.id
           ]
         );
         await connection.query('UPDATE INBOUND_DDT_ITEMS SET sku = ? WHERE product_id = ?', [newSkuForTarget, target.id]);
         await connection.commit();
+        if (fastify.io) fastify.io.emit('product_categories_updated');
         return reply.code(200).send({ success: true, id: target.id, sku: newSkuForTarget });
       }
 
       const [result] = await connection.query(
-        'INSERT INTO PRODUCTS (sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, kg_per_unit, default_article_number, flags, default_temp_regime, default_is_adr, default_adr_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO PRODUCTS (sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet, kg_per_unit, default_article_number, flags, default_temp_regime, default_is_adr, default_adr_data, macro_category_id, micro_category_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1,
           parsedKgPerUnit, finalDefaultArticle, flagsJson,
-          cleanDefTemp || 'NONE', cleanDefIsAdr ? 1 : 0, cleanDefAdrJson || null
+          cleanDefTemp || 'NONE', cleanDefIsAdr ? 1 : 0, cleanDefAdrJson || null,
+          resolvedCategories.macro_category_id, resolvedCategories.micro_category_id
         ]
       );
       await connection.query(
@@ -228,9 +267,13 @@ async function productRoutes(fastify, options) {
         ['CREATE_PRODUCT', `Creato prodotto ${cleanName} (${cleanSku})`, 'Gestionale', request.user.username]
       );
       await connection.commit();
+      if (fastify.io) fastify.io.emit('product_categories_updated');
       return reply.code(201).send({ success: true, id: result.insertId, sku: cleanSku });
     } catch (err) {
       await connection.rollback();
+      if (err.statusCode === 400) {
+        return reply.code(400).send({ error: err.message });
+      }
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Codice Articolo (SKU) già esistente' });
       }
@@ -246,7 +289,8 @@ async function productRoutes(fastify, options) {
     const {
       sku, name, uom, customer_id, notes, units_per_box, boxes_per_pallet,
       kg_per_unit, default_article_number, flags, updateExistingPallets,
-      default_temp_regime, default_is_adr, default_adr_data
+      default_temp_regime, default_is_adr, default_adr_data,
+      macro_category_id, micro_category_id
     } = request.body;
     const targetId = parseInt(request.params.id, 10);
     
@@ -287,6 +331,11 @@ async function productRoutes(fastify, options) {
         await connection.query('DELETE FROM PRODUCTS WHERE id = ?', [dup.id]);
       }
 
+      const hasCategoryField = macro_category_id !== undefined || micro_category_id !== undefined;
+      const resolvedCategories = hasCategoryField
+        ? await resolveProductCategoryIds(connection, macro_category_id, micro_category_id, { fallbackToDefault: true })
+        : null;
+
       await connection.query(
         `UPDATE PRODUCTS
          SET sku = ?, name = ?, uom = ?, customer_id = ?, notes = ?, units_per_box = ?, boxes_per_pallet = ?,
@@ -294,7 +343,9 @@ async function productRoutes(fastify, options) {
              default_temp_regime = COALESCE(?, default_temp_regime),
              default_is_adr = COALESCE(?, default_is_adr),
              default_adr_data = CASE WHEN ? THEN ? ELSE default_adr_data END,
-             default_article_number = ?, flags = ?
+             default_article_number = ?, flags = ?,
+             macro_category_id = CASE WHEN ? THEN ? ELSE macro_category_id END,
+             micro_category_id = CASE WHEN ? THEN ? ELSE micro_category_id END
          WHERE id = ?`,
         [
           cleanSku, cleanName, uom || 'Scatole', customer_id, notes || null, units_per_box || 1, boxes_per_pallet || 1,
@@ -302,7 +353,10 @@ async function productRoutes(fastify, options) {
           cleanDefTemp !== undefined ? cleanDefTemp : null,
           cleanDefIsAdr !== undefined ? (cleanDefIsAdr ? 1 : 0) : null,
           cleanDefAdrJson !== undefined ? 1 : 0, cleanDefAdrJson ?? null,
-          finalDefaultArticle, flagsJson, targetId
+          finalDefaultArticle, flagsJson,
+          hasCategoryField ? 1 : 0, resolvedCategories?.macro_category_id ?? null,
+          hasCategoryField ? 1 : 0, resolvedCategories?.micro_category_id ?? null,
+          targetId
         ]
       );
 
@@ -324,9 +378,13 @@ async function productRoutes(fastify, options) {
       );
       
       await connection.commit();
+      if (fastify.io) fastify.io.emit('product_categories_updated');
       return { success: true, sku: cleanSku };
     } catch (err) {
       await connection.rollback();
+      if (err.statusCode === 400) {
+        return reply.code(400).send({ error: err.message });
+      }
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Codice Articolo (SKU) già esistente' });
       }

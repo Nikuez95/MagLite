@@ -19,6 +19,7 @@ const DesktopLayout = lazy(() => import('./pages/desktop/DesktopLayout'));
 const UsersManagement = lazy(() => import('./pages/desktop/Users'));
 const Customers = lazy(() => import('./pages/desktop/Customers'));
 const Products = lazy(() => import('./pages/desktop/Products'));
+const ProductCategories = lazy(() => import('./pages/desktop/ProductCategories'));
 const Inbound = lazy(() => import('./pages/desktop/Inbound'));
 const CustomFormsManager = lazy(() => import('./pages/desktop/CustomFormsManager'));
 const InboundDDTs = lazy(() => import('./pages/desktop/InboundDDTs'));
@@ -491,6 +492,14 @@ function App() {
               element={
                 <ProtectedSection perm="view_products" sectionName="Prodotti & Stock" {...guardProps}>
                   <Products />
+                </ProtectedSection>
+              }
+            />
+            <Route
+              path="product-categories"
+              element={
+                <ProtectedSection perm={['view_product_categories', 'product_categories_manage']} sectionName="Categorie Prodotti" {...guardProps}>
+                  <ProductCategories />
                 </ProtectedSection>
               }
             />

@@ -1072,6 +1072,62 @@ async function runMigrations() {
     }
 
     try {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS PRODUCT_MACRO_CATEGORIES (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(120) NOT NULL UNIQUE,
+          description VARCHAR(255) DEFAULT NULL,
+          color VARCHAR(20) DEFAULT '#0ea5e9',
+          is_system BOOLEAN NOT NULL DEFAULT FALSE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS PRODUCT_MICRO_CATEGORIES (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          macro_category_id INT NOT NULL,
+          name VARCHAR(120) NOT NULL,
+          description VARCHAR(255) DEFAULT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_micro_cat_macro_name (macro_category_id, name),
+          INDEX idx_micro_cat_macro (macro_category_id),
+          FOREIGN KEY (macro_category_id) REFERENCES PRODUCT_MACRO_CATEGORIES(id) ON DELETE CASCADE
+        )
+      `);
+
+      const addCatColSafe = async (sql) => {
+        try {
+          await connection.query(sql);
+        } catch (err) {
+          if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[MIGRATE CAT COLS WARNING]', err.message);
+        }
+      };
+      await addCatColSafe('ALTER TABLE PRODUCTS ADD COLUMN macro_category_id INT DEFAULT NULL');
+      await addCatColSafe('ALTER TABLE PRODUCTS ADD COLUMN micro_category_id INT DEFAULT NULL');
+
+      await connection.query(
+        `INSERT IGNORE INTO PRODUCT_MACRO_CATEGORIES (name, description, color, is_system)
+         VALUES ('DA IDENTIFICARE', 'Categoria predefinita per articoli non ancora classificati', '#64748b', TRUE)`
+      );
+      const [[daIdentificareRow]] = await connection.query(
+        `SELECT id FROM PRODUCT_MACRO_CATEGORIES WHERE UPPER(name) = 'DA IDENTIFICARE' LIMIT 1`
+      );
+      if (daIdentificareRow?.id) {
+        await connection.query(
+          `UPDATE PRODUCTS SET macro_category_id = ? WHERE macro_category_id IS NULL AND micro_category_id IS NULL`,
+          [daIdentificareRow.id]
+        );
+      }
+
+      await connection.query(
+        `INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('pallet_barcode_show_logo', 'true')`
+      );
+      console.log('✅ Macro/Micro Categorie Prodotti (incluso fallback DA IDENTIFICARE) e impostazione barcode verificate.');
+    } catch (catMigErr) {
+      console.warn('[MIGRATE CATEGORIES BLOCK WARNING]', catMigErr.message);
+    }
+
+    try {
       const ensureIndex = async (tableName, indexName, columnsSql) => {
         const [[{ cnt }]] = await connection.query(
           `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.STATISTICS
@@ -1125,7 +1181,9 @@ async function runMigrations() {
         ['PALLETS', 'idx_pallets_wh_id', 'warehouse_id'],
         ['LOCATIONS', 'idx_loc_wh_div', 'warehouse_id, division_id'],
         ['CUSTOMER_DOCUMENTS', 'idx_cd_cust_folder', 'customer_id, folder_id'],
-        ['CUSTOMER_DOCUMENTS', 'idx_cd_created', 'created_at']
+        ['CUSTOMER_DOCUMENTS', 'idx_cd_created', 'created_at'],
+        ['PRODUCTS', 'idx_products_macro_cat', 'macro_category_id'],
+        ['PRODUCTS', 'idx_products_micro_cat', 'micro_category_id']
       ];
 
       for (const [tbl, idxName, cols] of indexesToEnsure) {

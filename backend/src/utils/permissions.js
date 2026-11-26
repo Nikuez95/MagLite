@@ -20,6 +20,7 @@ const PERMISSION_CATALOG = [
       { key: 'view_documents', label: 'Visualizza DDT Entrata (Spunta)', desc: 'Accesso alla lista DDT in ingresso e controllo discrepanze.' },
       { key: 'view_outbound', label: 'Visualizza Spedizioni & Resi', desc: 'Accesso alla lista spedizioni, storico uscite e storico resi.' },
       { key: 'view_products', label: 'Visualizza Prodotti & Stock', desc: 'Accesso al catalogo articoli e alle palette in giacenza.' },
+      { key: 'view_product_categories', label: 'Visualizza Categorie Prodotti', desc: 'Accesso alla sezione Macro e Micro Categorie e al catalogo filtrato per categoria.' },
       { key: 'view_inventory', label: 'Visualizza Inventario Globale', desc: 'Accesso alla tabella inventario avanzata ed esportazioni PDF.' },
       { key: 'view_quarantine', label: 'Visualizza Registro Quarantene', desc: 'Accesso alla sezione merce bloccata e storico motivi di blocco/sblocco.' },
       { key: 'view_non_conformities', label: 'Visualizza Non Conformità', desc: 'Accesso alla sezione dedicata alle segnalazioni di Non Conformità e storico.' },
@@ -48,6 +49,7 @@ const PERMISSION_CATALOG = [
       { key: 'zebra_optimize', label: 'Task Ottimizzazione Spazi (Zebra)', desc: 'Abilita su terminale Zebra le task intelligenti di riordino livelli ABC, unione lotti uguali e frammentazione/accorpamento palette.' },
       { key: 'zebra_verify', label: 'Verifica & Correzione Discrepanze (Zebra)', desc: 'Abilita su terminale Zebra la scansione barcode per controllo articolo, conversione scatole, posizione ottimale e rettifica discrepanze.' },
       { key: 'product_manage', label: 'Gestire Anagrafica Prodotti', desc: 'Permette di creare e modificare gli articoli a catalogo.' },
+      { key: 'product_categories_manage', label: 'Gestire Macro & Micro Categorie', desc: 'Permette di creare, modificare ed eliminare macro e micro categorie merceologiche e collegarvi prodotti.' },
       { key: 'manage_custom_forms', label: 'Gestione Moduli & Form Dinamici', desc: 'Permette di creare, modificare e disattivare form e sequenze guidate.' },
       { key: 'delete_custom_forms', label: 'Eliminare Moduli & Form Dinamici', desc: 'Permette l\'eliminazione definitiva di template e moduli configurati.' },
       { key: 'delete_checkin', label: 'Eliminare Arrivi & Check-in', desc: 'Permette di cancellare definitivamente registrazioni di arrivo o check-in.' },
@@ -111,6 +113,7 @@ const VIEW_ONLY_PERMISSIONS = buildPermMap([
   'view_documents',
   'view_outbound',
   'view_products',
+  'view_product_categories',
   'view_inventory',
   'view_quarantine',
   'view_non_conformities',
@@ -131,6 +134,7 @@ const QUALITY_PERMISSIONS = buildPermMap([
   'view_documents',
   'view_outbound',
   'view_products',
+  'view_product_categories',
   'view_inventory',
   'view_quarantine',
   'view_non_conformities',
@@ -145,6 +149,7 @@ const QUALITY_PERMISSIONS = buildPermMap([
   'pallet_edit',
   'pallet_move',
   'product_manage',
+  'product_categories_manage',
   'quarantine_manage',
   'approve_custom_forms',
   'outbound_return'
@@ -229,6 +234,14 @@ async function seedDefaultRoles(connection = db) {
     }
     if (parsedPerms.scarico_container === undefined && (parsedPerms.inbound_create === true || parsedPerms.zebra_verify === true)) {
       parsedPerms.scarico_container = true;
+      dirty = true;
+    }
+    if (parsedPerms.view_product_categories === undefined && parsedPerms.view_products === true) {
+      parsedPerms.view_product_categories = true;
+      dirty = true;
+    }
+    if (parsedPerms.product_categories_manage === undefined && parsedPerms.product_manage === true) {
+      parsedPerms.product_categories_manage = true;
       dirty = true;
     }
     if (dirty) {

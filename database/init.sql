@@ -58,6 +58,26 @@ CREATE TABLE IF NOT EXISTS CUSTOMER_NOTES (
     FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS PRODUCT_MACRO_CATEGORIES (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    description VARCHAR(255) DEFAULT NULL,
+    color VARCHAR(20) DEFAULT '#0ea5e9',
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS PRODUCT_MICRO_CATEGORIES (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    macro_category_id INT NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    description VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_micro_cat_macro_name (macro_category_id, name),
+    INDEX idx_micro_cat_macro (macro_category_id),
+    FOREIGN KEY (macro_category_id) REFERENCES PRODUCT_MACRO_CATEGORIES(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS PRODUCTS (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sku VARCHAR(100) NOT NULL UNIQUE,
@@ -66,10 +86,16 @@ CREATE TABLE IF NOT EXISTS PRODUCTS (
     units_per_box INT DEFAULT 1,
     boxes_per_pallet INT DEFAULT 1,
     customer_id INT NOT NULL,
+    macro_category_id INT DEFAULT NULL,
+    micro_category_id INT DEFAULT NULL,
     notes TEXT,
     default_article_number VARCHAR(100) DEFAULT NULL,
     flags JSON DEFAULT NULL,
-    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT
+    INDEX idx_products_macro_cat (macro_category_id),
+    INDEX idx_products_micro_cat (micro_category_id),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE RESTRICT,
+    FOREIGN KEY (macro_category_id) REFERENCES PRODUCT_MACRO_CATEGORIES(id) ON DELETE SET NULL,
+    FOREIGN KEY (micro_category_id) REFERENCES PRODUCT_MICRO_CATEGORIES(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS LOCATIONS (
@@ -578,3 +604,9 @@ CREATE TABLE IF NOT EXISTS CHANGELOG_VIEWS (
     PRIMARY KEY (user_id, changelog_id),
     FOREIGN KEY (changelog_id) REFERENCES CHANGELOGS(id) ON DELETE CASCADE
 );
+
+INSERT IGNORE INTO PRODUCT_MACRO_CATEGORIES (name, description, color, is_system)
+VALUES ('DA IDENTIFICARE', 'Categoria predefinita per articoli non ancora classificati', '#64748b', TRUE);
+
+INSERT IGNORE INTO settings (setting_key, setting_value)
+VALUES ('pallet_barcode_show_logo', 'true');

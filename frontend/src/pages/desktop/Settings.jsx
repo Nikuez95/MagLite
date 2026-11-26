@@ -12,7 +12,8 @@ const Settings = () => {
     company_cf: '',
     company_iban: '',
     company_phone: '',
-    company_email: ''
+    company_email: '',
+    pallet_barcode_show_logo: 'true'
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -214,6 +215,28 @@ const Settings = () => {
             <div>
               <label className="block text-slate-400 font-bold mb-2 text-xs uppercase tracking-wider">Email o PEC</label>
               <input type="email" name="company_email" value={settings.company_email || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 text-brand-white p-4 rounded-xl focus:border-brand-blue outline-none" />
+            </div>
+
+            <div className="md:col-span-2 pt-4 mt-2 border-t border-slate-800">
+              <label className="flex items-start gap-3.5 p-4 rounded-2xl bg-slate-950 border border-slate-800 hover:border-brand-blue/40 cursor-pointer transition-colors">
+                <input
+                  type="checkbox"
+                  checked={String(settings.pallet_barcode_show_logo ?? 'true').toLowerCase() !== 'false'}
+                  onChange={(e) => setSettings(prev => ({
+                    ...prev,
+                    pallet_barcode_show_logo: e.target.checked ? 'true' : 'false'
+                  }))}
+                  className="mt-1 w-5 h-5 rounded border-slate-600 text-brand-blue focus:ring-brand-blue bg-slate-900 shrink-0"
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-black text-brand-white">
+                    Stampa Logo Aziendale sui Barcode Paletta
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Se attivo (default), le etichette barcode delle palette mostrano il logo aziendale nell'intestazione. Se disattivato, il logo viene nascosto solo sulle etichette barcode paletta (fatture, DDT e altri PDF restano invariati).
+                  </p>
+                </div>
+              </label>
             </div>
 
           </div>

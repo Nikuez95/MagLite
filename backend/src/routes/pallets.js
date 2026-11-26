@@ -2,7 +2,7 @@ const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const { logBillingAudit } = require('../utils/billingAudit');
 const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 const db = require('../config/db');
-const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
+const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate, shouldShowPalletBarcodeLogo } = require('../utils/pdfLabels');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
 const { withNamedLock } = require('../utils/concurrency');
 const { formatBoxesBreakdown, recommendSlotForPallet, computeOptimizationTasks } = require('../utils/slotting');
@@ -592,7 +592,8 @@ async function palletRoutes(fastify, options) {
         return reply.send({ success: true, message: 'Stock libero salvato senza barcode' });
       }
 
-      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode });
+      const showPalletLogo = await shouldShowPalletBarcodeLogo(db);
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode, show_logo: showPalletLogo });
 
       if (fastify.io) {
         fastify.io.emit('inventory_updated');
@@ -1509,7 +1510,8 @@ async function palletRoutes(fastify, options) {
       };
 
       const generatedLabelsData = Array(copies).fill(lbl);
-      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode });
+      const showPalletLogo = await shouldShowPalletBarcodeLogo(db);
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabelsData, { paper_format, print_mode, show_logo: showPalletLogo });
 
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', `inline; filename="${code}.pdf"`);
@@ -1598,7 +1600,8 @@ async function palletRoutes(fastify, options) {
         }
       }
 
-      const pdfBuffer = await generateLabelsPdfBuffer(finalLabels, { paper_format, print_mode });
+      const showPalletLogo = await shouldShowPalletBarcodeLogo(db);
+      const pdfBuffer = await generateLabelsPdfBuffer(finalLabels, { paper_format, print_mode, show_logo: showPalletLogo });
 
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', 'inline; filename="etichette_bulk.pdf"');

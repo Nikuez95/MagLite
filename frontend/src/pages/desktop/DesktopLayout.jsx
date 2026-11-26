@@ -51,7 +51,8 @@ import {
   Wrench,
   ShieldOff,
   Sun,
-  Moon
+  Moon,
+  FolderTree
 } from 'lucide-react';
 import {
   hasPerm,
@@ -163,6 +164,7 @@ const DesktopLayout = () => {
         { id: 'outbound', name: 'Spedizioni (Out)', path: '/desktop/outbound', icon: PackageMinus, perm: 'view_outbound' },
         { id: 'outbound_returns', name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, perm: ['view_outbound', 'outbound_return'] },
         { id: 'products', name: 'Prodotti & Stock', path: '/desktop/products', icon: Box, perm: 'view_products' },
+        { id: 'product_categories', name: 'Categorie Prodotti', path: '/desktop/product-categories', icon: FolderTree, perm: ['view_product_categories', 'product_categories_manage'] },
         { id: 'quarantine', name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, perm: 'view_quarantine' },
         { id: 'non_conformities', name: 'Non Conformità', path: '/desktop/non-conformities', icon: AlertTriangle, perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'], badge: openNcCount },
         { id: 'inventory', name: 'Inventario', path: '/desktop/inventory', icon: PackageSearch, perm: 'view_inventory' }
@@ -539,6 +541,7 @@ const DesktopLayout = () => {
     { name: 'Storico Spedizioni', path: '/desktop/outbound/history', icon: History, group: 'Merce', perm: 'view_outbound' },
     { name: 'Storico Resi', path: '/desktop/outbound/returns', icon: RotateCcw, group: 'Merce', perm: ['view_outbound', 'outbound_return'] },
     { name: 'Prodotti & Stock Palette', path: '/desktop/products', icon: Box, group: 'Merce', perm: 'view_products' },
+    { name: 'Macro & Micro Categorie Prodotti', path: '/desktop/product-categories', icon: FolderTree, group: 'Merce', perm: ['view_product_categories', 'product_categories_manage'] },
     { name: 'Quarantena & Qualità', path: '/desktop/quarantine', icon: ShieldAlert, group: 'Merce', perm: 'view_quarantine' },
     { name: 'Non Conformità', path: '/desktop/non-conformities', icon: AlertTriangle, group: 'Merce', perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'] },
     { name: 'Inventario Globale', path: '/desktop/inventory', icon: PackageSearch, group: 'Merce', perm: 'view_inventory' },

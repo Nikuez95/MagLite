@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate } = require('../utils/pdfLabels');
+const { drawLabel, generateLabelsPdfBuffer, sanitizeExpirationDate, shouldShowPalletBarcodeLogo } = require('../utils/pdfLabels');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
 const { normalizeTempRegime, parseAdrData } = require('../utils/logisticsMeta');
 const { findExistingLocationBarcode, consolidateLocationPallets } = require('../utils/palletConsolidation');
@@ -1180,7 +1180,8 @@ async function inboundRoutes(fastify, options) {
         });
       }
 
-      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabels, { paper_format: 'A4', print_mode: 'GRID' });
+      const showPalletLogo = await shouldShowPalletBarcodeLogo(db);
+      const pdfBuffer = await generateLabelsPdfBuffer(generatedLabels, { paper_format: 'A4', print_mode: 'GRID', show_logo: showPalletLogo });
       reply.header('Content-Type', 'application/pdf');
       reply.header('Content-Disposition', 'inline; filename="barcodes.pdf"');
       return reply.send(pdfBuffer);

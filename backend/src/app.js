@@ -64,6 +64,7 @@ fastify.register(require('./routes/inbound'), { prefix: '/api/inbound' });
 fastify.register(require('./routes/users'), { prefix: '/api/users' });
 fastify.register(require('./routes/customers'), { prefix: '/api/customers' });
 fastify.register(require('./routes/products'), { prefix: '/api/products' });
+fastify.register(require('./routes/productCategories'), { prefix: '/api/product-categories' });
 fastify.register(require('./routes/locations'), { prefix: '/api/locations' });
 fastify.register(require('./routes/warehouses'), { prefix: '/api/warehouses' });
 fastify.register(require('./routes/dashboard'), { prefix: '/api/dashboard' });

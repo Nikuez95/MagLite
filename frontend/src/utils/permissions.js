@@ -48,6 +48,22 @@ export function hasPerm(permKey, customUser = null) {
     return true;
   }
 
+  if (
+    permKey === 'view_product_categories' &&
+    user.permissions?.view_product_categories === undefined &&
+    user.permissions?.view_products === true
+  ) {
+    return true;
+  }
+
+  if (
+    permKey === 'product_categories_manage' &&
+    user.permissions?.product_categories_manage === undefined &&
+    user.permissions?.product_manage === true
+  ) {
+    return true;
+  }
+
   if (user.role === 'developer') return true;
   return false;
 }
@@ -93,6 +109,7 @@ export const DESKTOP_ROUTE_RULES = [
   { path: '/desktop/outbound/history', perm: 'view_outbound', label: 'Storico Uscite' },
   { path: '/desktop/outbound/returns', perm: ['view_outbound', 'outbound_return'], label: 'Storico Resi' },
   { path: '/desktop/products', perm: 'view_products', label: 'Prodotti & Stock' },
+  { path: '/desktop/product-categories', perm: ['view_product_categories', 'product_categories_manage'], label: 'Categorie Prodotti' },
   { path: '/desktop/inventory', perm: 'view_inventory', label: 'Inventario Globale' },
   { path: '/desktop/quarantine', perm: 'view_quarantine', label: 'Quarantena & Qualità' },
   { path: '/desktop/non-conformities', perm: ['view_non_conformities', 'non_conformities_manage', 'access_desktop'], label: 'Non Conformità' },
@@ -122,6 +139,7 @@ export const LOCKABLE_SECTIONS = [
   { key: 'outbound_history', path: '/desktop/outbound/history', label: 'Storico Articoli Usciti', group: 'Merce' },
   { key: 'outbound_returns', path: '/desktop/outbound/returns', label: 'Storico Resi', group: 'Merce' },
   { key: 'products', path: '/desktop/products', label: 'Prodotti & Stock', group: 'Merce' },
+  { key: 'product_categories', path: '/desktop/product-categories', label: 'Categorie Prodotti', group: 'Merce' },
   { key: 'quarantine', path: '/desktop/quarantine', label: 'Quarantena & Qualità', group: 'Merce' },
   { key: 'non_conformities', path: '/desktop/non-conformities', label: 'Non Conformità', group: 'Merce' },
   { key: 'inventory', path: '/desktop/inventory', label: 'Inventario Globale', group: 'Merce' },

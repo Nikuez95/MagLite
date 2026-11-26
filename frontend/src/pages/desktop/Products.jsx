@@ -206,6 +206,8 @@ const ProductsManagement = () => {
   const [pallets, setPallets] = useState([]);
   const [selectedPallets, setSelectedPallets] = useState([]);
   const [products, setProducts] = useState([]);
+  const [macroCategories, setMacroCategories] = useState([]);
+  const [daIdentificareId, setDaIdentificareId] = useState(null);
   const [tariffPlans, setTariffPlans] = useState([]);
   const [warehouses, setWarehouses] = useState([{ id: 1, name: 'Settala' }, { id: 2, name: 'Caleppio' }]);
   const [serverFlags, setServerFlags] = useState([]);
@@ -216,7 +218,8 @@ const ProductsManagement = () => {
   const [newProduct, setNewProduct] = useState({
     sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, kg_per_unit: '',
     customer_id: '', notes: '', default_article_number: '', flags: [],
-    default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT }
+    default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT },
+    macro_category_id: '', micro_category_id: ''
   });
   const [editProductModal, setEditProductModal] = useState({ show: false, product: null });
   const [isProcessing, setIsProcessing] = useState(false);
@@ -224,6 +227,8 @@ const ProductsManagement = () => {
   const location = useLocation();
   const [searchTerm, setSearchTerm] = useState(() => location.state?.search || '');
   const [filterCustomer, setFilterCustomer] = useState('ALL');
+  const [filterMacroCat, setFilterMacroCat] = useState('ALL');
+  const [filterMicroCat, setFilterMicroCat] = useState('ALL');
   const [filterWarehouse, setFilterWarehouse] = useState('ALL');
   const [filterStatus, setFilterStatus] = useState('ALL'); // 'ALL' | 'PENDING' | 'STOCKED' | 'LOADING_ZONE'
   const [productStockFilter, setProductStockFilter] = useState('ALL'); // 'ALL' | 'IN_STOCK' | 'OUT_OF_STOCK'
@@ -420,7 +425,7 @@ const ProductsManagement = () => {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${getToken()}` };
-      const [palletsRes, productsRes, custRes, locRes, freeRes, flagsRes, plansRes, whRes] = await Promise.all([
+      const [palletsRes, productsRes, custRes, locRes, freeRes, flagsRes, plansRes, whRes, catRes] = await Promise.all([
         axios.get(`http://${window.location.hostname}:3000/api/pallets`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/products`, { headers }),
         axios.get(`http://${window.location.hostname}:3000/api/customers`, { headers }),
@@ -428,7 +433,8 @@ const ProductsManagement = () => {
         axios.get(`http://${window.location.hostname}:3000/api/locations/free`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/products/flags?source=rules`, { headers }).catch(() => ({ data: [] })),
         axios.get(`http://${window.location.hostname}:3000/api/products/tariff-plans`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`http://${window.location.hostname}:3000/api/warehouses`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`http://${window.location.hostname}:3000/api/product-categories`, { headers }).catch(() => ({ data: { macros: [] } }))
       ]);
       setPallets(palletsRes.data);
       setProducts(productsRes.data);
@@ -437,6 +443,8 @@ const ProductsManagement = () => {
       setFreeLocations(freeRes.data || []);
       setServerFlags(flagsRes.data || []);
       setTariffPlans(Array.isArray(plansRes.data) ? plansRes.data : []);
+      setMacroCategories(catRes.data?.macros || []);
+      setDaIdentificareId(catRes.data?.da_identificare_id || null);
       if (Array.isArray(whRes.data) && whRes.data.length > 0) {
         setWarehouses(whRes.data);
       }
@@ -456,6 +464,7 @@ const ProductsManagement = () => {
     socket.on('quarantine_updated', refresh);
     socket.on('warehouses_updated', refresh);
     socket.on('billing_updated', refresh);
+    socket.on('product_categories_updated', refresh);
     return () => {
       socket.off('stow_updated', refresh);
       socket.off('locations_updated', refresh);
@@ -464,6 +473,7 @@ const ProductsManagement = () => {
       socket.off('quarantine_updated', refresh);
       socket.off('warehouses_updated', refresh);
       socket.off('billing_updated', refresh);
+      socket.off('product_categories_updated', refresh);
       socket.disconnect();
     };
   }, []);
@@ -494,7 +504,9 @@ const ProductsManagement = () => {
         default_is_adr: Boolean(newProduct.default_is_adr),
         default_adr_data: newProduct.default_is_adr
           ? { ...newProduct.default_adr_data, technical_name: newProduct.default_adr_data?.technical_name || newProduct.name || '' }
-          : null
+          : null,
+        macro_category_id: newProduct.macro_category_id || daIdentificareId || null,
+        micro_category_id: newProduct.micro_category_id || null
       };
       await axios.post(`http://${window.location.hostname}:3000/api/products`, payload, {
         headers: { Authorization: `Bearer ${getToken()}` }
@@ -503,7 +515,8 @@ const ProductsManagement = () => {
       setNewProduct({
         sku: '', name: '', uom: 'Scatole', units_per_box: 1, boxes_per_pallet: 1, kg_per_unit: '',
         customer_id: '', notes: '', default_article_number: '', flags: [],
-        default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT }
+        default_temp_regime: 'NONE', default_is_adr: false, default_adr_data: { ...DEFAULT_ADR_DRAFT },
+        macro_category_id: '', micro_category_id: ''
       });
       fetchData();
     } catch (err) {
@@ -552,6 +565,8 @@ const ProductsManagement = () => {
         default_adr_data: ep.default_is_adr
           ? { ...(ep.default_adr_data || DEFAULT_ADR_DRAFT), technical_name: ep.default_adr_data?.technical_name || ep.name || '' }
           : null,
+        macro_category_id: ep.macro_category_id || daIdentificareId || null,
+        micro_category_id: ep.micro_category_id || null,
         updateExistingPallets
       };
       await axios.put(`http://${window.location.hostname}:3000/api/products/${editProductModal.product.id}`, payload, {
@@ -932,11 +947,13 @@ const ProductsManagement = () => {
     });
   }, [baseFilteredPallets, filterExpCategory, expirationWarningValue, warningUnit, sortBy]);
 
-  const hasActiveFilters = searchTerm !== '' || filterCustomer !== 'ALL' || filterWarehouse !== 'ALL' || filterStatus !== 'ALL' || productStockFilter !== 'ALL' || filterStartDate !== '' || filterEndDate !== '' || filterExpCategory !== 'ALL' || sortBy !== 'ARRIVAL_DESC';
+  const hasActiveFilters = searchTerm !== '' || filterCustomer !== 'ALL' || filterMacroCat !== 'ALL' || filterMicroCat !== 'ALL' || filterWarehouse !== 'ALL' || filterStatus !== 'ALL' || productStockFilter !== 'ALL' || filterStartDate !== '' || filterEndDate !== '' || filterExpCategory !== 'ALL' || sortBy !== 'ARRIVAL_DESC';
 
   const resetAllFilters = () => {
     setSearchTerm('');
     setFilterCustomer('ALL');
+    setFilterMacroCat('ALL');
+    setFilterMicroCat('ALL');
     setFilterWarehouse('ALL');
     setFilterStatus('ALL');
     setProductStockFilter('ALL');
@@ -975,10 +992,33 @@ const ProductsManagement = () => {
     return { all, inStock, outOfStock };
   }, [products, filterCustomer, stockByProduct]);
 
+  const productFilterMicroOptions = React.useMemo(() => {
+    if (filterMacroCat !== 'ALL') {
+      const mac = macroCategories.find(m => String(m.id) === String(filterMacroCat));
+      return mac ? mac.micros || [] : [];
+    }
+    return macroCategories.flatMap(m => (m.micros || []).map(mic => ({ ...mic, macroName: m.name })));
+  }, [macroCategories, filterMacroCat]);
+
+  const addProductMicroOptions = React.useMemo(() => {
+    const targetId = newProduct.macro_category_id || daIdentificareId || '';
+    const mac = macroCategories.find(m => String(m.id) === String(targetId));
+    return mac ? mac.micros || [] : [];
+  }, [macroCategories, newProduct.macro_category_id, daIdentificareId]);
+
+  const editProductMicroOptions = React.useMemo(() => {
+    const targetId = editProductModal.product?.macro_category_id || daIdentificareId || '';
+    const mac = macroCategories.find(m => String(m.id) === String(targetId));
+    return mac ? mac.micros || [] : [];
+  }, [macroCategories, editProductModal.product?.macro_category_id, daIdentificareId]);
+
   const filteredProducts = React.useMemo(() => {
     const searchLower = searchTerm.toLowerCase();
     return products.filter(p => {
       if (filterCustomer !== 'ALL' && String(p.customer_id) !== String(filterCustomer)) return false;
+      if (filterMacroCat !== 'ALL' && String(p.macro_category_id || '') !== String(filterMacroCat)) return false;
+      if (filterMicroCat === 'NONE' && p.micro_category_id) return false;
+      if (filterMicroCat !== 'ALL' && filterMicroCat !== 'NONE' && String(p.micro_category_id || '') !== String(filterMicroCat)) return false;
       const st = stockByProduct.get(p.id) || { totalQty: 0, palletCount: 0 };
       if (productStockFilter === 'IN_STOCK' && st.totalQty <= 0) return false;
       if (productStockFilter === 'OUT_OF_STOCK' && st.totalQty > 0) return false;
@@ -986,10 +1026,12 @@ const ProductsManagement = () => {
       return p.name.toLowerCase().includes(searchLower) || 
              p.sku.toLowerCase().includes(searchLower) ||
              p.customer_name.toLowerCase().includes(searchLower) ||
+             (p.macro_category_name && p.macro_category_name.toLowerCase().includes(searchLower)) ||
+             (p.micro_category_name && p.micro_category_name.toLowerCase().includes(searchLower)) ||
              (p.default_article_number && p.default_article_number.toLowerCase().includes(searchLower)) ||
              (p.notes && p.notes.toLowerCase().includes(searchLower));
     });
-  }, [products, searchTerm, filterCustomer, productStockFilter, stockByProduct]);
+  }, [products, searchTerm, filterCustomer, filterMacroCat, filterMicroCat, productStockFilter, stockByProduct]);
 
   const availableFlagsOptions = React.useMemo(() => {
     const flagsSet = new Set(
@@ -1262,11 +1304,45 @@ const ProductsManagement = () => {
               </div>
 
               {activeTab === 'products' && (
-                <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
-                  <button onClick={() => setProductStockFilter('ALL')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti ({productStockStats.all})</button>
-                  <button onClick={() => setProductStockFilter('IN_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'IN_STOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>In Giacenza ({productStockStats.inStock})</button>
-                  <button onClick={() => setProductStockFilter('OUT_OF_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'OUT_OF_STOCK' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 hover:text-rose-400'}`}>Esauriti ({productStockStats.outOfStock})</button>
-                </div>
+                <>
+                  <div className="flex flex-wrap bg-slate-950 rounded-xl border border-slate-800 p-1 text-xs font-bold">
+                    <button onClick={() => setProductStockFilter('ALL')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'ALL' ? 'bg-slate-800 text-brand-white' : 'text-slate-500 hover:text-slate-300'}`}>Tutti ({productStockStats.all})</button>
+                    <button onClick={() => setProductStockFilter('IN_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'IN_STOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>In Giacenza ({productStockStats.inStock})</button>
+                    <button onClick={() => setProductStockFilter('OUT_OF_STOCK')} className={`px-3 py-1 rounded-lg transition-colors ${productStockFilter === 'OUT_OF_STOCK' ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 hover:text-rose-400'}`}>Esauriti ({productStockStats.outOfStock})</button>
+                  </div>
+
+                  <div className="w-full sm:w-[180px]">
+                    <select
+                      value={filterMacroCat}
+                      onChange={e => {
+                        setFilterMacroCat(e.target.value);
+                        setFilterMicroCat('ALL');
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-xs font-bold focus:border-brand-blue"
+                    >
+                      <option value="ALL">Tutte Macro Categorie</option>
+                      {macroCategories.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="w-full sm:w-[180px]">
+                    <select
+                      value={filterMicroCat}
+                      onChange={e => setFilterMicroCat(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl px-3 py-2 text-xs font-bold focus:border-brand-blue"
+                    >
+                      <option value="ALL">Tutte Micro Categorie</option>
+                      <option value="NONE">Senza Micro Categoria</option>
+                      {productFilterMicroOptions.map(mic => (
+                        <option key={mic.id} value={mic.id}>
+                          {mic.macroName ? `${mic.macroName} → ${mic.name}` : mic.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
               )}
 
               {activeTab === 'pallets' && (
@@ -2219,6 +2295,7 @@ const ProductsManagement = () => {
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">SKU / Cod. Articolo</th>
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Nome Prodotto</th>
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Cliente</th>
+                      <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Categoria</th>
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Confezionamento</th>
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Giacenza & Palette Attive</th>
                       <th className="px-4 py-3 font-semibold uppercase tracking-wider text-xs">Note / Flag</th>
@@ -2227,7 +2304,7 @@ const ProductsManagement = () => {
                   </thead>
                   <tbody className="text-brand-white">
                     {currentProducts.length === 0 ? (
-                      <tr><td colSpan="7" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
+                      <tr><td colSpan="8" className="p-12 text-center text-slate-500 italic font-medium">Nessun prodotto trovato.</td></tr>
                     ) : currentProducts.map(p => {
                       const st = stockByProduct.get(p.id) || { totalQty: 0, palletCount: 0 };
                       const totalStock = st.totalQty;
@@ -2243,6 +2320,22 @@ const ProductsManagement = () => {
                         </td>
                         <td className="px-4 py-3 font-bold text-sm">{p.name}</td>
                         <td className="px-4 py-3 text-slate-300 text-xs font-semibold">{p.customer_name}</td>
+                        <td className="px-4 py-3 text-xs">
+                          <div className="flex flex-col items-start gap-1">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-950 border border-slate-700 text-brand-white">
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: p.macro_category_color || '#64748b' }}
+                              />
+                              {p.macro_category_name || 'DA IDENTIFICARE'}
+                            </span>
+                            {p.micro_category_name && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-brand-blue/15 text-brand-blue border border-brand-blue/30">
+                                → {p.micro_category_name}
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3 text-slate-400 text-xs">
                           <span className="bg-slate-950 border border-slate-800 px-2 py-0.5 rounded-md font-mono">
                             UDM: <strong className="text-slate-200">{p.uom || 'Pezzi'}</strong>
@@ -2372,6 +2465,34 @@ const ProductsManagement = () => {
                 <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Nome Prodotto *</label>
                 <input required value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue" />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Macro Categoria</label>
+                  <select
+                    value={newProduct.macro_category_id || daIdentificareId || ''}
+                    onChange={e => setNewProduct({ ...newProduct, macro_category_id: e.target.value, micro_category_id: '' })}
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm focus:ring-brand-blue"
+                  >
+                    {macroCategories.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Micro Categoria</label>
+                  <select
+                    value={newProduct.micro_category_id || ''}
+                    onChange={e => setNewProduct({ ...newProduct, micro_category_id: e.target.value })}
+                    disabled={addProductMicroOptions.length === 0}
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm focus:ring-brand-blue disabled:opacity-40"
+                  >
+                    <option value="">Nessuna Micro</option>
+                    {addProductMicroOptions.map(mic => (
+                      <option key={mic.id} value={mic.id}>{mic.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Unità x Scatola</label>
@@ -2454,6 +2575,40 @@ const ProductsManagement = () => {
                   <select required value={editProductModal.product.customer_id} onChange={e => setEditProductModal({ ...editProductModal, product: { ...editProductModal.product, customer_id: e.target.value }})} className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3.5 focus:ring-brand-blue">
                     <option value="" disabled>Seleziona cliente...</option>
                     {customers.map(c => <option key={c.id} value={c.id}>{c.business_name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Macro Categoria</label>
+                  <select
+                    value={editProductModal.product.macro_category_id || daIdentificareId || ''}
+                    onChange={e => setEditProductModal({
+                      ...editProductModal,
+                      product: { ...editProductModal.product, macro_category_id: e.target.value, micro_category_id: '' }
+                    })}
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm focus:ring-brand-blue"
+                  >
+                    {macroCategories.map(m => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1.5 text-xs uppercase tracking-wider">Micro Categoria</label>
+                  <select
+                    value={editProductModal.product.micro_category_id || ''}
+                    onChange={e => setEditProductModal({
+                      ...editProductModal,
+                      product: { ...editProductModal.product, micro_category_id: e.target.value }
+                    })}
+                    disabled={editProductMicroOptions.length === 0}
+                    className="w-full bg-slate-950 border border-slate-800 text-brand-white rounded-xl p-3 text-sm focus:ring-brand-blue disabled:opacity-40"
+                  >
+                    <option value="">Nessuna Micro</option>
+                    {editProductMicroOptions.map(mic => (
+                      <option key={mic.id} value={mic.id}>{mic.name}</option>
+                    ))}
                   </select>
                 </div>
               </div>

@@ -1063,6 +1063,45 @@ const Outbound = () => {
     return baseFilteredOrders.filter(o => o.status === statusFilter);
   }, [baseFilteredOrders, statusFilter]);
 
+  const rowStats = useMemo(() => {
+    let totalRows = 0;
+    let shippedRows = 0;
+    let openTotalRows = 0;
+    let openDoneRows = 0;
+
+    filteredOrders.forEach(o => {
+      const total = parseInt(o.total_items, 10) || 0;
+      const picked = parseInt(o.picked_items, 10) || 0;
+      totalRows += total;
+      if (o.status === 'SHIPPED') {
+        shippedRows += total;
+      } else {
+        openTotalRows += total;
+        const doneInOrder = o.status === 'READY' ? total : Math.min(picked, total);
+        openDoneRows += doneInOrder;
+      }
+    });
+
+    const doneRows = shippedRows + openDoneRows;
+    const remainingRows = Math.max(0, totalRows - doneRows);
+    const completionPct = totalRows > 0 ? Math.round((doneRows / totalRows) * 100) : 0;
+    const selectedCustomer = customerFilter
+      ? customers.find(c => String(c.value) === String(customerFilter))
+      : null;
+
+    return {
+      orderCount: filteredOrders.length,
+      totalRows,
+      shippedRows,
+      openTotalRows,
+      openDoneRows,
+      doneRows,
+      remainingRows,
+      completionPct,
+      customerLabel: selectedCustomer ? selectedCustomer.label : null
+    };
+  }, [filteredOrders, customerFilter, customers]);
+
   const hasActiveFilters = searchTerm !== '' || statusFilter !== '' || customerFilter !== '' || dateFrom !== '' || dateTo !== '';
 
   const resetAllFilters = () => {
@@ -1343,6 +1382,55 @@ const Outbound = () => {
               <RotateCcw size={13} /> Reset
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Riepilogo Conteggio Righe Spedizioni (Totali vs Effettuate per Cliente o Complessive) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 sm:p-4 mb-6 shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="p-2 rounded-xl bg-brand-blue/15 text-brand-blue shrink-0">
+            <Layers size={18} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-brand-white">Riepilogo Righe Spedizioni</span>
+              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border truncate max-w-[260px] ${
+                rowStats.customerLabel
+                  ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
+                  : 'bg-slate-950 text-slate-300 border-slate-700'
+              }`}>
+                {rowStats.customerLabel ? `Cliente: ${rowStats.customerLabel}` : 'Tutti i clienti'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Conteggio su <strong className="text-brand-white">{rowStats.orderCount}</strong> {rowStats.orderCount === 1 ? 'spedizione' : 'spedizioni'} visualizzate (evase e da preparare).
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 shrink-0">
+          <div className="bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Righe Totali</div>
+            <div className="text-lg font-black text-brand-white leading-tight">{rowStats.totalRows}</div>
+            <div className="text-[10px] text-slate-500">Complessive nel filtro</div>
+          </div>
+          <div className="bg-slate-950 border border-emerald-500/30 rounded-xl px-3.5 py-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Righe Effettuate</div>
+            <div className="text-lg font-black text-emerald-400 leading-tight">{rowStats.doneRows}</div>
+            <div className="text-[10px] text-slate-400">{rowStats.completionPct}% evase/prelevate</div>
+          </div>
+          <div className="bg-slate-950 border border-sky-500/30 rounded-xl px-3.5 py-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">Già Evase</div>
+            <div className="text-lg font-black text-sky-400 leading-tight">{rowStats.shippedRows}</div>
+            <div className="text-[10px] text-slate-400">Su ordini spediti</div>
+          </div>
+          <div className="bg-slate-950 border border-amber-500/30 rounded-xl px-3.5 py-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Ancora da Preparare</div>
+            <div className="text-lg font-black text-amber-400 leading-tight">{rowStats.openTotalRows}</div>
+            <div className="text-[10px] text-slate-400">
+              {rowStats.openDoneRows} prep. • {rowStats.remainingRows} da fare
+            </div>
+          </div>
         </div>
       </div>
 
