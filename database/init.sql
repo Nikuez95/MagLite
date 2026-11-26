@@ -605,6 +605,40 @@ CREATE TABLE IF NOT EXISTS CHANGELOG_VIEWS (
     FOREIGN KEY (changelog_id) REFERENCES CHANGELOGS(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS CUSTOMER_DOCUMENT_FOLDERS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    color VARCHAR(30) DEFAULT 'sky',
+    created_by VARCHAR(100) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_cust_folder (customer_id, name),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS CUSTOMER_DOCUMENTS (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    folder_id INT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(150) NOT NULL,
+    r2_bucket VARCHAR(120) NULL DEFAULT 'nas-sftp',
+    r2_key VARCHAR(512) NULL,
+    storage_driver VARCHAR(30) NOT NULL DEFAULT 'sftp',
+    storage_path VARCHAR(512) NULL,
+    compression VARCHAR(20) NOT NULL DEFAULT 'none',
+    original_size BIGINT NOT NULL DEFAULT 0,
+    compressed_size BIGINT NOT NULL DEFAULT 0,
+    notes VARCHAR(500) NULL,
+    uploaded_by VARCHAR(100) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_cd_cust_folder (customer_id, folder_id),
+    INDEX idx_cd_created (created_at),
+    INDEX idx_cd_storage_path (storage_path),
+    FOREIGN KEY (customer_id) REFERENCES CUSTOMERS(id) ON DELETE CASCADE,
+    FOREIGN KEY (folder_id) REFERENCES CUSTOMER_DOCUMENT_FOLDERS(id) ON DELETE SET NULL
+);
+
 INSERT IGNORE INTO PRODUCT_MACRO_CATEGORIES (name, description, color, is_system)
 VALUES ('DA IDENTIFICARE', 'Categoria predefinita per articoli non ancora classificati', '#64748b', TRUE);
 

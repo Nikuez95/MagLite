@@ -1,12 +1,6 @@
 const db = require('../config/db');
 const { hasPermission, canAccessCustomer } = require('../utils/permissions');
-const {
-  getR2Config,
-  compressAndUploadToR2,
-  downloadAndDecompressFromR2,
-  deleteFromR2,
-  getR2QuotaSummary
-} = require('../utils/r2Storage');
+const sftpStorageService = require('../services/sftpStorageService');
 
 function sanitizeFileName(name) {
   return String(name || 'documento')
@@ -25,20 +19,45 @@ function isPreviewableMime(mime, filename = '') {
   return false;
 }
 
-async function customerFilesRoutes(fastify, options) {
+async function customerFilesRoutes(fastify) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // 1. GET /api/customer-files/storage/status - Stato connessione Cloudflare R2 & spazio occupato/disponibile
+  // 1. GET /api/customer-files/storage/status - Stato connessione NAS SFTP & statistiche spazio archivio
   fastify.get('/storage/status', async (request, reply) => {
     if (!hasPermission(request.user, 'view_customers') && !hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato: permesso clienti richiesto.' });
     }
     try {
-      const cfg = await getR2Config(db);
-      return await getR2QuotaSummary(db, cfg);
+      const [[dbAgg]] = await db.query(
+        `SELECT COUNT(*) AS file_count,
+                COALESCE(SUM(original_size), 0) AS total_original,
+                COALESCE(SUM(compressed_size), 0) AS total_compressed
+         FROM CUSTOMER_DOCUMENTS`
+      );
+      const sftpStatus = await sftpStorageService.checkConnectionStatus({ logger: request.log });
+
+      const fileCount = Number(dbAgg?.file_count) || 0;
+      const originalBytesMaglite = Number(dbAgg?.total_original) || 0;
+      const usedBytesMaglite = Number(dbAgg?.total_compressed) || originalBytesMaglite;
+
+      return {
+        driver: sftpStatus.driver,
+        configured: sftpStatus.configured,
+        connected: sftpStatus.connected,
+        // Alias di compatibilità per eventuali client precedenti
+        r2Enabled: sftpStatus.connected,
+        host: sftpStatus.host,
+        port: sftpStatus.port,
+        basePath: sftpStatus.basePath,
+        errorMessage: sftpStatus.error,
+        fileCount,
+        originalBytesMaglite,
+        usedBytesMaglite,
+        usedBytesEffective: usedBytesMaglite
+      };
     } catch (err) {
-      fastify.log.error(err);
-      return reply.code(500).send({ error: 'Errore lettura stato spazio Cloudflare R2.' });
+      request.log.error({ err }, '[CUSTOMER FILES] Errore verifica stato NAS SFTP');
+      return reply.code(500).send({ error: 'Errore lettura stato connessione NAS SFTP.' });
     }
   });
 
@@ -77,10 +96,17 @@ async function customerFilesRoutes(fastify, options) {
         [customerId]
       );
 
-      const mappedFiles = files.map(file => ({
-        ...file,
-        is_previewable: isPreviewableMime(file.mime_type, file.original_name)
-      }));
+      const mappedFiles = files.map(file => {
+        const storagePath = file.storage_path || file.r2_key || '';
+        return {
+          ...file,
+          storage_driver: file.storage_driver || 'sftp',
+          storage_path: storagePath,
+          download_url: `/api/customer-files/files/${file.id}/content?mode=download`,
+          preview_url: `/api/customer-files/files/${file.id}/content?mode=inline`,
+          is_previewable: isPreviewableMime(file.mime_type, file.original_name)
+        };
+      });
 
       const totalOriginal = mappedFiles.reduce((s, f) => s + (Number(f.original_size) || 0), 0);
       const totalCompressed = mappedFiles.reduce((s, f) => s + (Number(f.compressed_size) || 0), 0);
@@ -96,7 +122,7 @@ async function customerFilesRoutes(fastify, options) {
         }
       };
     } catch (err) {
-      fastify.log.error(err);
+      request.log.error({ err, customerId }, '[CUSTOMER FILES] Errore recupero documenti cliente');
       return reply.code(500).send({ error: 'Errore recupero documenti cliente.' });
     }
   });
@@ -144,7 +170,7 @@ async function customerFilesRoutes(fastify, options) {
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Esiste già una cartella con questo nome per il cliente.' });
       }
-      fastify.log.error(err);
+      request.log.error({ err, customerId }, '[CUSTOMER FILES] Errore creazione cartella');
       return reply.code(500).send({ error: 'Errore creazione cartella cliente.' });
     }
   });
@@ -176,12 +202,12 @@ async function customerFilesRoutes(fastify, options) {
       if (err.code === 'ER_DUP_ENTRY') {
         return reply.code(400).send({ error: 'Esiste già una cartella con questo nome.' });
       }
-      fastify.log.error(err);
+      request.log.error({ err, folderId }, '[CUSTOMER FILES] Errore modifica cartella');
       return reply.code(500).send({ error: 'Errore modifica cartella.' });
     }
   });
 
-  // 6. DELETE /api/customer-files/folders/:folderId - Elimina cartella (sposta file a Root o elimina anche i file)
+  // 6. DELETE /api/customer-files/folders/:folderId - Elimina cartella (sposta file a Root o elimina anche i file da NAS)
   fastify.delete('/folders/:folderId', async (request, reply) => {
     if (!hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato: permesso Gestione Clienti richiesto.' });
@@ -197,10 +223,14 @@ async function customerFilesRoutes(fastify, options) {
       }
 
       if (deleteFiles) {
-        const [docs] = await db.query('SELECT id, r2_key, r2_bucket FROM CUSTOMER_DOCUMENTS WHERE folder_id = ?', [folderId]);
-        const cfg = await getR2Config(db);
+        const [docs] = await db.query('SELECT id, storage_path, r2_key FROM CUSTOMER_DOCUMENTS WHERE folder_id = ?', [folderId]);
         for (const docRow of docs) {
-          await deleteFromR2({ ...cfg, bucket: docRow.r2_bucket || cfg.bucket }, docRow.r2_key).catch(() => {});
+          const remoteRelPath = docRow.storage_path || docRow.r2_key;
+          if (remoteRelPath) {
+            await sftpStorageService.deleteFile(remoteRelPath, { logger: request.log }).catch((delErr) => {
+              request.log.warn({ err: delErr, remoteRelPath }, '[CUSTOMER FILES] Errore non bloccante rimozione file da NAS SFTP');
+            });
+          }
         }
         await db.query('DELETE FROM CUSTOMER_DOCUMENTS WHERE folder_id = ?', [folderId]);
       } else {
@@ -210,12 +240,12 @@ async function customerFilesRoutes(fastify, options) {
       await db.query('DELETE FROM CUSTOMER_DOCUMENT_FOLDERS WHERE id = ?', [folderId]);
       return { success: true };
     } catch (err) {
-      fastify.log.error(err);
+      request.log.error({ err, folderId }, '[CUSTOMER FILES] Errore eliminazione cartella');
       return reply.code(500).send({ error: 'Errore eliminazione cartella.' });
     }
   });
 
-  // 7. POST /api/customer-files/customers/:customerId/upload - Carica uno o più file, comprime gzip e archivia su R2
+  // 7. POST /api/customer-files/customers/:customerId/upload - Carica uno o più file sul NAS via SFTP
   fastify.post('/customers/:customerId/upload', async (request, reply) => {
     if (!hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato: permesso Gestione Clienti richiesto.' });
@@ -259,30 +289,34 @@ async function customerFilesRoutes(fastify, options) {
         if (!validFolder) folderId = null;
       }
 
-      const cfg = await getR2Config(db);
       const uploaded = [];
       const username = request.user?.username || 'Operatore';
 
       for (const entry of fileEntries) {
         const uniquePrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const r2Key = `customers/${customerId}/${folderId || 'root'}/${uniquePrefix}_${entry.filename}.gz`;
+        const relativeStoragePath = `customers/${customerId}/${folderId || 'root'}/${uniquePrefix}_${entry.filename}`;
 
-        const r2Res = await compressAndUploadToR2(cfg, r2Key, entry.buffer);
+        const sftpRes = await sftpStorageService.uploadFile(relativeStoragePath, entry.buffer, {
+          compress: false,
+          logger: request.log
+        });
 
         const [ins] = await db.query(
           `INSERT INTO CUSTOMER_DOCUMENTS
-           (customer_id, folder_id, original_name, mime_type, r2_bucket, r2_key, compression, original_size, compressed_size, notes, uploaded_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (customer_id, folder_id, original_name, mime_type, r2_bucket, r2_key, storage_driver, storage_path, compression, original_size, compressed_size, notes, uploaded_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             customerId,
             folderId,
             entry.filename,
             entry.mimetype,
-            cfg.bucket,
-            r2Key,
-            r2Res.compression,
-            r2Res.originalSize,
-            r2Res.compressedSize,
+            'nas-sftp',
+            sftpRes.storagePath,
+            'sftp',
+            sftpRes.storagePath,
+            sftpRes.compression,
+            sftpRes.originalSize,
+            sftpRes.storedSize,
             notes,
             username
           ]
@@ -292,8 +326,9 @@ async function customerFilesRoutes(fastify, options) {
           id: ins.insertId,
           original_name: entry.filename,
           mime_type: entry.mimetype,
-          original_size: r2Res.originalSize,
-          compressed_size: r2Res.compressedSize,
+          storage_path: sftpRes.storagePath,
+          original_size: sftpRes.originalSize,
+          compressed_size: sftpRes.storedSize,
           is_previewable: isPreviewableMime(entry.mimetype, entry.filename)
         });
       }
@@ -303,7 +338,7 @@ async function customerFilesRoutes(fastify, options) {
           'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
           [
             'UPLOAD_CUSTOMER_FILE',
-            `Caricati ${uploaded.length} file compressi su Cloudflare R2 per cliente #${customerId} (${uploaded.map(u => u.original_name).join(', ')})`,
+            `Caricati ${uploaded.length} file su NAS SFTP per cliente #${customerId} (${uploaded.map(u => u.original_name).join(', ')})`,
             'Gestionale',
             username
           ]
@@ -312,12 +347,12 @@ async function customerFilesRoutes(fastify, options) {
 
       return { success: true, uploaded };
     } catch (err) {
-      fastify.log.error(err);
-      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore upload file su Cloudflare R2.' });
+      request.log.error({ err, customerId }, '[CUSTOMER FILES] Errore upload file su NAS SFTP');
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore upload file su NAS SFTP.' });
     }
   });
 
-  // 8. GET /api/customer-files/files/:fileId/content - Decomprime da R2 e apre inline oppure scarica
+  // 8. GET /api/customer-files/files/:fileId/content - Legge in streaming dal NAS SFTP e serve inline o download
   fastify.get('/files/:fileId/content', async (request, reply) => {
     if (!hasPermission(request.user, 'view_customers') && !hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato.' });
@@ -332,12 +367,11 @@ async function customerFilesRoutes(fastify, options) {
         return reply.code(403).send({ error: 'Accesso negato.' });
       }
 
-      const cfg = await getR2Config(db);
-      const decompressedBuffer = await downloadAndDecompressFromR2(
-        { ...cfg, bucket: docRow.r2_bucket || cfg.bucket },
-        docRow.r2_key,
-        docRow.compression
-      );
+      const targetPath = docRow.storage_path || docRow.r2_key;
+      const { stream, size } = await sftpStorageService.getFileStream(targetPath, {
+        compression: docRow.compression || 'none',
+        logger: request.log
+      });
 
       const safeFilename = sanitizeFileName(docRow.original_name);
       const canInline = mode === 'inline' && isPreviewableMime(docRow.mime_type, safeFilename);
@@ -345,15 +379,17 @@ async function customerFilesRoutes(fastify, options) {
 
       reply.header('Content-Type', docRow.mime_type || 'application/octet-stream');
       reply.header('Content-Disposition', `${disp}; filename="${encodeURIComponent(safeFilename)}"`);
-      reply.header('Content-Length', decompressedBuffer.length);
-      return reply.send(decompressedBuffer);
+      if (size !== null && size !== undefined) {
+        reply.header('Content-Length', size);
+      }
+      return reply.send(stream);
     } catch (err) {
-      fastify.log.error(err);
-      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore apertura file da Cloudflare R2.' });
+      request.log.error({ err, fileId }, '[CUSTOMER FILES] Errore apertura/download file da NAS SFTP');
+      return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore apertura file da NAS SFTP.' });
     }
   });
 
-  // 9. DELETE /api/customer-files/files/:fileId - Elimina file da R2 & DB
+  // 9. DELETE /api/customer-files/files/:fileId - Elimina file da NAS SFTP & DB
   fastify.delete('/files/:fileId', async (request, reply) => {
     if (!hasPermission(request.user, 'customer_manage')) {
       return reply.code(403).send({ error: 'Accesso negato: permesso Gestione Clienti richiesto.' });
@@ -367,8 +403,8 @@ async function customerFilesRoutes(fastify, options) {
         return reply.code(403).send({ error: 'Accesso negato.' });
       }
 
-      const cfg = await getR2Config(db);
-      await deleteFromR2({ ...cfg, bucket: docRow.r2_bucket || cfg.bucket }, docRow.r2_key);
+      const targetPath = docRow.storage_path || docRow.r2_key;
+      await sftpStorageService.deleteFile(targetPath, { logger: request.log });
       await db.query('DELETE FROM CUSTOMER_DOCUMENTS WHERE id = ?', [fileId]);
 
       try {
@@ -376,7 +412,7 @@ async function customerFilesRoutes(fastify, options) {
           'INSERT INTO AUDIT_LOGS (action, details, source, username) VALUES (?, ?, ?, ?)',
           [
             'DELETE_CUSTOMER_FILE',
-            `Eliminato file "${docRow.original_name}" da Cloudflare R2 (Cliente #${docRow.customer_id})`,
+            `Eliminato file "${docRow.original_name}" da NAS SFTP (Cliente #${docRow.customer_id})`,
             'Gestionale',
             request.user?.username || 'Operatore'
           ]
@@ -385,7 +421,7 @@ async function customerFilesRoutes(fastify, options) {
 
       return { success: true };
     } catch (err) {
-      fastify.log.error(err);
+      request.log.error({ err, fileId }, '[CUSTOMER FILES] Errore eliminazione file da NAS SFTP');
       return reply.code(err.statusCode || 500).send({ error: err.message || 'Errore eliminazione file.' });
     }
   });
@@ -414,7 +450,7 @@ async function customerFilesRoutes(fastify, options) {
       await db.query('UPDATE CUSTOMER_DOCUMENTS SET folder_id = ? WHERE id = ?', [folderId || null, fileId]);
       return { success: true };
     } catch (err) {
-      fastify.log.error(err);
+      request.log.error({ err, fileId }, '[CUSTOMER FILES] Errore spostamento file');
       return reply.code(500).send({ error: 'Errore spostamento file.' });
     }
   });

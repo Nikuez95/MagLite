@@ -17,10 +17,10 @@ fastify.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 });
 
-// 1b. Supporto upload multipart (file clienti compressi su R2)
+// 1b. Supporto upload multipart (documenti e allegati archiviati su NAS SFTP)
 fastify.register(require('@fastify/multipart'), {
   limits: {
-    fileSize: 150 * 1024 * 1024 // 150 MB per file prima della compressione
+    fileSize: 150 * 1024 * 1024 // 150 MB per file
   }
 });
 
@@ -79,6 +79,19 @@ fastify.register(require('./routes/notifications'), { prefix: '/api/notification
 fastify.register(require('./routes/tickets'), { prefix: '/api/tickets' });
 fastify.register(require('./routes/changelogs'), { prefix: '/api/changelogs' });
 fastify.register(require('./routes/customerFiles'), { prefix: '/api/customer-files' });
+fastify.register(require('./routes/files'), { prefix: '/api/files' });
+
+const sftpStorageService = require('./services/sftpStorageService');
+const { getSftpConfig } = require('./services/sftpStorageService');
+const sftpBootCfg = getSftpConfig({ requireConfigured: false });
+if (!sftpBootCfg.isConfigured) {
+  fastify.log.warn(`[SFTP NAS] Configurazione incompleta in backend/.env: ${sftpBootCfg.missing.join(', ')}`);
+} else {
+  fastify.log.info(`[SFTP NAS] Storage configurato su ${sftpBootCfg.host}:${sftpBootCfg.port} (${sftpBootCfg.basePath})`);
+}
+fastify.addHook('onClose', async () => {
+  await sftpStorageService.close({ logger: fastify.log });
+});
 
 // Health check endpoint (non protetto)
 fastify.get('/api/health', async () => {

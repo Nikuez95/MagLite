@@ -94,7 +94,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
       const res = await axios.get(`${apiBase}/storage/status`, { headers: getHeaders() });
       setStorageStatus(res.data);
     } catch (err) {
-      console.error('Errore stato Cloudflare R2:', err);
+      console.error('Errore stato NAS SFTP:', err);
     } finally {
       setLoadingStorage(false);
     }
@@ -257,9 +257,9 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
       });
       setUploadNotes('');
       await Promise.all([fetchCustomerFiles(), fetchStorageStatus()]);
-      appAlert(`${selected.length} file compressi e caricati su Cloudflare R2!`, 'success');
+      appAlert(`${selected.length} file caricati su NAS SFTP!`, 'success');
     } catch (err) {
-      appAlert(err.response?.data?.error || 'Errore durante il caricamento su Cloudflare R2.', 'error');
+      appAlert(err.response?.data?.error || 'Errore durante il caricamento su NAS SFTP.', 'error');
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -288,7 +288,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
     } catch (err) {
-      appAlert('Errore durante decompressione e download del file.', 'error');
+      appAlert('Errore durante il recupero e download del file dal NAS.', 'error');
     } finally {
       setDownloadingId(null);
     }
@@ -329,7 +329,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
         file,
         blobUrl: null,
         textContent: null,
-        error: 'Impossibile aprire il file in anteprima (potrebbe non essere raggiungibile su R2).'
+        error: 'Impossibile aprire il file in anteprima (il NAS SFTP potrebbe non essere raggiungibile).'
       });
     }
   };
@@ -349,7 +349,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
 
   const handleDeleteFile = async (file) => {
     const confirmed = await appConfirm(
-      `Eliminare definitivamente "${file.original_name}" da Cloudflare R2? L'operazione non è reversibile.`,
+      `Eliminare definitivamente "${file.original_name}" dal NAS SFTP? L'operazione non è reversibile.`,
       { title: 'Elimina File', confirmText: 'Elimina', isDanger: true }
     );
     if (!confirmed) return;
@@ -379,52 +379,41 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
 
   return (
     <div className="space-y-6">
-      {/* Banner Spazio Cloudflare R2 & Stato Connessione */}
+      {/* Banner Spazio NAS SFTP & Stato Connessione */}
       <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 border ${
-              storageStatus?.r2Enabled
+              (storageStatus?.connected ?? storageStatus?.r2Enabled)
                 ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
                 : 'bg-amber-500/15 border-amber-500/30 text-amber-400'
             }`}>
-              <Cloud size={22} />
+              <HardDrive size={22} />
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h4 className="text-sm font-black text-white">Archivio Cloud Cloudflare R2 (Compressione GZIP Automatica)</h4>
+                <h4 className="text-sm font-black text-white">Archivio NAS Locale (SFTP • WD My Cloud)</h4>
                 {loadingStorage ? (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">Verifica...</span>
-                ) : storageStatus?.r2Enabled ? (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">Verifica SFTP...</span>
+                ) : (storageStatus?.connected ?? storageStatus?.r2Enabled) ? (
                   <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                    Connesso • Bucket: {storageStatus.bucket}
+                    Connesso • {storageStatus.host}{storageStatus.port ? `:${storageStatus.port}` : ''}
                   </span>
                 ) : (
                   <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                    R2 da attivare su Dashboard ({storageStatus?.r2ErrorCode || 'Non pronto'})
+                    NAS SFTP Non Raggiungibile
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Spazio occupato su R2: <b className="text-white">{formatBytes(storageStatus?.usedBytesEffective || 0)}</b>
-                {' • '}Spazio disponibile: <b className="text-emerald-400">{formatBytes(storageStatus?.remainingBytes ?? 10737418240)}</b>
-                {' '}su <b className="text-slate-200">{formatBytes(storageStatus?.quotaBytes ?? 10737418240)}</b> (Free Tier 10 GB/mese)
+                Percorso NAS: <code className="font-mono text-sky-300">{storageStatus?.basePath || '/shares/Volume_1/gestionale'}</code>
+                {' • '}Archivio globale: <b className="text-white">{formatBytes(storageStatus?.usedBytesEffective || 0)}</b>
+                {' '}({storageStatus?.fileCount || 0} file)
               </p>
-              {storageStatus?.r2ErrorCode === 10042 && (
+              {!loadingStorage && !(storageStatus?.connected ?? storageStatus?.r2Enabled) && storageStatus?.errorMessage && (
                 <div className="mt-2.5 flex items-start gap-2 text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
                   <AlertTriangle size={15} className="text-amber-400 shrink-0 mt-0.5" />
-                  <span>
-                    Il token Cloudflare in <code className="font-mono text-amber-300">.env</code> è valido, ma Cloudflare richiede di cliccare <b>Enable R2</b> nella{' '}
-                    <a
-                      href="https://dash.cloudflare.com/"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline font-bold text-amber-300 hover:text-white"
-                    >
-                      Dashboard Cloudflare → R2 Object Storage
-                    </a>{' '}
-                    prima di poter salvare oggetti.
-                  </span>
+                  <span>{storageStatus.errorMessage}</span>
                 </div>
               )}
             </div>
@@ -435,30 +424,23 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
               type="button"
               onClick={() => Promise.all([fetchStorageStatus(), fetchCustomerFiles()])}
               className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
-              title="Aggiorna spazio Cloudflare R2"
+              title="Verifica connessione NAS SFTP"
             >
               <RefreshCw size={13} className={loadingStorage ? 'animate-spin' : ''} /> Aggiorna
             </button>
           </div>
         </div>
 
-        {/* Barra progresso spazio globale R2 */}
+        {/* Riepilogo spazio archiviato */}
         <div className="mt-3 pt-3 border-t border-slate-800/80">
-          <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
             <span className="flex items-center gap-1.5">
               <HardDrive size={12} className="text-sky-400" />
-              Utilizzo Account R2 ({usedPercent}%)
+              Driver Storage: <b className="text-slate-200 uppercase">{storageStatus?.driver || 'sftp'}</b>
             </span>
             <span>
-              Questo cliente: <b className="text-white">{customerStats.total_files}</b> file ({formatBytes(customerStats.total_compressed_bytes)} compressi
-              {customerStats.total_original_bytes > 0 ? ` • ${compressionSavedPct}% risparmiato da ${formatBytes(customerStats.total_original_bytes)}` : ''})
+              Questo cliente: <b className="text-white">{customerStats.total_files}</b> file ({formatBytes(customerStats.total_original_bytes)})
             </span>
-          </div>
-          <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-            <div
-              className="h-full bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-400 transition-all duration-500"
-              style={{ width: `${Math.max(usedPercent, storageStatus?.usedBytesEffective > 0 ? 1 : 0)}%` }}
-            />
           </div>
         </div>
       </div>
@@ -690,7 +672,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                           ? 'Senza Cartella (Root Cliente)'
                           : folders.find(f => String(f.id) === String(selectedFolderKey))?.name || 'Cartella'}
                       </b>
-                      {' • '}I file vengono compressi automaticamente in GZIP prima dell&apos;invio su R2.
+                      {' • '}Archiviazione diretta sicura su NAS aziendale via protocollo SFTP.
                     </p>
                   </div>
                 </div>
@@ -788,7 +770,9 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                             </span>
                           )}
                           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-900 text-slate-400 border border-slate-800">
-                            {formatBytes(orig)} → {formatBytes(comp)} ({saved > 0 ? `-${saved}% GZIP` : 'GZIP'})
+                            {file.compression === 'gzip'
+                              ? `${formatBytes(orig)} → ${formatBytes(comp)} (${saved > 0 ? `-${saved}% GZIP` : 'GZIP'})`
+                              : formatBytes(orig)}
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-400 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
@@ -832,7 +816,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                         disabled={downloadingId === file.id}
                         onClick={() => handleDownloadFile(file)}
                         className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500 text-emerald-300 hover:text-brand-black border border-emerald-500/30 rounded-xl text-xs font-bold flex items-center gap-1 transition-all disabled:opacity-50"
-                        title="Decomprimi e scarica rapidamente"
+                        title="Scarica file dal NAS"
                       >
                         {downloadingId === file.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                         Scarica
@@ -843,7 +827,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                           type="button"
                           onClick={() => handleDeleteFile(file)}
                           className="p-2 bg-slate-900 hover:bg-rose-500 text-slate-400 hover:text-white border border-slate-800 rounded-xl transition-colors"
-                          title="Elimina file da R2"
+                          title="Elimina file dal NAS"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -857,7 +841,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
         </div>
       </div>
 
-      {/* Modal Anteprima File Decompresso (Senza Scaricare) */}
+      {/* Modal Anteprima File (Streaming da NAS SFTP) */}
       {previewState.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-brand-black/95 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-5xl h-[86vh] flex flex-col overflow-hidden shadow-2xl">
@@ -867,7 +851,7 @@ export default function CustomerDocumentsTab({ customer, canManage = false }) {
                 <div className="min-w-0">
                   <h4 className="text-sm font-black text-white truncate">{previewState.file?.original_name}</h4>
                   <p className="text-[11px] text-slate-400">
-                    Decompresso da Cloudflare R2 • {formatBytes(previewState.file?.original_size || 0)}
+                    Archiviato su NAS SFTP • {formatBytes(previewState.file?.original_size || 0)}
                   </p>
                 </div>
               </div>

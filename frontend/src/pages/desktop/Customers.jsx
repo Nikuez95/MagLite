@@ -1161,7 +1161,7 @@ Note: ${customer.notes || 'Nessuna'}`;
                         }`}
                       >
                         <Cloud size={14} />
-                        File & Documenti (R2)
+                        File & Documenti (NAS)
                       </button>
                     </div>
                   </div>

@@ -1026,9 +1026,11 @@ async function runMigrations() {
           folder_id INT NULL,
           original_name VARCHAR(255) NOT NULL,
           mime_type VARCHAR(150) NOT NULL,
-          r2_bucket VARCHAR(120) NOT NULL,
-          r2_key VARCHAR(512) NOT NULL UNIQUE,
-          compression VARCHAR(20) NOT NULL DEFAULT 'gzip',
+          r2_bucket VARCHAR(120) NULL DEFAULT 'nas-sftp',
+          r2_key VARCHAR(512) NULL,
+          storage_driver VARCHAR(30) NOT NULL DEFAULT 'sftp',
+          storage_path VARCHAR(512) NULL,
+          compression VARCHAR(20) NOT NULL DEFAULT 'none',
           original_size BIGINT NOT NULL DEFAULT 0,
           compressed_size BIGINT NOT NULL DEFAULT 0,
           notes VARCHAR(500) NULL,
@@ -1038,13 +1040,27 @@ async function runMigrations() {
           CONSTRAINT fk_cd_folder FOREIGN KEY (folder_id) REFERENCES CUSTOMER_DOCUMENT_FOLDERS(id) ON DELETE SET NULL
         )
       `);
-      // Configurazione R2 centralizzata esclusivamente in backend/.env: rimuove eventuali vecchie voci dal DB
+      const addDocColSafe = async (sql) => {
+        try {
+          await connection.query(sql);
+        } catch (colErr) {
+          if (colErr.code !== 'ER_DUP_FIELDNAME') console.warn('[MIGRATE DOCS COL WARNING]', colErr.message);
+        }
+      };
+      await addDocColSafe("ALTER TABLE CUSTOMER_DOCUMENTS ADD COLUMN storage_driver VARCHAR(30) NOT NULL DEFAULT 'sftp'");
+      await addDocColSafe('ALTER TABLE CUSTOMER_DOCUMENTS ADD COLUMN storage_path VARCHAR(512) NULL');
+      await connection.query("ALTER TABLE CUSTOMER_DOCUMENTS MODIFY COLUMN r2_bucket VARCHAR(120) NULL DEFAULT 'nas-sftp'").catch(() => {});
+      await connection.query('ALTER TABLE CUSTOMER_DOCUMENTS MODIFY COLUMN r2_key VARCHAR(512) NULL').catch(() => {});
+      await connection.query(
+        "UPDATE CUSTOMER_DOCUMENTS SET storage_path = COALESCE(storage_path, r2_key), storage_driver = 'sftp' WHERE storage_path IS NULL"
+      );
+      // Pulizia vecchie chiavi Cloudflare R2 dal DB (ora lo storage SFTP usa esclusivamente backend/.env)
       await connection.query(
         "DELETE FROM settings WHERE setting_key IN ('cf_r2_token', 'cf_r2_secret_access_key', 'cf_r2_access_key_id', 'cf_r2_account_id', 'cf_r2_bucket', 'cf_r2_quota_bytes')"
       );
-      console.log('✅ Tabelle CUSTOMER_DOCUMENT_FOLDERS, CUSTOMER_DOCUMENTS & config Cloudflare R2 verificate.');
-    } catch (r2MigErr) {
-      console.warn('[MIGRATE R2 DOCS WARNING]', r2MigErr.message);
+      console.log('✅ Tabelle CUSTOMER_DOCUMENT_FOLDERS, CUSTOMER_DOCUMENTS (NAS SFTP) verificate.');
+    } catch (docMigErr) {
+      console.warn('[MIGRATE SFTP DOCS WARNING]', docMigErr.message);
     }
 
     try {
